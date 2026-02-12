@@ -9,7 +9,11 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys';
+
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
@@ -24,6 +28,9 @@ export interface InboundMessage {
   content: string;
   timestamp: number;
   isGroup: boolean;
+  audioPath?: string;
+  documentPath?: string;
+  imagePath?: string;
 }
 
 export interface WhatsAppClientOptions {
@@ -121,6 +128,52 @@ export class WhatsAppClient {
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
+        // Download voice note audio if present
+        let audioPath: string | undefined;
+        if (msg.message?.audioMessage) {
+          try {
+            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+            const tmpDir = '/tmp';
+            const filename = `nanobot_audio_${msg.key.id || Date.now()}.ogg`;
+            audioPath = path.join(tmpDir, filename);
+            fs.writeFileSync(audioPath, buffer as Buffer);
+            console.log(`Voice note saved to ${audioPath}`);
+          } catch (err) {
+            console.error('Failed to download voice note:', err);
+          }
+        }
+
+        // Download document if present
+        let documentPath: string | undefined;
+        if (msg.message?.documentMessage) {
+          try {
+            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+            const tmpDir = '/tmp';
+            const origName = msg.message.documentMessage.fileName || `doc_${msg.key.id || Date.now()}`;
+            const filename = `nanobot_${origName}`;
+            documentPath = path.join(tmpDir, filename);
+            fs.writeFileSync(documentPath, buffer as Buffer);
+            console.log(`Document saved to ${documentPath}`);
+          } catch (err) {
+            console.error('Failed to download document:', err);
+          }
+        }
+
+        // Download image if present
+        let imagePath: string | undefined;
+        if (msg.message?.imageMessage) {
+          try {
+            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+            const tmpDir = '/tmp';
+            const filename = `nanobot_image_${msg.key.id || Date.now()}.jpg`;
+            imagePath = path.join(tmpDir, filename);
+            fs.writeFileSync(imagePath, buffer as Buffer);
+            console.log(`Image saved to ${imagePath}`);
+          } catch (err) {
+            console.error('Failed to download image:', err);
+          }
+        }
+
         this.options.onMessage({
           id: msg.key.id || '',
           sender: msg.key.remoteJid || '',
@@ -128,6 +181,9 @@ export class WhatsAppClient {
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
+          audioPath,
+          documentPath,
+          imagePath,
         });
       }
     });

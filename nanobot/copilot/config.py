@@ -1,0 +1,241 @@
+"""Copilot configuration model."""
+
+from pydantic import BaseModel, Field
+
+
+class CopilotConfig(BaseModel):
+    """Configuration for Executive Co-Pilot extensions.
+
+    When ``enabled`` is False the system behaves exactly like stock nanobot.
+
+    Model terminology (used everywhere):
+        routing_model  — tiny SLM (~3B) for background tasks: extraction,
+                         approval parsing, classification.  Runs on LM Studio.
+        local_model    — primary conversational model (~14-20B) on the 5070ti.
+                         Handles most interactive messages.
+        fast_model     — cheap cloud tier for quick/simple tasks.
+        big_model      — powerful cloud tier for complex reasoning, images,
+                         long context, creative work.
+
+    Every feature that uses a model has its own config field so you can tune
+    cost/quality independently.  Empty string means "use the default" (the
+    shared field it would normally inherit from).
+    """
+
+    enabled: bool = False
+
+    # ── Local Model (primary conversation) ──────────────────────────────
+    # Main model for interactive chat.  Runs on LM Studio / 5070ti (16GB).
+    # Should be large enough for proper conversational responses (~14-20B).
+    #
+    # Suggestions (LM Studio, 5070ti 16GB VRAM, Q4 quantization):
+    #   "qwen2.5-14b-instruct"              — 14B, excellent all-rounder
+    #   "mistral-nemo-instruct-2407"         — 12B, strong reasoning
+    #   "deepseek-r1-distill-qwen-14b"      — 14B, reasoning focused
+    #   "llama-3.1-8b-instruct"             — 8B, conservative but fast
+    #   "gemma-2-9b-it"                     — 9B, good reasoning
+    local_model: str = "qwen2.5-14b-instruct"
+
+    # ── Routing Model (lightweight background SLM) ──────────────────────
+    # Tiny model (~3B) for background tasks that don't need a full
+    # conversational response: extraction, approval parsing, utility work.
+    # NOT used for routing decisions (those are heuristic-based).
+    #
+    # Suggestions (LM Studio, must be fast):
+    #   "llama-3.2-3b-instruct"    — 3B, fast, reliable JSON output
+    #   "phi-3-mini-4k-instruct"   — 3.8B, good structured output
+    #   "qwen2.5-3b-instruct"      — 3B, multilingual
+    #   "smollm2-1.7b-instruct"    — 1.7B, ultra-fast if accuracy is OK
+    routing_model: str = "llama-3.2-3b-instruct"
+
+    # ── Fast Model (cloud cheap tier) ───────────────────────────────────
+    # Cloud model for quick, cheap tasks.  Used as fallback when local
+    # is down, and for background work that doesn't need heavy reasoning.
+    #
+    # Suggestions:
+    #   "anthropic/claude-3-haiku-20240307"  — $0.25/$1.25 per MTok
+    #   "anthropic/claude-3.5-haiku"         — newer, better quality
+    #   "openai/gpt-4o-mini"                — $0.15/$0.60 per MTok
+    #   "google/gemini-2.0-flash"            — very fast, competitive pricing
+    fast_model: str = "anthropic/claude-3-haiku-20240307"
+
+    # ── Big Model (cloud powerful tier) ─────────────────────────────────
+    # Cloud model for complex reasoning, creative tasks, images, and long
+    # context.  Also the escalation target when the local model determines
+    # a task is beyond its capabilities.
+    #
+    # Suggestions:
+    #   "anthropic/claude-sonnet-4-20250514" — best balance of cost/quality
+    #   "anthropic/claude-3.5-sonnet"        — previous gen, still excellent
+    #   "openai/gpt-4o"                      — strong all-rounder
+    #   "google/gemini-2.0-pro"              — large context window
+    big_model: str = "anthropic/claude-sonnet-4-20250514"
+
+    # ── Background Extraction ───────────────────────────────────────────
+    # Runs after every exchange to extract facts/decisions/entities/sentiment.
+    # Needs structured JSON output.  Small models work fine here.
+    #
+    # Local suggestions (same pool as routing_model — small, structured output):
+    #   "llama-3.2-3b-instruct"    — 3B, reliable JSON
+    #   "phi-3-mini-4k-instruct"   — 3.8B, good structured output
+    #   "qwen2.5-3b-instruct"      — 3B, good JSON compliance
+    # Cloud suggestions (used when local is down):
+    #   "anthropic/claude-3-haiku-20240307"  — cheap, reliable JSON
+    #   "openai/gpt-4o-mini"                — cheap, excellent JSON
+    #   "google/gemini-2.0-flash"            — fast, cheap
+    extraction_local_model: str = ""   # empty = use routing_model
+    extraction_cloud_model: str = ""   # empty = use fast_model
+
+    # ── Approval Parser SLM ─────────────────────────────────────────────
+    # Interprets ambiguous approval responses (regex handles 95%+ of cases,
+    # this is the fallback for things like "hmm, maybe after lunch").
+    #
+    # Suggestions (must run locally, intent classification task):
+    #   "llama-3.2-3b-instruct"    — 3B, good at intent detection
+    #   "phi-3-mini-4k-instruct"   — 3.8B
+    #   "smollm2-1.7b-instruct"    — 1.7B, fastest option
+    approval_slm_model: str = ""       # empty = use routing_model
+
+    # ── Embeddings (Local) ──────────────────────────────────────────────
+    # Used for storing/recalling episodic memories via Qdrant.
+    # Runs on LM Studio against the 5070ti.
+    #
+    # Suggestions (LM Studio compatible):
+    #   "text-embedding-nomic-embed-text-v1.5"  — 768d, good quality/speed
+    #   "snowflake-arctic-embed-m"              — 768d, strong retrieval
+    #   "mxbai-embed-large-v1"                  — 1024d, highest quality
+    #   "bge-small-en-v1.5"                     — 384d, very fast, lower quality
+    #   "all-MiniLM-L6-v2"                      — 384d, tiny, fast
+    embedding_local_model: str = "text-embedding-nomic-embed-text-v1.5"
+    embedding_local_dimensions: int = 768
+
+    # ── Embeddings (Cloud Fallback) ─────────────────────────────────────
+    # Used when local LM Studio is unreachable.  Zero-vector returned only
+    # if both local and cloud fail.
+    #
+    # Suggestions:
+    #   "text-embedding-3-small"   — 1536d (can specify lower), $0.02/MTok
+    #   "text-embedding-3-large"   — 3072d, highest quality, $0.13/MTok
+    #   "text-embedding-ada-002"   — 1536d, legacy but cheap
+    cloud_embedding_api_key: str = ""
+    cloud_embedding_api_base: str = ""   # empty = default OpenAI endpoint
+    cloud_embedding_model: str = "text-embedding-3-small"
+    cloud_embedding_dimensions: int | None = None  # None = match local dims
+
+    # ── Dream Cycle ─────────────────────────────────────────────────────
+    # Memory consolidation (nightly at 3 AM).  Runs through the router by
+    # default: tries local model first, heuristic decides if too complex,
+    # falls back to fast cloud if LM Studio is off at 3 AM.
+    #
+    # Suggestions:
+    #   ""                                     — use router (local → fast fallback)
+    #   "anthropic/claude-3-haiku-20240307"    — force cloud cheap for overnight
+    #   "openai/gpt-4o-mini"                  — force cloud cheap
+    dream_model: str = ""              # empty = use router (local → fast → big)
+
+    # ── Heartbeat ───────────────────────────────────────────────────────
+    # Proactive tasks from heartbeat.md (every 2h during daytime).
+    # Runs through the router by default.
+    #
+    # Suggestions:
+    #   ""                                     — use router (local → fast fallback)
+    #   "anthropic/claude-3-haiku-20240307"    — force cloud cheap
+    heartbeat_model: str = ""          # empty = use router (local → fast → big)
+
+    # ── Task Decomposition & Execution ──────────────────────────────────
+    # Background task queue.  Decomposes tasks into steps, then executes
+    # each step through the router.
+    #
+    # Suggestions:
+    #   ""                                     — use router (local → fast → big)
+    #   "anthropic/claude-sonnet-4-20250514"   — force big model for multi-step
+    task_model: str = ""               # empty = use router (local → fast → big)
+
+    # ── Self-Escalation ─────────────────────────────────────────────────
+    # When the local model determines a task is beyond its capabilities,
+    # it can begin its response with [ESCALATE] and the router will retry
+    # with the big model.  Disable to always accept local responses as-is.
+    escalation_enabled: bool = True
+    escalation_marker: str = "[ESCALATE]"
+
+    # ── Non-Model Settings ──────────────────────────────────────────────
+
+    # Cost alerting
+    daily_cost_alert: float = 50.0
+    per_call_cost_alert: float = 0.50
+
+    # Shadow period — conservative mode for first 2 weeks
+    shadow_mode: bool = True
+
+    # Context budget for injected system context (tokens)
+    context_budget: int = 1500
+
+    # Continuation threshold — rebuild context when token usage exceeds this
+    # fraction of the current model's context window
+    continuation_threshold: float = 0.70
+
+    # Database path (relative to project data dir)
+    db_path: str = "data/sqlite/copilot.db"
+
+    # Approval system
+    approval_channel: str = "whatsapp"
+    approval_chat_id: str = ""  # User's WhatsApp LID; empty = same as sender
+    approval_timeout: float = 300.0  # 5 minutes
+
+    # Metacognition
+    lesson_injection_count: int = 3
+    lesson_min_confidence: float = 0.30
+
+    # Identity & config documents
+    copilot_docs_dir: str = "data/copilot"
+
+    # Memory infrastructure
+    qdrant_url: str = "http://localhost:6333"
+    redis_url: str = "redis://localhost:6379/0"
+    memory_recall_limit: int = 5
+    memory_min_score: float = 0.35
+
+    # Tools
+    aws_region: str = "us-east-1"
+    aws_profile: str | None = None
+    n8n_url: str = "http://localhost:5678"
+    browser_headless: bool = True
+
+    # Tasks
+    task_worker_interval: int = 60
+
+    # Dream + Monitoring + Heartbeat
+    dream_cron_expr: str = "0 3 * * *"
+    backup_dir: str = "/home/ubuntu/executive-copilot/backups"
+    monitor_interval: int = 300
+    heartbeat_interval: int = 7200  # 2 hours (daytime only)
+    monitor_channel: str = "whatsapp"
+    monitor_chat_id: str = ""
+
+    # ── Resolved Accessors ──────────────────────────────────────────────
+    # These resolve empty-string overrides back to their defaults so callers
+    # don't have to handle the fallback logic themselves.
+
+    @property
+    def resolved_extraction_local_model(self) -> str:
+        return self.extraction_local_model or self.routing_model
+
+    @property
+    def resolved_extraction_cloud_model(self) -> str:
+        return self.extraction_cloud_model or self.fast_model
+
+    @property
+    def resolved_approval_slm_model(self) -> str:
+        return self.approval_slm_model or self.routing_model
+
+    @property
+    def resolved_dream_model(self) -> str:
+        return self.dream_model or ""
+
+    @property
+    def resolved_heartbeat_model(self) -> str:
+        return self.heartbeat_model or ""
+
+    @property
+    def resolved_task_model(self) -> str:
+        return self.task_model or ""

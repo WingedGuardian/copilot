@@ -26,13 +26,20 @@ class ChannelManager:
     - Route outbound messages
     """
     
-    def __init__(self, config: Config, bus: MessageBus, session_manager: "SessionManager | None" = None):
+    def __init__(
+        self,
+        config: Config,
+        bus: MessageBus,
+        session_manager: "SessionManager | None" = None,
+        voice_transcriber: Any = None,
+    ):
         self.config = config
         self.bus = bus
         self.session_manager = session_manager
+        self._voice_transcriber = voice_transcriber
         self.channels: dict[str, BaseChannel] = {}
         self._dispatch_task: asyncio.Task | None = None
-        
+
         self._init_channels()
     
     def _init_channels(self) -> None:
@@ -57,7 +64,8 @@ class ChannelManager:
             try:
                 from nanobot.channels.whatsapp import WhatsAppChannel
                 self.channels["whatsapp"] = WhatsAppChannel(
-                    self.config.channels.whatsapp, self.bus
+                    self.config.channels.whatsapp, self.bus,
+                    transcriber=self._voice_transcriber,
                 )
                 logger.info("WhatsApp channel enabled")
             except ImportError as e:

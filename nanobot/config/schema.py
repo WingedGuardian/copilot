@@ -4,6 +4,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from pydantic_settings import BaseSettings
 
+from nanobot.copilot.config import CopilotConfig
+
 
 class WhatsAppConfig(BaseModel):
     """WhatsApp channel configuration."""
@@ -227,7 +229,8 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    
+    copilot: CopilotConfig = Field(default_factory=CopilotConfig)
+
     @property
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""

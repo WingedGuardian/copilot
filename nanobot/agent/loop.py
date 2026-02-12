@@ -46,6 +46,15 @@ class AgentLoop:
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
+        # --- Copilot extensions (None = disabled) ---
+        extended_context: "ExtendedContextBuilder | None" = None,
+        extractor: "BackgroundExtractor | None" = None,
+        thread_tracker: "ThreadTracker | None" = None,
+        approval_interceptor: "ApprovalInterceptor | None" = None,
+        lesson_manager: "LessonManager | None" = None,
+        satisfaction_detector: "SatisfactionDetector | None" = None,
+        memory_manager: "MemoryManager | None" = None,
+        copilot_config: "CopilotConfig | None" = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -59,7 +68,7 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         
-        self.context = ContextBuilder(workspace)
+        self.context = extended_context or ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -72,6 +81,15 @@ class AgentLoop:
             restrict_to_workspace=restrict_to_workspace,
         )
         
+        # Copilot extensions
+        self._extractor = extractor
+        self._thread_tracker = thread_tracker
+        self._approval_interceptor = approval_interceptor
+        self._lesson_manager = lesson_manager
+        self._satisfaction_detector = satisfaction_detector
+        self._memory_manager = memory_manager
+        self._copilot_config = copilot_config
+
         self._running = False
         self._register_default_tools()
     
@@ -156,9 +174,21 @@ class AgentLoop:
         if msg.channel == "system":
             return await self._process_system_message(msg)
         
+        # Copilot: check if this is an approval response
+        if self._approval_interceptor and self._approval_interceptor.has_pending(msg.session_key):
+            return await self._approval_interceptor.handle_response(msg)
+
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
-        
+
+        # Copilot: quick satisfaction check on user message
+        if self._satisfaction_detector:
+            signal = self._satisfaction_detector.detect_regex(msg.content)
+            if signal:
+                asyncio.create_task(
+                    self._satisfaction_detector.handle_signal(signal, msg.session_key)
+                )
+
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
         
@@ -175,14 +205,42 @@ class AgentLoop:
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(msg.channel, msg.chat_id)
         
+        # Copilot: thread tagging — detect explicit "> TopicName" prefix
+        if self._thread_tracker:
+            forced_id, forced_label = self._thread_tracker.check_message(msg.content)
+            if forced_id:
+                msg.content = self._thread_tracker.strip_topic_prefix(msg.content)
+                if not msg.content:
+                    msg.content = f"(Topic set to: {forced_label})"
+
+        # Copilot: fetch relevant lessons for injection
+        lessons_for_context = None
+        if self._lesson_manager:
+            try:
+                lessons_for_context = await self._lesson_manager.get_relevant_lessons(msg.content)
+                if lessons_for_context and self._satisfaction_detector:
+                    self._satisfaction_detector.note_applied_lessons(
+                        [l.id for l in lessons_for_context]
+                    )
+                    for l in lessons_for_context:
+                        await self._lesson_manager.mark_applied(l.id)
+            except Exception as e:
+                logger.warning(f"Lesson fetch failed: {e}")
+
         # Build initial messages (use get_history for LLM-formatted messages)
-        messages = self.context.build_messages(
+        build_kwargs: dict = dict(
             history=session.get_history(),
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
+        # Copilot: pass session metadata so extended builder can inject extractions
+        if hasattr(self.context, '_base'):
+            build_kwargs["session_metadata"] = session.metadata
+        if lessons_for_context and hasattr(self.context, '_base'):
+            build_kwargs["lessons"] = lessons_for_context
+        messages = self.context.build_messages(**build_kwargs)
         
         # Agent loop
         iteration = 0
@@ -191,6 +249,16 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             
+            # Copilot: check if context needs rebuilding before next LLM call
+            if (
+                iteration > 1
+                and hasattr(self.context, 'needs_continuation')
+                and self.context.needs_continuation(messages, self.model)
+            ):
+                messages = self.context.rebuild_from_extractions(
+                    session, msg.content, channel=msg.channel, chat_id=msg.chat_id
+                )
+
             # Call LLM
             response = await self.provider.chat(
                 messages=messages,
@@ -221,7 +289,28 @@ class AgentLoop:
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
+
+                    # Copilot: approval check before execution
+                    if self._approval_interceptor:
+                        decision = await self._approval_interceptor.check(tool_call, msg)
+                        if decision.denied:
+                            result = f"Action denied by user: {decision.reason}"
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_call.name, result
+                            )
+                            continue
+                        if decision.modified and decision.modified_args:
+                            tool_call.arguments = decision.modified_args
+
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+
+                    # Copilot: audit logging
+                    if self._copilot_config:
+                        asyncio.ensure_future(self._audit_log(
+                            msg.session_key, tool_call.name, args_str[:500],
+                            str(result)[:500],
+                        ))
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -229,7 +318,7 @@ class AgentLoop:
                 # No tool calls, we're done
                 final_content = response.content
                 break
-        
+
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
         
@@ -241,7 +330,19 @@ class AgentLoop:
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content)
         self.sessions.save(session)
-        
+
+        # Copilot: background extraction (async, never blocks response)
+        if self._extractor:
+            self._extractor.schedule_extraction(
+                msg.content, final_content, session.key
+            )
+
+        # Copilot: store exchange in memory (async, never blocks response)
+        if self._memory_manager:
+            asyncio.create_task(
+                self._memory_manager.remember_exchange(msg.content, final_content, session.key)
+            )
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -354,16 +455,18 @@ class AgentLoop:
         session_key: str = "cli:direct",
         channel: str = "cli",
         chat_id: str = "direct",
+        model: str | None = None,
     ) -> str:
         """
         Process a message directly (for CLI or cron usage).
-        
+
         Args:
             content: The message content.
             session_key: Session identifier.
             channel: Source channel (for context).
             chat_id: Source chat ID (for context).
-        
+            model: Optional model override for this call only.
+
         Returns:
             The agent's response.
         """
@@ -373,6 +476,38 @@ class AgentLoop:
             chat_id=chat_id,
             content=content
         )
-        
-        response = await self._process_message(msg)
-        return response.content if response else ""
+
+        # Temporarily swap model if override is provided
+        original_model = None
+        if model:
+            original_model = self.model
+            self.model = model
+        try:
+            response = await self._process_message(msg)
+            return response.content if response else ""
+        finally:
+            if original_model is not None:
+                self.model = original_model
+
+    async def _audit_log(
+        self,
+        session_key: str,
+        tool_name: str,
+        tool_args_json: str,
+        result_summary: str,
+        approved_by: str | None = None,
+    ) -> None:
+        """Insert a row into tool_audit_log (fire-and-forget)."""
+        try:
+            import aiosqlite
+            db_path = self._copilot_config.db_path
+            async with aiosqlite.connect(db_path) as db:
+                await db.execute(
+                    """INSERT INTO tool_audit_log
+                       (session_key, tool_name, tool_args_json, result_summary, approved_by)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (session_key, tool_name, tool_args_json, result_summary, approved_by),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Audit log failed: {e}")

@@ -1,0 +1,253 @@
+"""RouterProvider — drop-in replacement for LiteLLMProvider with intelligent routing."""
+
+from typing import Any
+
+from loguru import logger
+
+from nanobot.providers.base import LLMProvider, LLMResponse
+from nanobot.copilot.cost.logger import CostLogger
+from nanobot.copilot.routing.failover import FailoverChain, ProviderTier
+from nanobot.copilot.routing.heuristics import RouteDecision, classify
+
+
+# Instruction injected into the system prompt when routing to the local model.
+# Tells the model it can request escalation to a more powerful model.
+_ESCALATION_INSTRUCTION = (
+    "\n\n---\n\n## Self-Escalation\n"
+    "If this task is beyond your capabilities (complex reasoning, code generation, "
+    "creative writing, multi-step analysis, or anything you are not confident about), "
+    "begin your response with exactly `[ESCALATE]` followed by a brief reason. "
+    "The system will automatically retry with a more powerful model.\n"
+    "Only escalate when genuinely needed — most conversational and simple tasks "
+    "are well within your abilities."
+)
+
+
+class RouterProvider(LLMProvider):
+    """Routes each LLM call to the best provider/model based on heuristics.
+
+    Implements the same ``LLMProvider`` interface so the ``AgentLoop`` never
+    knows the difference.  Supports self-escalation: if the local model begins
+    its response with ``[ESCALATE]``, the router retries with the big model.
+    """
+
+    def __init__(
+        self,
+        local_provider: LLMProvider,
+        cloud_providers: dict[str, LLMProvider],
+        cost_logger: CostLogger,
+        *,
+        local_model: str = "qwen2.5-14b-instruct",
+        fast_model: str = "anthropic/claude-3-haiku-20240307",
+        big_model: str = "anthropic/claude-sonnet-4-20250514",
+        escalation_enabled: bool = True,
+        escalation_marker: str = "[ESCALATE]",
+    ):
+        # RouterProvider doesn't need its own api_key/api_base
+        super().__init__(api_key=None, api_base=None)
+
+        self._local = local_provider
+        self._cloud = cloud_providers  # keyed by name e.g. "openrouter", "venice"
+        self._cost_logger = cost_logger
+        self._failover = FailoverChain()
+
+        self._local_model = local_model
+        self._fast_model = fast_model
+        self._big_model = big_model
+        self._escalation_enabled = escalation_enabled
+        self._escalation_marker = escalation_marker
+
+    def get_default_model(self) -> str:
+        return self._local_model
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        # Extract last user message for classification
+        message_text = ""
+        has_images = False
+        token_estimate = 0
+
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    message_text = content
+                elif isinstance(content, list):
+                    # Multimodal content — check for images
+                    parts = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                parts.append(part.get("text", ""))
+                            elif part.get("type") == "image_url":
+                                has_images = True
+                    message_text = " ".join(parts)
+                break
+
+        # Rough token estimate for entire conversation
+        for msg in messages:
+            c = msg.get("content", "")
+            if isinstance(c, str):
+                token_estimate += len(c) // 4
+            elif isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        token_estimate += len(part.get("text", "")) // 4
+
+        # Classify
+        decision = classify(
+            message_text=message_text,
+            has_images=has_images,
+            token_count=token_estimate,
+            local_model=self._local_model,
+            fast_model=self._fast_model,
+            big_model=self._big_model,
+        )
+
+        # Build failover chain based on decision
+        chain = self._build_chain(decision)
+
+        logger.info(
+            f"Route: {decision.target} ({decision.reason}) → "
+            f"{decision.model} | tokens≈{token_estimate} images={has_images}"
+        )
+
+        # If routing to local and escalation is enabled, inject the
+        # escalation instruction into a copy of the messages so the local
+        # model knows it can request a stronger model.
+        call_messages = messages
+        if decision.target == "local" and self._escalation_enabled:
+            call_messages = self._inject_escalation(messages)
+
+        # Execute with failover
+        try:
+            response, tier, latency_ms = await self._failover.try_providers(
+                chain=chain,
+                messages=call_messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except RuntimeError as e:
+            # All providers failed — return friendly error
+            logger.error(f"All providers failed: {e}")
+            await self._cost_logger.log_route(
+                input_length=len(message_text),
+                has_images=has_images,
+                routed_to=decision.target,
+                provider="none",
+                model_used=decision.model,
+                route_reason=decision.reason,
+                success=False,
+                failure_reason=str(e),
+            )
+            return LLMResponse(
+                content="I'm having trouble connecting to my language models right now. "
+                "Please try again in a moment.",
+                finish_reason="error",
+                model_used="none",
+            )
+
+        # --- Self-escalation check ---
+        # If the local model responded with the escalation marker, retry
+        # with the big model using the *original* messages (no escalation
+        # instruction — the big model doesn't need it).
+        if (
+            self._escalation_enabled
+            and decision.target == "local"
+            and response.content
+            and response.content.strip().startswith(self._escalation_marker)
+        ):
+            reason_text = response.content.strip()[len(self._escalation_marker):].strip()
+            logger.info(
+                f"Self-escalation triggered: {reason_text[:120]} → retrying with big model"
+            )
+
+            big_chain = self._build_chain(
+                RouteDecision("big", "escalation", self._big_model)
+            )
+            try:
+                response, tier, latency_ms = await self._failover.try_providers(
+                    chain=big_chain,
+                    messages=messages,  # original messages, no escalation prompt
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                decision = RouteDecision("big", "escalation", self._big_model)
+            except RuntimeError as e:
+                logger.error(f"Escalation retry failed: {e}")
+                # Fall through — return the original local response minus marker
+                response.content = reason_text or response.content
+
+        # Log routing decision
+        tokens_in = response.usage.get("prompt_tokens", 0)
+        tokens_out = response.usage.get("completion_tokens", 0)
+        cost = self._cost_logger.calculate_cost(tier.model, tokens_in, tokens_out)
+
+        await self._cost_logger.log_route(
+            input_length=len(message_text),
+            has_images=has_images,
+            routed_to=decision.target,
+            provider=tier.name,
+            model_used=tier.model,
+            route_reason=decision.reason,
+            success=True,
+            latency_ms=latency_ms,
+            cost_usd=cost,
+        )
+
+        # Log cost
+        if tokens_in or tokens_out:
+            await self._cost_logger.log_call(
+                model=tier.model,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                cost_usd=cost,
+            )
+
+        return response
+
+    def _build_chain(self, decision: RouteDecision) -> list[ProviderTier]:
+        """Build the ordered failover chain for a routing decision.
+
+        Chain: local → fast → big.
+        If decision is big, start there: big → (no further fallback to weaker).
+        If decision is fast, start there: fast → big.
+        If decision is local, start there: local → fast → big.
+        """
+        chain: list[ProviderTier] = []
+
+        if decision.target == "local":
+            chain.append(
+                ProviderTier("lm_studio", self._local, self._local_model)
+            )
+
+        if decision.target in ("local", "fast"):
+            for name, provider in self._cloud.items():
+                chain.append(ProviderTier(name, provider, self._fast_model))
+                break  # Use first available cloud provider for fast tier
+
+        # Big tier — always available as final fallback
+        for name, provider in self._cloud.items():
+            chain.append(ProviderTier(name, provider, self._big_model))
+            break
+
+        return chain
+
+    @staticmethod
+    def _inject_escalation(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return a shallow copy of *messages* with escalation instruction appended
+        to the system message.  Never mutates the original list."""
+        messages = [msg.copy() for msg in messages]
+        for msg in messages:
+            if msg.get("role") == "system":
+                msg["content"] = msg["content"] + _ESCALATION_INSTRUCTION
+                break
+        return messages

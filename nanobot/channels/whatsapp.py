@@ -15,18 +15,19 @@ from nanobot.config.schema import WhatsAppConfig
 class WhatsAppChannel(BaseChannel):
     """
     WhatsApp channel that connects to a Node.js bridge.
-    
+
     The bridge uses @whiskeysockets/baileys to handle the WhatsApp Web protocol.
     Communication between Python and Node.js is via WebSocket.
     """
-    
+
     name = "whatsapp"
-    
-    def __init__(self, config: WhatsAppConfig, bus: MessageBus):
+
+    def __init__(self, config: WhatsAppConfig, bus: MessageBus, transcriber=None):
         super().__init__(config, bus)
         self.config: WhatsAppConfig = config
         self._ws = None
         self._connected = False
+        self._transcriber = transcriber  # VoiceTranscriber or None
     
     async def start(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
@@ -112,14 +113,34 @@ class WhatsAppChannel(BaseChannel):
             logger.info(f"Sender {sender}")
             
             # Handle voice transcription if it's a voice message
-            if content == "[Voice Message]":
-                logger.info(f"Voice message received from {sender_id}, but direct download from bridge is not yet supported.")
-                content = "[Voice Message: Transcription not available for WhatsApp yet]"
-            
+            audio_path = data.get("audioPath")
+            if content == "[Voice Message]" and audio_path and self._transcriber:
+                from pathlib import Path
+                logger.info(f"Transcribing voice message from {sender_id}: {audio_path}")
+                transcribed = await self._transcriber.transcribe(Path(audio_path))
+                if transcribed and not transcribed.startswith("["):
+                    content = transcribed
+                else:
+                    content = transcribed or "[Voice message could not be transcribed]"
+            elif content == "[Voice Message]":
+                content = "[Voice message: transcription not configured]"
+
+            # Collect media paths (documents, images) from bridge
+            media: list[str] = []
+            doc_path = data.get("documentPath")
+            if doc_path:
+                media.append(doc_path)
+                logger.info(f"Document received from {sender_id}: {doc_path}")
+            img_path = data.get("imagePath")
+            if img_path:
+                media.append(img_path)
+                logger.info(f"Image received from {sender_id}: {img_path}")
+
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=sender,  # Use full LID for replies
                 content=content,
+                media=media if media else None,
                 metadata={
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),

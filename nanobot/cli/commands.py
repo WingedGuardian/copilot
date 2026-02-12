@@ -264,22 +264,114 @@ This file stores important information that should persist across sessions.
     skills_dir.mkdir(exist_ok=True)
 
 
-def _make_provider(config):
-    """Create LiteLLMProvider from config. Exits if no API key found."""
+def _make_provider(config, cost_logger=None):
+    """Create LLM provider from config.
+
+    When ``config.copilot.enabled`` is True and a *cost_logger* is supplied,
+    returns a ``RouterProvider`` that routes to local/cloud models
+    automatically.  Otherwise returns a plain ``LiteLLMProvider``.
+    """
     from nanobot.providers.litellm_provider import LiteLLMProvider
+
     p = config.get_provider()
     model = config.agents.defaults.model
     if not (p and p.api_key) and not model.startswith("bedrock/"):
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers section")
         raise typer.Exit(1)
-    return LiteLLMProvider(
+
+    base_provider = LiteLLMProvider(
         api_key=p.api_key if p else None,
         api_base=config.get_api_base(),
         default_model=model,
         extra_headers=p.extra_headers if p else None,
         provider_name=config.get_provider_name(),
     )
+
+    if not config.copilot.enabled or cost_logger is None:
+        return base_provider
+
+    # --- Copilot routing ---
+    from nanobot.copilot.routing.router import RouterProvider
+
+    # Build cloud providers dict from any configured provider with an API key.
+    # The base_provider already points at the configured cloud provider, so we
+    # reuse it as the first (and often only) cloud tier.
+    cloud_providers: dict[str, LiteLLMProvider] = {}
+    provider_name = config.get_provider_name()
+    if provider_name:
+        cloud_providers[provider_name] = base_provider
+
+    # Local provider — always LM Studio via vllm config
+    vllm_cfg = config.providers.vllm
+    if vllm_cfg.api_key or vllm_cfg.api_base:
+        local_provider = LiteLLMProvider(
+            api_key=vllm_cfg.api_key or "lm-studio",
+            api_base=vllm_cfg.api_base,
+            default_model=config.copilot.local_model,
+            provider_name="vllm",
+        )
+    else:
+        # No local LLM configured — use base_provider as fallback
+        local_provider = base_provider
+
+    copilot = config.copilot
+    return RouterProvider(
+        local_provider=local_provider,
+        cloud_providers=cloud_providers,
+        cost_logger=cost_logger,
+        local_model=copilot.local_model,
+        fast_model=copilot.fast_model,
+        big_model=copilot.big_model,
+        escalation_enabled=copilot.escalation_enabled,
+        escalation_marker=copilot.escalation_marker,
+    )
+
+
+def _register_copilot_tools(agent, config):
+    """Register Phase 5 copilot tools (git, browser, aws, document, n8n)."""
+    tool_names = []
+
+    try:
+        from nanobot.copilot.tools.git import GitTool
+        agent.tools.register(GitTool(default_repo=str(config.workspace_path)))
+        tool_names.append("git")
+    except Exception:
+        pass
+
+    try:
+        from nanobot.copilot.tools.document import DocumentTool
+        agent.tools.register(DocumentTool())
+        tool_names.append("document")
+    except Exception:
+        pass
+
+    try:
+        from nanobot.copilot.tools.browser import BrowserTool
+        agent.tools.register(BrowserTool(headless=config.copilot.browser_headless))
+        tool_names.append("browser")
+    except Exception:
+        pass
+
+    try:
+        from nanobot.copilot.tools.aws import AWSTool
+        agent.tools.register(AWSTool(
+            region=config.copilot.aws_region,
+            profile=config.copilot.aws_profile,
+        ))
+        tool_names.append("aws")
+    except Exception:
+        pass
+
+    try:
+        from nanobot.copilot.tools.n8n import N8NTool
+        agent.tools.register(N8NTool(base_url=config.copilot.n8n_url))
+        tool_names.append("n8n")
+    except Exception:
+        pass
+
+    if tool_names:
+        console.print(f"[green]v[/green] Copilot tools: {', '.join(tool_names)}")
 
 
 # ============================================================================
@@ -310,13 +402,205 @@ def gateway(
     
     config = load_config()
     bus = MessageBus()
-    provider = _make_provider(config)
+
+    # --- Copilot: initialise cost logger if enabled ---
+    cost_logger = None
+    if config.copilot.enabled:
+        import asyncio as _aio
+        from nanobot.copilot.cost.db import ensure_tables
+        from nanobot.copilot.cost.logger import CostLogger
+        from pathlib import Path
+
+        db_path = Path(config.copilot.db_path)
+        _aio.run(ensure_tables(db_path))
+        cost_logger = CostLogger(db_path)
+        console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
+
+    provider = _make_provider(config, cost_logger=cost_logger)
     session_manager = SessionManager(config.workspace_path)
     
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
     
+    # --- Copilot: initialise background extractor if enabled ---
+    extractor = None
+    if config.copilot.enabled:
+        from nanobot.copilot.extraction.background import BackgroundExtractor
+
+        # Reuse the local provider (vllm) for extraction when available
+        local_extractor_provider = None
+        vllm_cfg = config.providers.vllm
+        if vllm_cfg.api_key or vllm_cfg.api_base:
+            from nanobot.providers.litellm_provider import LiteLLMProvider
+            local_extractor_provider = LiteLLMProvider(
+                api_key=vllm_cfg.api_key or "lm-studio",
+                api_base=vllm_cfg.api_base,
+                default_model=config.copilot.resolved_extraction_local_model,
+                provider_name="vllm",
+            )
+
+        # Cloud fallback for extraction: reuse the main cloud provider
+        cloud_extractor_provider = None
+        cloud_p = config.get_provider()
+        if cloud_p and cloud_p.api_key:
+            from nanobot.providers.litellm_provider import LiteLLMProvider as _LEP
+            cloud_extractor_provider = _LEP(
+                api_key=cloud_p.api_key,
+                api_base=config.get_api_base(),
+                default_model=config.copilot.resolved_extraction_cloud_model,
+                extra_headers=cloud_p.extra_headers,
+                provider_name=config.get_provider_name(),
+            )
+
+        extractor = BackgroundExtractor(
+            local_provider=local_extractor_provider,
+            fallback_provider=cloud_extractor_provider,
+            cost_logger=cost_logger,
+            local_model=config.copilot.resolved_extraction_local_model,
+            fallback_model=config.copilot.resolved_extraction_cloud_model,
+        )
+
+        # Persist extraction results into session metadata
+        async def _persist_extraction(session_key, result):
+            session = session_manager.get_or_create(session_key)
+            extractions = session.metadata.get("extractions", [])
+            extractions.append(result.model_dump())
+            session.metadata["extractions"] = extractions
+            session_manager.save(session)
+
+        extractor.on_result = _persist_extraction
+        console.print("[green]✓[/green] Background extraction enabled")
+
+    # --- Copilot: extended context builder ---
+    extended_context = None
+    if config.copilot.enabled:
+        from nanobot.agent.context import ContextBuilder
+        from nanobot.copilot.context.extended import ExtendedContextBuilder
+        from nanobot.copilot.context.budget import TokenBudget
+
+        extended_context = ExtendedContextBuilder(
+            base=ContextBuilder(config.workspace_path),
+            budget=TokenBudget(),
+            context_budget=config.copilot.context_budget,
+            continuation_threshold=config.copilot.continuation_threshold,
+        )
+        console.print("[green]✓[/green] Extended context builder enabled")
+
+    # --- Copilot: thread tracker ---
+    thread_tracker = None
+    if config.copilot.enabled:
+        from nanobot.copilot.threading.tracker import ThreadTracker
+        thread_tracker = ThreadTracker()
+
+    # --- Copilot: Phase 3 components ---
+    approval_interceptor = None
+    lesson_manager = None
+    satisfaction_detector = None
+    cost_alerter = None
+
+    if config.copilot.enabled:
+        import asyncio as _aio
+        from nanobot.copilot.cost.db import migrate_phase3
+
+        db_path = Path(config.copilot.db_path)
+        _aio.run(migrate_phase3(db_path))
+
+        from nanobot.copilot.metacognition.lessons import LessonManager
+        lesson_manager = LessonManager(db_path)
+
+        from nanobot.copilot.metacognition.detector import SatisfactionDetector
+        satisfaction_detector = SatisfactionDetector(lesson_manager)
+
+        from nanobot.copilot.approval.patterns import RulesEngine
+        from nanobot.copilot.approval.queue import ApprovalQueue
+        from nanobot.copilot.approval.parser import NLApprovalParser
+        from nanobot.copilot.approval.interceptor import ApprovalInterceptor
+
+        approval_interceptor = ApprovalInterceptor(
+            bus=bus,
+            rules_engine=RulesEngine(db_path),
+            queue=ApprovalQueue(db_path),
+            parser=NLApprovalParser(
+                slm_provider=local_extractor_provider if extractor else None,
+                slm_model=config.copilot.resolved_approval_slm_model,
+            ),
+            lesson_manager=lesson_manager,
+            approval_channel=config.copilot.approval_channel,
+            approval_chat_id=config.copilot.approval_chat_id,
+            timeout=config.copilot.approval_timeout,
+        )
+        console.print("[green]v[/green] Approval system + metacognition enabled")
+
+        # Chain satisfaction detector onto extraction callback
+        if extractor:
+            _orig = extractor.on_result
+            async def _persist_and_detect(session_key, result):
+                if _orig:
+                    await _orig(session_key, result)
+                await satisfaction_detector.on_extraction_result(session_key, result)
+            extractor.on_result = _persist_and_detect
+
+        # Cost alerter
+        from nanobot.copilot.cost.alerting import CostAlerter
+        cost_alerter = CostAlerter(
+            db_path, bus,
+            config.copilot.daily_cost_alert,
+            config.copilot.per_call_cost_alert,
+            config.copilot.approval_channel,
+            config.copilot.approval_chat_id,
+        )
+
+    # --- Copilot: Phase 4 — Memory ---
+    memory_manager = None
+    if config.copilot.enabled:
+        import asyncio as _aio
+        from nanobot.copilot.cost.db import migrate_phase4
+        db_path = Path(config.copilot.db_path)
+        _aio.run(migrate_phase4(db_path))
+
+        try:
+            from nanobot.copilot.memory.embedder import Embedder
+            from nanobot.copilot.memory.manager import MemoryManager
+
+            embedder = Embedder(
+                api_base=(config.providers.vllm.api_base or "http://192.168.50.100:1234/v1"),
+                model=config.copilot.embedding_local_model,
+                dimensions=config.copilot.embedding_local_dimensions,
+                cloud_api_key=config.copilot.cloud_embedding_api_key or None,
+                cloud_api_base=config.copilot.cloud_embedding_api_base or None,
+                cloud_model=config.copilot.cloud_embedding_model,
+                cloud_dimensions=config.copilot.cloud_embedding_dimensions,
+            )
+            memory_manager = MemoryManager(
+                embedder=embedder,
+                qdrant_url=config.copilot.qdrant_url,
+                redis_url=config.copilot.redis_url,
+                db_path=db_path,
+                dimensions=config.copilot.embedding_local_dimensions,
+            )
+            _aio.run(memory_manager.initialize())
+            console.print("[green]v[/green] Memory system enabled (Qdrant + Redis + SQLite)")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Memory init failed (degraded): {e}[/yellow]")
+            memory_manager = None
+
+        # Chain extractions into memory
+        if extractor and memory_manager:
+            _orig_ext = extractor.on_result
+            async def _persist_extract_and_memorize(session_key, result):
+                if _orig_ext:
+                    await _orig_ext(session_key, result)
+                data = result.model_dump() if hasattr(result, 'model_dump') else result
+                await memory_manager.remember_extractions(data, session_key)
+            extractor.on_result = _persist_extract_and_memorize
+
+    # --- Copilot: extended context with identity docs + memory ---
+    if extended_context and config.copilot.enabled:
+        extended_context._docs_dir = Path(config.copilot.copilot_docs_dir)
+        if memory_manager:
+            extended_context._memory_manager = memory_manager
+
     # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
@@ -329,8 +613,70 @@ def gateway(
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
+        extended_context=extended_context,
+        extractor=extractor,
+        thread_tracker=thread_tracker,
+        approval_interceptor=approval_interceptor,
+        lesson_manager=lesson_manager,
+        satisfaction_detector=satisfaction_detector,
+        memory_manager=memory_manager,
+        copilot_config=config.copilot if config.copilot.enabled else None,
     )
-    
+
+    # --- Copilot: Phase 4 — register memory tool ---
+    if memory_manager:
+        from nanobot.copilot.memory.tool import MemoryTool
+        agent.tools.register(MemoryTool(memory_manager))
+
+    # --- Copilot: Phase 5 — register copilot tools ---
+    if config.copilot.enabled:
+        _register_copilot_tools(agent, config)
+
+    # --- Copilot: Phase 6 — status dashboard ---
+    status_aggregator = None
+    if config.copilot.enabled:
+        try:
+            from nanobot.copilot.status.aggregator import StatusAggregator
+            from nanobot.copilot.status.tool import StatusTool
+
+            status_aggregator = StatusAggregator(
+                db_path=str(db_path),
+                lm_studio_url=config.providers.vllm.api_base or "http://192.168.50.100:1234",
+                qdrant_url=config.copilot.qdrant_url,
+                redis_url=config.copilot.redis_url,
+                memory_manager=memory_manager,
+            )
+            agent.tools.register(StatusTool(status_aggregator))
+            console.print("[green]v[/green] Status dashboard enabled")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Status init failed: {e}[/yellow]")
+
+    # --- Copilot: Phase 7 — task queue ---
+    task_worker = None
+    if config.copilot.enabled:
+        try:
+            from nanobot.copilot.cost.db import migrate_phase7
+            _aio.run(migrate_phase7(db_path))
+
+            from nanobot.copilot.tasks.manager import TaskManager
+            from nanobot.copilot.tasks.tool import TaskTool
+            from nanobot.copilot.tasks.worker import TaskWorker
+
+            task_manager = TaskManager(db_path)
+            agent.tools.register(TaskTool(task_manager))
+
+            _task_model = config.copilot.resolved_task_model or None
+            task_worker = TaskWorker(
+                task_manager=task_manager,
+                execute_fn=lambda desc, sk, ch: agent.process_direct(
+                    desc, session_key=sk, channel=ch, model=_task_model,
+                ),
+                interval_s=config.copilot.task_worker_interval,
+            )
+            console.print("[green]v[/green] Task queue enabled")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Task queue init failed: {e}[/yellow]")
+
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
@@ -354,16 +700,87 @@ def gateway(
     async def on_heartbeat(prompt: str) -> str:
         """Execute heartbeat through the agent."""
         return await agent.process_direct(prompt, session_key="heartbeat")
-    
+
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
         on_heartbeat=on_heartbeat,
         interval_s=30 * 60,  # 30 minutes
         enabled=True
     )
+
+    # --- Copilot: Phase 8 — dream cycle + monitor + copilot heartbeat ---
+    dream_cycle = None
+    monitor_service = None
+    copilot_heartbeat = None
+
+    if config.copilot.enabled:
+        import asyncio as _aio
+        from nanobot.copilot.cost.db import migrate_phase8
+        db_path = Path(config.copilot.db_path)
+        _aio.run(migrate_phase8(db_path))
+
+        try:
+            from nanobot.copilot.dream.cycle import DreamCycle
+            from nanobot.copilot.dream.monitor import MonitorService
+            from nanobot.copilot.dream.heartbeat import CopilotHeartbeatService
+
+            async def _deliver_msg(channel, chat_id, content):
+                from nanobot.bus.events import OutboundMessage
+                await bus.publish_outbound(OutboundMessage(
+                    channel=channel, chat_id=chat_id, content=content,
+                ))
+
+            _dream_model = config.copilot.resolved_dream_model or None
+            dream_cycle = DreamCycle(
+                db_path=str(db_path),
+                memory_manager=memory_manager,
+                status_aggregator=status_aggregator,
+                execute_fn=lambda prompt: agent.process_direct(
+                    prompt, session_key="dream", model=_dream_model,
+                ),
+                backup_dir=config.copilot.backup_dir,
+                deliver_fn=_deliver_msg,
+                delivery_channel=config.copilot.monitor_channel,
+                delivery_chat_id=config.copilot.monitor_chat_id,
+            )
+
+            monitor_service = MonitorService(
+                status_aggregator=status_aggregator,
+                deliver_fn=_deliver_msg,
+                delivery_channel=config.copilot.monitor_channel,
+                delivery_chat_id=config.copilot.monitor_chat_id,
+                interval_s=config.copilot.monitor_interval,
+            )
+
+            _hb_model = config.copilot.resolved_heartbeat_model or None
+            copilot_heartbeat = CopilotHeartbeatService(
+                copilot_docs_dir=config.copilot.copilot_docs_dir,
+                execute_fn=lambda prompt: agent.process_direct(
+                    prompt, session_key="copilot_heartbeat", model=_hb_model,
+                ),
+                deliver_fn=_deliver_msg,
+                delivery_channel=config.copilot.monitor_channel,
+                delivery_chat_id=config.copilot.monitor_chat_id,
+                db_path=str(db_path),
+                interval_s=config.copilot.heartbeat_interval,
+            )
+            console.print("[green]v[/green] Dream cycle + monitor + heartbeat enabled")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Dream/monitor init failed: {e}[/yellow]")
     
+    # --- Copilot: voice transcriber ---
+    voice_transcriber = None
+    if config.copilot.enabled:
+        from nanobot.copilot.voice.transcriber import VoiceTranscriber
+        groq_key = config.providers.groq.api_key or None
+        voice_transcriber = VoiceTranscriber(groq_api_key=groq_key)
+        console.print("[green]✓[/green] Voice transcription enabled")
+
     # Create channel manager
-    channels = ChannelManager(config, bus, session_manager=session_manager)
+    channels = ChannelManager(
+        config, bus, session_manager=session_manager,
+        voice_transcriber=voice_transcriber,
+    )
     
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
@@ -380,17 +797,30 @@ def gateway(
         try:
             await cron.start()
             await heartbeat.start()
+            # Start copilot services
+            if task_worker:
+                await task_worker.start()
+            if monitor_service:
+                await monitor_service.start()
+            if copilot_heartbeat:
+                await copilot_heartbeat.start()
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
+            if copilot_heartbeat:
+                copilot_heartbeat.stop()
+            if monitor_service:
+                monitor_service.stop()
+            if task_worker:
+                task_worker.stop()
             heartbeat.stop()
             cron.stop()
             agent.stop()
             await channels.stop_all()
-    
+
     asyncio.run(run())
 
 
