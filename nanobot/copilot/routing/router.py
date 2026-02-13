@@ -1,5 +1,6 @@
 """RouterProvider — drop-in replacement for LiteLLMProvider with intelligent routing."""
 
+import time
 from typing import Any
 
 from loguru import logger
@@ -56,6 +57,7 @@ class RouterProvider(LLMProvider):
         self._big_model = big_model
         self._escalation_enabled = escalation_enabled
         self._escalation_marker = escalation_marker
+        self._private_mode_timeout = 1800  # 30 min default
 
     def get_default_model(self) -> str:
         return self._local_model
@@ -67,6 +69,7 @@ class RouterProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        session_metadata: dict[str, Any] | None = None,
     ) -> LLMResponse:
         # Extract last user message for classification
         message_text = ""
@@ -100,15 +103,23 @@ class RouterProvider(LLMProvider):
                     if isinstance(part, dict) and part.get("type") == "text":
                         token_estimate += len(part.get("text", "")) // 4
 
-        # Classify
-        decision = classify(
-            message_text=message_text,
-            has_images=has_images,
-            token_count=token_estimate,
-            local_model=self._local_model,
-            fast_model=self._fast_model,
-            big_model=self._big_model,
-        )
+        # Check private mode — force local if active
+        meta = session_metadata or {}
+        is_private = meta.get("private_mode", False)
+
+        if is_private:
+            decision = RouteDecision("local", "private_mode", self._local_model)
+            logger.info(f"Route: local (private_mode) → {self._local_model}")
+        else:
+            # Normal classify
+            decision = classify(
+                message_text=message_text,
+                has_images=has_images,
+                token_count=token_estimate,
+                local_model=self._local_model,
+                fast_model=self._fast_model,
+                big_model=self._big_model,
+            )
 
         # Build failover chain based on decision
         chain = self._build_chain(decision)
@@ -118,11 +129,11 @@ class RouterProvider(LLMProvider):
             f"{decision.model} | tokens≈{token_estimate} images={has_images}"
         )
 
-        # If routing to local and escalation is enabled, inject the
-        # escalation instruction into a copy of the messages so the local
-        # model knows it can request a stronger model.
+        # If routing to local and escalation is enabled (and NOT in private mode),
+        # inject the escalation instruction into a copy of the messages.
         call_messages = messages
-        if decision.target == "local" and self._escalation_enabled:
+        escalation_active = self._escalation_enabled and not is_private
+        if decision.target == "local" and escalation_active:
             call_messages = self._inject_escalation(messages)
 
         # Execute with failover
@@ -158,8 +169,9 @@ class RouterProvider(LLMProvider):
         # If the local model responded with the escalation marker, retry
         # with the big model using the *original* messages (no escalation
         # instruction — the big model doesn't need it).
+        # Disabled during private mode.
         if (
-            self._escalation_enabled
+            escalation_active
             and decision.target == "local"
             and response.content
             and response.content.strip().startswith(self._escalation_marker)
@@ -240,6 +252,28 @@ class RouterProvider(LLMProvider):
             break
 
         return chain
+
+    def check_private_mode_timeout(
+        self, session_metadata: dict[str, Any], timeout_seconds: int = 1800
+    ) -> str | None:
+        """Check if private mode should warn or expire.
+
+        Returns:
+            "warning" if within 2 min of timeout, "expired" if past timeout, None otherwise.
+        """
+        if not session_metadata.get("private_mode"):
+            return None
+
+        last_activity = session_metadata.get("last_user_message_at", 0)
+        if not last_activity:
+            return None
+
+        elapsed = time.time() - last_activity
+        if elapsed > timeout_seconds:
+            return "expired"
+        if elapsed > timeout_seconds - 120:  # Within 2 minutes of timeout
+            return "warning"
+        return None
 
     @staticmethod
     def _inject_escalation(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
