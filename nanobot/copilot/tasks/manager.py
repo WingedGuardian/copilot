@@ -197,6 +197,35 @@ class TaskManager:
             rows = await cur.fetchall()
             return [self._row_to_task(dict(r)) for r in rows]
 
+    async def get_stuck_tasks(self, threshold_minutes: int = 30) -> list[Task]:
+        """Get tasks that have been in_progress/active for longer than threshold."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # Look for tasks that have been active for too long
+            # Uses task_log to find when task entered active/in_progress state
+            cur = await db.execute(
+                """SELECT t.* FROM tasks t
+                   JOIN task_log tl ON t.id = tl.task_id
+                   WHERE t.status IN ('active', 'in_progress')
+                     AND tl.event = 'status_change'
+                     AND tl.details IN ('active', 'in_progress')
+                     AND tl.timestamp <= datetime('now', ? || ' minutes')
+                   ORDER BY tl.timestamp ASC""",
+                (f"-{threshold_minutes}",),
+            )
+            rows = await cur.fetchall()
+            return [self._row_to_task(dict(r)) for r in rows]
+
+    async def fail_stuck_tasks(self, threshold_minutes: int = 30) -> list[str]:
+        """Mark stuck tasks as failed and return their IDs."""
+        stuck = await self.get_stuck_tasks(threshold_minutes)
+        failed_ids: list[str] = []
+        for task in stuck:
+            await self.update_status(task.id, "failed")
+            logger.warning(f"Marked stuck task {task.id} '{task.title}' as failed")
+            failed_ids.append(task.id)
+        return failed_ids
+
     async def _log_event(
         self, task_id: str, event: str, details: str, db: aiosqlite.Connection | None = None
     ) -> None:
