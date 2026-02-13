@@ -1,19 +1,25 @@
 """Tool registry for dynamic tool management."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import Any, TYPE_CHECKING
 
 from nanobot.agent.tools.base import Tool
+
+if TYPE_CHECKING:
+    from nanobot.agent.safety.sanitizer import OutputSanitizer
 
 
 class ToolRegistry:
     """
     Registry for agent tools.
-    
+
     Allows dynamic registration and execution of tools.
     """
-    
-    def __init__(self):
+
+    def __init__(self, sanitizer: OutputSanitizer | None = None):
         self._tools: dict[str, Tool] = {}
+        self._sanitizer = sanitizer
     
     def register(self, tool: Tool) -> None:
         """Register a tool."""
@@ -57,7 +63,14 @@ class ToolRegistry:
             errors = tool.validate_params(params)
             if errors:
                 return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors)
-            return await tool.execute(**params)
+            result = await tool.execute(**params)
+
+            # Run output through sanitizer if configured
+            if self._sanitizer:
+                self._sanitizer.check(result)
+                # Flags are logged by the sanitizer; result is never blocked
+
+            return result
         except Exception as e:
             return f"Error executing {name}: {str(e)}"
     

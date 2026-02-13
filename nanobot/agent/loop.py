@@ -14,6 +14,7 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.agent.safety.sanitizer import OutputSanitizer
 from nanobot.agent.tools.secrets import SecretsProvider
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 from nanobot.agent.tools.message import MessageTool
@@ -69,10 +70,11 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self.secrets = SecretsProvider()
+        self.sanitizer = OutputSanitizer(secrets=self.secrets)
 
         self.context = extended_context or ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
-        self.tools = ToolRegistry()
+        self.tools = ToolRegistry(sanitizer=self.sanitizer)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
