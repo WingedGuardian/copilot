@@ -201,6 +201,15 @@ class CopilotConfig(BaseModel):
     n8n_url: str = "http://localhost:5678"
     browser_headless: bool = True
 
+    # Security: HTTP endpoint protection
+    http_deny_list: list[str] = Field(
+        default_factory=lambda: ["169.254.169.254", "metadata.google.internal"],
+        description="Hostnames/IPs blocked for SSRF protection",
+    )
+
+    # Security: private mode timeout (seconds of inactivity)
+    private_mode_timeout: int = 1800  # 30 minutes
+
     # Tasks
     task_worker_interval: int = 60
 
