@@ -240,3 +240,39 @@ async def migrate_phase8(db_path: str | Path) -> None:
         """)
         await db.commit()
     logger.info(f"Phase 8 migration complete in {db_path}")
+
+
+async def migrate_ironclaw(db_path: str | Path) -> None:
+    """IronClaw feature adoption: episodic FTS5 full-text search table.
+
+    Safe to call repeatedly.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        # FTS5 content table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS episodic_fts_content (
+                id INTEGER PRIMARY KEY,
+                text TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                importance REAL DEFAULT 0.5
+            )
+        """)
+        # FTS5 virtual table
+        try:
+            await db.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS episodic_fts USING fts5(
+                    text,
+                    session_key,
+                    timestamp UNINDEXED,
+                    importance UNINDEXED,
+                    content=episodic_fts,
+                    content_rowid='rowid'
+                )
+            """)
+        except Exception:
+            pass  # Table already exists
+
+        await db.commit()
+    logger.info(f"IronClaw migration complete in {db_path}")

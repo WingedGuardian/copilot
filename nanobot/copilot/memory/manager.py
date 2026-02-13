@@ -10,6 +10,7 @@ from loguru import logger
 
 from nanobot.copilot.memory.embedder import Embedder
 from nanobot.copilot.memory.episodic import Episode, EpisodicStore
+from nanobot.copilot.memory.fulltext import FullTextStore
 from nanobot.copilot.memory.working import WorkingMemory
 
 
@@ -26,6 +27,7 @@ class MemoryManager:
     ):
         self._embedder = embedder
         self._episodic = EpisodicStore(embedder, qdrant_url, dimensions=dimensions)
+        self._fts = FullTextStore(db_path)
         self._working = WorkingMemory(redis_url)
         self._db_path = str(db_path)
 
@@ -36,6 +38,10 @@ class MemoryManager:
             await self._episodic._ensure_client()
         except Exception as e:
             logger.warning(f"Qdrant init failed (degraded mode): {e}")
+        try:
+            await self._fts.ensure_table()
+        except Exception as e:
+            logger.warning(f"FTS5 init failed (degraded mode): {e}")
 
     async def remember_exchange(
         self, user_msg: str, assistant_msg: str, session_key: str
@@ -43,22 +49,38 @@ class MemoryManager:
         """Store a full user/assistant exchange as episodic memory."""
         combined = f"User: {user_msg}\nAssistant: {assistant_msg}"
         try:
-            return await self._episodic.store(
+            point_id = await self._episodic.store(
                 text=combined, session_key=session_key, role="exchange",
             )
         except Exception as e:
             logger.warning(f"Exchange storage failed: {e}")
-            return ""
+            point_id = ""
+
+        # Also write to FTS5 for keyword search
+        try:
+            await self._fts.store(combined, session_key)
+        except Exception as e:
+            logger.warning(f"FTS exchange storage failed: {e}")
+
+        return point_id
 
     async def remember_extractions(
         self, extractions: dict[str, Any], session_key: str
     ) -> list[str]:
-        """Store extractions to both Qdrant + SQLite structured items."""
+        """Store extractions to Qdrant + FTS5 + SQLite structured items."""
         ids = []
         try:
             ids = await self._episodic.store_extractions(extractions, session_key)
         except Exception as e:
             logger.warning(f"Extraction storage failed: {e}")
+
+        # Also write extractions to FTS5
+        for key in ("facts", "decisions", "constraints", "entities"):
+            for item in extractions.get(key, []):
+                try:
+                    await self._fts.store(item, session_key, importance=0.8)
+                except Exception:
+                    pass
 
         # Also upsert into SQLite structured items
         for key in ("facts", "decisions", "entities"):
@@ -76,13 +98,15 @@ class MemoryManager:
     async def recall(
         self, query: str, session_key: str, limit: int = 5
     ) -> list[Episode]:
-        """Check Redis cache first, then Qdrant."""
+        """Check Redis cache first, then hybrid search (Qdrant + FTS5)."""
         # Check Redis cache
         cached = await self._working.get_cached_recall(session_key)
         if cached:
             return [Episode(**ep) for ep in cached[:limit]]
 
-        episodes = await self._episodic.recall(query, limit=limit, session_key=session_key)
+        episodes = await self._episodic.recall_hybrid(
+            query, self._fts, limit=limit, session_key=session_key
+        )
 
         # Cache the results
         if episodes:
@@ -99,9 +123,11 @@ class MemoryManager:
     ) -> str:
         """Anticipate needed context and format as injection block.
 
-        Searches across all sessions for relevant memories.
+        Searches across all sessions using hybrid search.
         """
-        episodes = await self._episodic.recall_global(current_message, limit=limit)
+        episodes = await self._episodic.recall_hybrid(
+            current_message, self._fts, limit=limit, session_key=None
+        )
         if not episodes:
             return ""
 
