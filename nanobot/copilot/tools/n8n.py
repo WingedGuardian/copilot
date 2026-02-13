@@ -11,8 +11,13 @@ from nanobot.agent.tools.base import Tool
 class N8NTool(Tool):
     """Tool for triggering n8n workflows via webhooks."""
 
-    def __init__(self, base_url: str = "http://localhost:5678"):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:5678",
+        secrets: "SecretsProvider | None" = None,
+    ):
         self._base_url = base_url.rstrip("/")
+        self._secrets = secrets
 
     @property
     def name(self) -> str:
@@ -93,7 +98,10 @@ class N8NTool(Tool):
         """List registered n8n workflows."""
         import httpx
 
-        api_key = os.environ.get("N8N_API_KEY", "")
+        if self._secrets:
+            api_key = self._secrets.get("N8N_API_KEY")
+        else:
+            api_key = os.environ.get("N8N_API_KEY", "")
         headers = {}
         if api_key:
             headers["X-N8N-API-KEY"] = api_key

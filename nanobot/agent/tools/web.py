@@ -57,8 +57,18 @@ class WebSearchTool(Tool):
         "required": ["query"]
     }
     
-    def __init__(self, api_key: str | None = None, max_results: int = 5):
-        self.api_key = api_key or os.environ.get("BRAVE_API_KEY", "")
+    def __init__(
+        self,
+        api_key: str | None = None,
+        max_results: int = 5,
+        secrets: "SecretsProvider | None" = None,
+    ):
+        if api_key:
+            self.api_key = api_key
+        elif secrets:
+            self.api_key = secrets.get("BRAVE_API_KEY")
+        else:
+            self.api_key = os.environ.get("BRAVE_API_KEY", "")
         self.max_results = max_results
     
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
