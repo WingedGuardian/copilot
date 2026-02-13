@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,23 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
+
+
+@dataclass
+class SubagentInfo:
+    """Tracking info for a running subagent."""
+    task_id: str
+    label: str
+    started_at: float = field(default_factory=time.time)
+    last_activity: float = field(default_factory=time.time)
+
+    def touch(self) -> None:
+        """Update last_activity to now."""
+        self.last_activity = time.time()
+
+    @property
+    def idle_seconds(self) -> float:
+        return time.time() - self.last_activity
 
 
 class SubagentManager:
@@ -45,6 +64,7 @@ class SubagentManager:
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
+        self._subagent_info: dict[str, SubagentInfo] = {}
     
     async def spawn(
         self,
@@ -73,14 +93,22 @@ class SubagentManager:
             "chat_id": origin_chat_id,
         }
         
+        # Track subagent info
+        self._subagent_info[task_id] = SubagentInfo(
+            task_id=task_id, label=display_label
+        )
+
         # Create background task
         bg_task = asyncio.create_task(
             self._run_subagent(task_id, task, display_label, origin)
         )
         self._running_tasks[task_id] = bg_task
-        
+
         # Cleanup when done
-        bg_task.add_done_callback(lambda _: self._running_tasks.pop(task_id, None))
+        def _cleanup(_):
+            self._running_tasks.pop(task_id, None)
+            self._subagent_info.pop(task_id, None)
+        bg_task.add_done_callback(_cleanup)
         
         logger.info(f"Spawned subagent [{task_id}]: {display_label}")
         return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
@@ -131,7 +159,12 @@ class SubagentManager:
                     tools=tools.get_definitions(),
                     model=self.model,
                 )
-                
+
+                # Track activity on each LLM response
+                info = self._subagent_info.get(task_id)
+                if info:
+                    info.touch()
+
                 if response.has_tool_calls:
                     # Add assistant message with tool calls
                     tool_call_dicts = [
@@ -249,3 +282,28 @@ When you have completed the task, provide a clear summary of your findings or ac
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""
         return len(self._running_tasks)
+
+    def get_stuck_subagents(self, threshold_seconds: float = 600) -> list[SubagentInfo]:
+        """Return subagents that haven't had activity for longer than threshold.
+
+        Default: 10 minutes (600 seconds).
+        """
+        return [
+            info for info in self._subagent_info.values()
+            if info.idle_seconds > threshold_seconds
+        ]
+
+    async def cancel_stuck(self, threshold_seconds: float = 600) -> list[str]:
+        """Cancel stuck subagents and return their task IDs."""
+        stuck = self.get_stuck_subagents(threshold_seconds)
+        cancelled: list[str] = []
+        for info in stuck:
+            task = self._running_tasks.get(info.task_id)
+            if task and not task.done():
+                task.cancel()
+                logger.warning(
+                    f"Cancelled stuck subagent [{info.task_id}] '{info.label}' "
+                    f"(idle {info.idle_seconds:.0f}s)"
+                )
+                cancelled.append(info.task_id)
+        return cancelled

@@ -27,6 +27,7 @@ class ApprovalDecision:
     denied: bool = False
     reason: str = ""
     modified_args: dict[str, Any] | None = None
+    reroute_model: str = ""  # If set, re-route the turn to this model tier
 
     @property
     def modified(self) -> bool:
@@ -55,6 +56,10 @@ class ApprovalInterceptor:
         self._channel = approval_channel
         self._chat_id = approval_chat_id
         self._timeout = timeout
+
+    def set_route_context(self, target: str = "", reason: str = "") -> None:
+        """Set routing context on the rules engine for conditional approval."""
+        self._rules.set_route_context(target=target, reason=reason)
 
     async def check(self, tool_call: Any, msg: Any) -> ApprovalDecision:
         """Check if a tool call requires approval and handle the full flow.
@@ -87,12 +92,20 @@ class ApprovalInterceptor:
         )
 
         # Send approval request to user
-        approval_msg = (
-            f"[Approval Needed]\n"
-            f"Tool: {tool_name}\n"
-            f"Args: {args_brief}\n"
-            f"Reply: approve / deny / modify"
-        )
+        if required.reroute_on_deny:
+            # Consent-style prompt (e.g. local web search consent)
+            approval_msg = (
+                f"[Consent Needed]\n"
+                f"{required.reason}\n"
+                f"Reply: yes / no"
+            )
+        else:
+            approval_msg = (
+                f"[Approval Needed]\n"
+                f"Tool: {tool_name}\n"
+                f"Args: {args_brief}\n"
+                f"Reply: approve / deny / modify"
+            )
         await self._bus.publish_outbound(OutboundMessage(
             channel=self._channel,
             chat_id=chat_id,
@@ -131,6 +144,7 @@ class ApprovalInterceptor:
             )
 
         # Denied
+        reroute = required.reroute_on_deny if required.reroute_on_deny else ""
         if self._lesson_manager:
             await self._lesson_manager.create_lesson(
                 trigger_pattern=f"tool:{tool_name}",
@@ -139,7 +153,9 @@ class ApprovalInterceptor:
                 category="tool_use",
                 confidence=0.6,
             )
-        return ApprovalDecision(denied=True, reason=response.reason)
+        return ApprovalDecision(
+            denied=True, reason=response.reason, reroute_model=reroute
+        )
 
     def has_pending(self, session_key: str) -> bool:
         """Check if there's a pending approval for this session."""

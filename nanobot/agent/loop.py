@@ -14,6 +14,8 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.agent.safety.sanitizer import OutputSanitizer
+from nanobot.agent.tools.secrets import SecretsProvider
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
@@ -70,10 +72,12 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
-        
+        self.secrets = SecretsProvider()
+        self.sanitizer = OutputSanitizer(secrets=self.secrets)
+
         self.context = extended_context or ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
-        self.tools = ToolRegistry()
+        self.tools = ToolRegistry(sanitizer=self.sanitizer)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -113,7 +117,7 @@ class AgentLoop:
         ))
         
         # Web tools
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key))
+        self.tools.register(WebSearchTool(api_key=self.brave_api_key, secrets=self.secrets))
         self.tools.register(WebFetchTool())
         
         # Message tool
@@ -196,7 +200,7 @@ class AgentLoop:
         # Get or create session
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
-        
+
         # Handle slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
@@ -208,11 +212,46 @@ class AgentLoop:
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands")
-        
+
         # Consolidate memory before processing if session is too large
         if len(session.messages) > self.memory_window:
             await self._consolidate_memory(session)
-        
+
+        # Copilot: detect private mode commands and manage timeout
+        private_cmd = SessionManager.detect_private_mode_command(msg.content)
+        if private_cmd == "on":
+            session.activate_private_mode()
+            self.sessions.save(session)
+            logger.info(f"Private mode activated for {key}")
+        elif private_cmd == "off":
+            session.deactivate_private_mode()
+            self.sessions.save(session)
+            logger.info(f"Private mode deactivated for {key}")
+        elif private_cmd == "extend":
+            session.touch_activity()
+            self.sessions.save(session)
+            logger.info(f"Private mode extended for {key}")
+
+        if session.private_mode:
+            session.touch_activity()
+            # Check timeout (via router if available)
+            if hasattr(self.provider, 'check_private_mode_timeout'):
+                timeout_status = self.provider.check_private_mode_timeout(session.metadata)
+                if timeout_status == "expired" and private_cmd != "extend":
+                    session.deactivate_private_mode()
+                    self.sessions.save(session)
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Private mode ended due to inactivity. Back to normal routing.",
+                    ))
+                elif timeout_status == "warning":
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Private mode ending in 2 minutes. Say 'stay private' to extend.",
+                    ))
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
@@ -267,10 +306,12 @@ class AgentLoop:
         iteration = 0
         final_content = None
         tools_used: list[str] = []
-        
+        force_route = None  # Set when web search consent is denied → re-route
+        is_router = hasattr(self.provider, 'last_decision')
+
         while iteration < self.max_iterations:
             iteration += 1
-            
+
             # Copilot: check if context needs rebuilding before next LLM call
             if (
                 iteration > 1
@@ -281,15 +322,33 @@ class AgentLoop:
                     session, msg.content, channel=msg.channel, chat_id=msg.chat_id
                 )
 
-            # Call LLM
-            response = await self.provider.chat(
+            # Call LLM — pass router-specific params when available
+            chat_kwargs: dict[str, Any] = dict(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=self.model
+                model=self.model,
             )
-            
+            if is_router:
+                chat_kwargs["session_metadata"] = session.metadata
+                if force_route:
+                    chat_kwargs["force_route"] = force_route
+                    force_route = None
+            response = await self.provider.chat(**chat_kwargs)
+
+            # Copilot: set route context on approval interceptor
+            if self._approval_interceptor and is_router:
+                last_decision = self.provider.last_decision
+                if last_decision:
+                    self._approval_interceptor.set_route_context(
+                        target=last_decision.target,
+                        reason=last_decision.reason,
+                    )
+
             # Handle tool calls
             if response.has_tool_calls:
+                # Snapshot messages before adding tool calls (for possible re-route)
+                messages_snapshot = list(messages)
+
                 # Add assistant message with tool calls
                 tool_call_dicts = [
                     {
@@ -306,8 +365,9 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
-                
+
                 # Execute tools
+                reroute_target = None
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
@@ -317,6 +377,14 @@ class AgentLoop:
                     if self._approval_interceptor:
                         decision = await self._approval_interceptor.check(tool_call, msg)
                         if decision.denied:
+                            if decision.reroute_model:
+                                # Consent denied with re-route — discard tool calls
+                                reroute_target = decision.reroute_model
+                                logger.info(
+                                    f"Consent denied for {tool_call.name}, "
+                                    f"re-routing to {reroute_target}"
+                                )
+                                break
                             result = f"Action denied by user: {decision.reason}"
                             messages = self.context.add_tool_result(
                                 messages, tool_call.id, tool_call.name, result
@@ -337,6 +405,13 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+
+                # Re-route: restore messages and re-run with forced route
+                if reroute_target:
+                    messages = messages_snapshot
+                    force_route = reroute_target
+                    continue
+
                 # Interleaved CoT: reflect before next action
                 messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:

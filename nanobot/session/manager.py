@@ -1,6 +1,8 @@
 """Session management for conversation history."""
 
 import json
+import re
+import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9,6 +11,21 @@ from typing import Any
 from loguru import logger
 
 from nanobot.utils.helpers import ensure_dir, safe_filename
+
+# Phrases that activate private mode
+_PRIVATE_ON_PATTERNS = [
+    re.compile(r"\b(?:private\s+mode|keep\s+(?:this|it)\s+local|local\s+only|go\s+private)\b", re.I),
+]
+
+# Phrases that deactivate private mode
+_PRIVATE_OFF_PATTERNS = [
+    re.compile(r"\b(?:end\s+private\s+mode|exit\s+private|back\s+to\s+normal|normal\s+mode|stop\s+private)\b", re.I),
+]
+
+# Phrase to extend private mode during timeout warning
+_PRIVATE_EXTEND_PATTERNS = [
+    re.compile(r"\b(?:stay\s+private|keep\s+private|extend\s+private)\b", re.I),
+]
 
 
 @dataclass
@@ -52,6 +69,36 @@ class Session:
         # Convert to LLM format (just role and content)
         return [{"role": m["role"], "content": m["content"]} for m in recent]
     
+    @property
+    def private_mode(self) -> bool:
+        """Whether private mode is active for this session."""
+        return self.metadata.get("private_mode", False)
+
+    @property
+    def private_mode_since(self) -> float:
+        """Timestamp when private mode was activated (0 if not active)."""
+        return self.metadata.get("private_mode_since", 0.0)
+
+    @property
+    def last_user_message_at(self) -> float:
+        """Timestamp of the last user message activity."""
+        return self.metadata.get("last_user_message_at", 0.0)
+
+    def activate_private_mode(self) -> None:
+        """Enable private mode for this session."""
+        self.metadata["private_mode"] = True
+        self.metadata["private_mode_since"] = time.time()
+        self.metadata["last_user_message_at"] = time.time()
+
+    def deactivate_private_mode(self) -> None:
+        """Disable private mode for this session."""
+        self.metadata.pop("private_mode", None)
+        self.metadata.pop("private_mode_since", None)
+
+    def touch_activity(self) -> None:
+        """Update last user message timestamp (for private mode timeout)."""
+        self.metadata["last_user_message_at"] = time.time()
+
     def clear(self) -> None:
         """Clear all messages in the session."""
         self.messages = []
@@ -200,3 +247,21 @@ class SessionManager:
                 continue
         
         return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+
+    @staticmethod
+    def detect_private_mode_command(message: str) -> str | None:
+        """Detect private mode commands in user message.
+
+        Returns:
+            "on" if activating, "off" if deactivating, "extend" if extending, None otherwise.
+        """
+        for p in _PRIVATE_OFF_PATTERNS:
+            if p.search(message):
+                return "off"
+        for p in _PRIVATE_ON_PATTERNS:
+            if p.search(message):
+                return "on"
+        for p in _PRIVATE_EXTEND_PATTERNS:
+            if p.search(message):
+                return "extend"
+        return None

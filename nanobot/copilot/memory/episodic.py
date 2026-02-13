@@ -203,6 +203,48 @@ class EpisodicStore:
 
         return top
 
+    async def recall_hybrid(
+        self,
+        query: str,
+        fts_store: "FullTextStore",
+        limit: int = 5,
+        session_key: str | None = None,
+        min_score: float = 0.35,
+    ) -> list[Episode]:
+        """Hybrid recall: vector search + FTS5, combined via Reciprocal Rank Fusion."""
+        from nanobot.copilot.memory.fulltext import reciprocal_rank_fusion
+
+        # Run both searches with expanded candidate set
+        vector_results = await self.recall(
+            query, limit=limit * 2, session_key=session_key, min_score=min_score
+        )
+        fts_results = await fts_store.search(
+            query, limit=limit * 2, session_key=session_key
+        )
+
+        if not vector_results and not fts_results:
+            return []
+
+        combined = reciprocal_rank_fusion(vector_results, fts_results)
+
+        # Convert back to Episode objects
+        episodes: list[Episode] = []
+        for item in combined[:limit]:
+            if "episode" in item:
+                ep = item["episode"]
+                ep.score = item["score"]
+                episodes.append(ep)
+            else:
+                fts_r = item.get("fts_result")
+                episodes.append(Episode(
+                    id=str(fts_r.id) if fts_r else "fts",
+                    text=item["text"],
+                    session_key=fts_r.session_key if fts_r else "",
+                    timestamp=fts_r.timestamp if fts_r else 0.0,
+                    score=item["score"],
+                ))
+        return episodes
+
     async def recall_global(
         self, query: str, limit: int = 5, min_score: float = 0.40
     ) -> list[Episode]:

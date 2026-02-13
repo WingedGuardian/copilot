@@ -22,12 +22,15 @@ class Embedder:
         cloud_api_base: str | None = None,
         cloud_model: str = "text-embedding-3-small",
         cloud_dimensions: int | None = None,
+        secrets: "SecretsProvider | None" = None,
     ):
         self._api_base = api_base
         self._model = model
         self._dimensions = dimensions
 
-        # Cloud fallback config
+        # Cloud fallback config — prefer SecretsProvider if available
+        if not cloud_api_key and secrets:
+            cloud_api_key = secrets.get("OPENAI_API_KEY")
         self._cloud_api_key = cloud_api_key
         self._cloud_api_base = cloud_api_base  # None = default OpenAI endpoint
         self._cloud_model = cloud_model

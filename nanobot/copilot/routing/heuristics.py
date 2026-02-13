@@ -44,6 +44,16 @@ _DOWNGRADE_PATTERNS: list[re.Pattern] = [
     ),
 ]
 
+# Tool creation intent — user wants the agent to build a new tool.
+_TOOL_CREATION_PATTERNS: list[re.Pattern] = [
+    re.compile(
+        r"\b(?:create\s+a\s+tool|build\s+a\s+tool|make\s+a\s+tool"
+        r"|write\s+a\s+tool|generate\s+a\s+tool|new\s+tool\s+(?:for|that|to)"
+        r"|tool\s+builder|dynamic\s+tool)\b",
+        re.I,
+    ),
+]
+
 # Patterns that indicate complex tasks needing a stronger model.
 _COMPLEXITY_PATTERNS: list[re.Pattern] = [
     re.compile(r"```"),                          # Code blocks
@@ -66,18 +76,23 @@ def classify(
     local_model: str = "qwen2.5-14b-instruct",
     fast_model: str = "anthropic/claude-3-haiku-20240307",
     big_model: str = "anthropic/claude-sonnet-4-20250514",
+    has_tool_calls: bool = False,
+    tool_names: list[str] | None = None,
 ) -> RouteDecision:
     """Classify a message and decide which model tier to use.
 
     Rules are evaluated first-match-wins:
       1. Images → big (local models can't process images)
       2. Input > 4096 chars → big (long input needs strong model)
-      3. Explicit user upgrade intent → big
-      4. Explicit user downgrade intent → local
-      5. Conversation tokens > 3000 → fast (save context budget on cloud)
-      6. High-confidence lesson override → per lesson
-      7. Keyword/pattern complexity → big
-      8. Default → local
+      3. Tool creation intent → big (needs strong model to generate tools)
+      4. web_fetch in tool calls → big (website viewing needs strong model)
+      5. Explicit user upgrade intent → big
+      6. Explicit user downgrade intent → local
+      7. Conversation tokens > 3000 → fast (save context budget on cloud)
+      8. High-confidence lesson override → per lesson
+      9. Keyword/pattern complexity → big
+     10. Any tool use detected → fast minimum (escalate from local)
+     11. Default → local
     """
     # 1. Images
     if has_images:
@@ -87,21 +102,31 @@ def classify(
     if len(message_text) > 4096:
         return RouteDecision("big", "overflow", big_model)
 
-    # 3. Explicit upgrade — user wants the big model
+    # 3. Tool creation intent → big (needs strong model)
+    for pattern in _TOOL_CREATION_PATTERNS:
+        if pattern.search(message_text):
+            return RouteDecision("big", "tool_creation", big_model)
+
+    # 4. web_fetch in tool calls → big (website viewing)
+    active_tools = tool_names or []
+    if "web_fetch" in active_tools:
+        return RouteDecision("big", "web_fetch_tool", big_model)
+
+    # 5. Explicit upgrade — user wants the big model
     for pattern in _UPGRADE_PATTERNS:
         if pattern.search(message_text):
             return RouteDecision("big", "user_upgrade", big_model)
 
-    # 4. Explicit downgrade — user wants local/fast
+    # 6. Explicit downgrade — user wants local/fast
     for pattern in _DOWNGRADE_PATTERNS:
         if pattern.search(message_text):
             return RouteDecision("local", "user_downgrade", local_model)
 
-    # 5. High token accumulation
+    # 7. High token accumulation
     if token_count > 3000:
         return RouteDecision("fast", "token_accumulation", fast_model)
 
-    # 6. Lesson overrides
+    # 8. Lesson overrides
     if lessons:
         for lesson in lessons:
             confidence = lesson.get("confidence", 0)
@@ -114,10 +139,14 @@ def classify(
                 }.get(target, big_model)
                 return RouteDecision(target, "lesson", model)
 
-    # 7. Complexity heuristics
+    # 9. Complexity heuristics
     for pattern in _COMPLEXITY_PATTERNS:
         if pattern.search(message_text):
             return RouteDecision("big", "complexity", big_model)
 
-    # 8. Default → local
+    # 10. Any tool use → fast minimum (escalate from local to fast)
+    if has_tool_calls:
+        return RouteDecision("fast", "tool_use_minimum", fast_model)
+
+    # 11. Default → local
     return RouteDecision("local", "default", local_model)

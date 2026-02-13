@@ -17,6 +17,7 @@ class CopilotHeartbeatService:
     """Proactive assistant that executes tasks from heartbeat.md on a schedule.
 
     Runs during active hours only (default 7am-10pm).
+    Also monitors for stuck subagents and tasks each cycle.
     """
 
     def __init__(
@@ -29,6 +30,8 @@ class CopilotHeartbeatService:
         db_path: str = "",
         interval_s: int = 7200,
         active_hours: tuple[int, int] = (7, 22),
+        subagent_manager: "SubagentManager | None" = None,
+        task_manager: "TaskManager | None" = None,
     ):
         self._docs_dir = Path(copilot_docs_dir)
         self._execute_fn = execute_fn
@@ -38,6 +41,8 @@ class CopilotHeartbeatService:
         self._db_path = db_path
         self._interval = interval_s
         self._active_hours = active_hours
+        self._subagent_manager = subagent_manager
+        self._task_manager = task_manager
 
         self._running = False
         self._task: asyncio.Task | None = None
@@ -77,12 +82,17 @@ class CopilotHeartbeatService:
         if not heartbeat_path.exists():
             return
 
+        # Check for stuck subagents and tasks
+        stuck_report = await self._check_stuck_jobs()
+
         tasks, standing_instructions = self._parse_heartbeat_md(heartbeat_path)
-        if not tasks:
+        if not tasks and not stuck_report:
             return
 
         start = time.time()
         results = []
+        if stuck_report:
+            results.append(stuck_report)
 
         for task_prompt in tasks:
             if not self._execute_fn:
@@ -127,6 +137,30 @@ class CopilotHeartbeatService:
             standing = match.group(1).strip()
 
         return tasks, standing
+
+    async def _check_stuck_jobs(self) -> str:
+        """Check for and handle stuck subagents and tasks. Returns report string."""
+        parts: list[str] = []
+
+        # Check stuck subagents (idle > 10 min)
+        if self._subagent_manager:
+            try:
+                cancelled = await self._subagent_manager.cancel_stuck(threshold_seconds=600)
+                if cancelled:
+                    parts.append(f"Cancelled {len(cancelled)} stuck subagent(s): {cancelled}")
+            except Exception as e:
+                logger.warning(f"Stuck subagent check failed: {e}")
+
+        # Check stuck tasks (in_progress > 30 min)
+        if self._task_manager:
+            try:
+                failed = await self._task_manager.fail_stuck_tasks(threshold_minutes=30)
+                if failed:
+                    parts.append(f"Marked {len(failed)} stuck task(s) as failed: {failed}")
+            except Exception as e:
+                logger.warning(f"Stuck task check failed: {e}")
+
+        return " | ".join(parts) if parts else ""
 
     async def _log(self, checked: int, with_results: int, duration_ms: int) -> None:
         """Log heartbeat run to database."""
