@@ -8,6 +8,7 @@ from nanobot.agent.tools.base import Tool
 
 if TYPE_CHECKING:
     from nanobot.agent.safety.sanitizer import OutputSanitizer
+    from nanobot.agent.tools.dynamic import DynamicTool
 
 
 class ToolRegistry:
@@ -74,6 +75,25 @@ class ToolRegistry:
         except Exception as e:
             return f"Error executing {name}: {str(e)}"
     
+    def register_dynamic(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        code: str,
+    ) -> DynamicTool:
+        """Create and register a DynamicTool in one step."""
+        from nanobot.agent.tools.dynamic import DynamicTool
+
+        tool = DynamicTool(
+            tool_name=name,
+            tool_description=description,
+            tool_parameters=parameters,
+            code=code,
+        )
+        self.register(tool)
+        return tool
+
     @property
     def tool_names(self) -> list[str]:
         """Get list of registered tool names."""

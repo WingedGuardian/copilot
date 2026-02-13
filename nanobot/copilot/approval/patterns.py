@@ -56,6 +56,10 @@ DEFAULT_APPROVAL_PATTERNS: dict[str, dict[str, Any]] = {
         "description": "AWS write operation",
         "severity": "high",
     },
+    "tool_builder": {
+        "description": "Create a new executable tool at runtime",
+        "severity": "high",
+    },
 }
 
 
