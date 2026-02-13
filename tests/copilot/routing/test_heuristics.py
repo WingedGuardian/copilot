@@ -151,6 +151,55 @@ def test_priority_order():
         has_images=False,
         token_count=100,
     )
-    # Downgrade intent (rule 4) beats complexity (rule 7)
+    # Downgrade intent (rule 6) beats complexity (rule 9)
     assert decision.target == "local"
     assert decision.reason == "user_downgrade"
+
+
+def test_tool_creation_routes_to_big():
+    """'create a tool' routes to big model."""
+    cases = [
+        "create a tool for parsing JSON",
+        "build a tool that converts timestamps",
+        "make a tool to format markdown",
+    ]
+    for text in cases:
+        decision = classify(text, has_images=False, token_count=100)
+        assert decision.target == "big", f"Failed for: {text}"
+        assert decision.reason == "tool_creation"
+
+
+def test_web_fetch_tool_routes_to_big():
+    """web_fetch in tool calls routes to big model."""
+    decision = classify(
+        "check that website",
+        has_images=False,
+        token_count=100,
+        tool_names=["web_fetch"],
+    )
+    assert decision.target == "big"
+    assert decision.reason == "web_fetch_tool"
+
+
+def test_tool_use_escalates_to_fast():
+    """Any tool use routes to fast (minimum), not local."""
+    decision = classify(
+        "hello",
+        has_images=False,
+        token_count=100,
+        has_tool_calls=True,
+    )
+    assert decision.target == "fast"
+    assert decision.reason == "tool_use_minimum"
+
+
+def test_tool_use_doesnt_override_big():
+    """Tool use minimum doesn't downgrade from big to fast."""
+    decision = classify(
+        "think hard about this code",
+        has_images=False,
+        token_count=100,
+        has_tool_calls=True,
+    )
+    # user_upgrade takes priority over tool_use_minimum
+    assert decision.target == "big"
