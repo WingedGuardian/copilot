@@ -195,7 +195,42 @@ class AgentLoop:
 
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
-        
+
+        # Copilot: detect private mode commands and manage timeout
+        private_cmd = SessionManager.detect_private_mode_command(msg.content)
+        if private_cmd == "on":
+            session.activate_private_mode()
+            self.sessions.save(session)
+            logger.info(f"Private mode activated for {msg.session_key}")
+        elif private_cmd == "off":
+            session.deactivate_private_mode()
+            self.sessions.save(session)
+            logger.info(f"Private mode deactivated for {msg.session_key}")
+        elif private_cmd == "extend":
+            session.touch_activity()
+            self.sessions.save(session)
+            logger.info(f"Private mode extended for {msg.session_key}")
+
+        if session.private_mode:
+            session.touch_activity()
+            # Check timeout (via router if available)
+            if hasattr(self.provider, 'check_private_mode_timeout'):
+                timeout_status = self.provider.check_private_mode_timeout(session.metadata)
+                if timeout_status == "expired" and private_cmd != "extend":
+                    session.deactivate_private_mode()
+                    self.sessions.save(session)
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Private mode ended due to inactivity. Back to normal routing.",
+                    ))
+                elif timeout_status == "warning":
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Private mode ending in 2 minutes. Say 'stay private' to extend.",
+                    ))
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):

@@ -25,6 +25,15 @@ _BLOCKED_BUILTINS = frozenset({
     "input", "print",  # print is useless in tool context; input blocks
 })
 
+# Dunder attributes that enable sandbox escape via MRO chain traversal.
+# e.g. ().__class__.__bases__[0].__subclasses__() can reach os._wrap_close
+_BLOCKED_DUNDER_ATTRS = frozenset({
+    "__class__", "__bases__", "__subclasses__", "__mro__",
+    "__globals__", "__code__", "__builtins__", "__import__",
+    "__loader__", "__spec__", "__qualname__", "__func__",
+    "__self__", "__wrapped__", "__closure__",
+})
+
 # Default execution timeout (seconds) and output limit (bytes).
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_OUTPUT_LIMIT = 50_000  # 50 KB
@@ -71,6 +80,11 @@ def validate_code(code: str) -> list[str]:
             elif isinstance(func, ast.Attribute) and func.attr in _BLOCKED_BUILTINS:
                 errors.append(f"Blocked call: .{func.attr}()")
 
+        # Check for dunder attribute access (MRO chain sandbox escape)
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _BLOCKED_DUNDER_ATTRS:
+                errors.append(f"Blocked attribute: .{node.attr}")
+
     return errors
 
 
@@ -88,7 +102,7 @@ def _build_safe_globals() -> dict[str, Any]:
         "issubclass", "iter", "len", "list", "map", "max",
         "min", "next", "oct", "ord", "pow", "range", "repr",
         "reversed", "round", "set", "slice", "sorted", "str",
-        "sum", "tuple", "type", "zip",
+        "sum", "tuple", "zip",
     }
     for name in allowed:
         if hasattr(builtins, name):

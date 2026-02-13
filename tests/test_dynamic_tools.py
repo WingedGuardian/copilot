@@ -63,6 +63,29 @@ def test_open_blocked():
     assert len(errors) > 0
 
 
+def test_mro_chain_escape_blocked():
+    """MRO chain traversal for sandbox escape is blocked."""
+    # Classic CPython sandbox escape via __subclasses__
+    code = "result = str(().__class__.__bases__[0].__subclasses__())"
+    errors = validate_code(code)
+    assert len(errors) >= 1
+    assert any("__class__" in e or "__bases__" in e or "__subclasses__" in e for e in errors)
+
+
+def test_dunder_globals_blocked():
+    """__globals__ access is blocked."""
+    code = "result = str(some_func.__globals__)"
+    errors = validate_code(code)
+    assert any("__globals__" in e for e in errors)
+
+
+def test_dunder_code_blocked():
+    """__code__ access is blocked."""
+    code = "result = some_func.__code__"
+    errors = validate_code(code)
+    assert any("__code__" in e for e in errors)
+
+
 # --- DynamicTool execution ---
 
 
