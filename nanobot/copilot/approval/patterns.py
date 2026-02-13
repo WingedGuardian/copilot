@@ -65,6 +65,7 @@ class ApprovalRequired:
 
     reason: str
     severity: str  # "standard" or "high"
+    reroute_on_deny: str = ""  # Model tier to re-route to if denied (e.g. "fast")
 
 
 class RulesEngine:
@@ -72,6 +73,15 @@ class RulesEngine:
 
     def __init__(self, db_path: str | Path):
         self._db_path = str(db_path)
+        self._route_context: dict[str, str] = {}
+
+    def set_route_context(self, target: str = "", reason: str = "") -> None:
+        """Set routing context for conditional approval rules (per-turn)."""
+        self._route_context = {"target": target, "reason": reason}
+
+    def clear_route_context(self) -> None:
+        """Clear routing context."""
+        self._route_context = {}
 
     async def check(
         self, tool_name: str, tool_args: dict[str, Any]
@@ -82,6 +92,17 @@ class RulesEngine:
         """
         # 1. Auto-approve known read-only tools
         if tool_name in AUTO_APPROVE:
+            # Conditional: web_search on auto-local requires consent
+            if tool_name == "web_search" and self._requires_web_search_consent():
+                query = tool_args.get("query", "")
+                return ApprovalRequired(
+                    reason=(
+                        f"Local model wants to search: '{query[:100]}'. "
+                        "Allow? (yes = keep local, no = use cloud)"
+                    ),
+                    severity="standard",
+                    reroute_on_deny="fast",
+                )
             return None
 
         # 2. Check dynamic rules from DB
@@ -177,6 +198,23 @@ class RulesEngine:
                 )
 
         return None  # No matching dynamic rule — fall through
+
+    def _requires_web_search_consent(self) -> bool:
+        """Web search requires consent when auto-routed to local (not private mode).
+
+        Returns False (no consent) when:
+        - No route context is set (non-copilot / standalone mode)
+        - Route target is not local (cloud handles it fine)
+        - User explicitly chose local (private_mode or user_downgrade)
+        """
+        target = self._route_context.get("target", "")
+        reason = self._route_context.get("reason", "")
+        if target != "local":
+            return False
+        # Explicit user choices — no consent needed
+        if reason in ("private_mode", "user_downgrade"):
+            return False
+        return True
 
     @staticmethod
     def _eval_condition(condition: str, args: dict[str, Any]) -> bool:

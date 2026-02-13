@@ -58,9 +58,15 @@ class RouterProvider(LLMProvider):
         self._escalation_enabled = escalation_enabled
         self._escalation_marker = escalation_marker
         self._private_mode_timeout = 1800  # 30 min default
+        self._last_decision: RouteDecision | None = None
 
     def get_default_model(self) -> str:
         return self._local_model
+
+    @property
+    def last_decision(self) -> RouteDecision | None:
+        """The routing decision from the most recent chat() call."""
+        return self._last_decision
 
     async def chat(
         self,
@@ -70,7 +76,60 @@ class RouterProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         session_metadata: dict[str, Any] | None = None,
+        force_route: str | None = None,
     ) -> LLMResponse:
+        # --- Forced re-route (e.g. after web search consent denial) ---
+        if force_route:
+            model_map = {
+                "local": self._local_model,
+                "fast": self._fast_model,
+                "big": self._big_model,
+            }
+            forced_model = model_map.get(force_route, self._fast_model)
+            decision = RouteDecision(force_route, "consent_reroute", forced_model)
+            self._last_decision = decision
+            logger.info(f"Route: {force_route} (consent_reroute) → {forced_model}")
+
+            chain = self._build_chain(decision)
+            try:
+                response, tier, latency_ms = await self._failover.try_providers(
+                    chain=chain,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            except RuntimeError as e:
+                logger.error(f"Forced re-route failed: {e}")
+                return LLMResponse(
+                    content="I'm having trouble connecting right now. Please try again.",
+                    finish_reason="error",
+                    model_used="none",
+                )
+
+            tokens_in = response.usage.get("prompt_tokens", 0)
+            tokens_out = response.usage.get("completion_tokens", 0)
+            cost = self._cost_logger.calculate_cost(tier.model, tokens_in, tokens_out)
+            await self._cost_logger.log_route(
+                input_length=0,
+                has_images=False,
+                routed_to=decision.target,
+                provider=tier.name,
+                model_used=tier.model,
+                route_reason=decision.reason,
+                success=True,
+                latency_ms=latency_ms,
+                cost_usd=cost,
+            )
+            if tokens_in or tokens_out:
+                await self._cost_logger.log_call(
+                    model=tier.model,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    cost_usd=cost,
+                )
+            return response
+
         # Extract last user message for classification
         message_text = ""
         has_images = False
@@ -120,6 +179,8 @@ class RouterProvider(LLMProvider):
                 fast_model=self._fast_model,
                 big_model=self._big_model,
             )
+
+        self._last_decision = decision
 
         # Build failover chain based on decision
         chain = self._build_chain(decision)

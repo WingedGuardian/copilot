@@ -249,10 +249,12 @@ class AgentLoop:
         # Agent loop
         iteration = 0
         final_content = None
-        
+        force_route = None  # Set when web search consent is denied → re-route
+        is_router = hasattr(self.provider, 'last_decision')
+
         while iteration < self.max_iterations:
             iteration += 1
-            
+
             # Copilot: check if context needs rebuilding before next LLM call
             if (
                 iteration > 1
@@ -263,15 +265,33 @@ class AgentLoop:
                     session, msg.content, channel=msg.channel, chat_id=msg.chat_id
                 )
 
-            # Call LLM
-            response = await self.provider.chat(
+            # Call LLM — pass router-specific params when available
+            chat_kwargs: dict[str, Any] = dict(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=self.model
+                model=self.model,
             )
-            
+            if is_router:
+                chat_kwargs["session_metadata"] = session.metadata
+                if force_route:
+                    chat_kwargs["force_route"] = force_route
+                    force_route = None
+            response = await self.provider.chat(**chat_kwargs)
+
+            # Copilot: set route context on approval interceptor
+            if self._approval_interceptor and is_router:
+                last_decision = self.provider.last_decision
+                if last_decision:
+                    self._approval_interceptor.set_route_context(
+                        target=last_decision.target,
+                        reason=last_decision.reason,
+                    )
+
             # Handle tool calls
             if response.has_tool_calls:
+                # Snapshot messages before adding tool calls (for possible re-route)
+                messages_snapshot = list(messages)
+
                 # Add assistant message with tool calls
                 tool_call_dicts = [
                     {
@@ -288,8 +308,9 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
-                
+
                 # Execute tools
+                reroute_target = None
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
@@ -298,6 +319,14 @@ class AgentLoop:
                     if self._approval_interceptor:
                         decision = await self._approval_interceptor.check(tool_call, msg)
                         if decision.denied:
+                            if decision.reroute_model:
+                                # Consent denied with re-route — discard tool calls
+                                reroute_target = decision.reroute_model
+                                logger.info(
+                                    f"Consent denied for {tool_call.name}, "
+                                    f"re-routing to {reroute_target}"
+                                )
+                                break
                             result = f"Action denied by user: {decision.reason}"
                             messages = self.context.add_tool_result(
                                 messages, tool_call.id, tool_call.name, result
@@ -318,6 +347,12 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+
+                # Re-route: restore messages and re-run with forced route
+                if reroute_target:
+                    messages = messages_snapshot
+                    force_route = reroute_target
+                    continue
             else:
                 # No tool calls, we're done
                 final_content = response.content
