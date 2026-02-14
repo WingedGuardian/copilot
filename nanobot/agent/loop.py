@@ -59,9 +59,12 @@ class AgentLoop:
         satisfaction_detector: "SatisfactionDetector | None" = None,
         memory_manager: "MemoryManager | None" = None,
         copilot_config: "CopilotConfig | None" = None,
+        llm_timeout: int = 120,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
+        self._llm_timeout = llm_timeout
+        self._tracked_tasks: set[asyncio.Task] = set()
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
@@ -98,7 +101,23 @@ class AgentLoop:
         self._copilot_config = copilot_config
 
         self._running = False
+        # Phase 4: Message UX
+        self._processing_sessions: dict[str, float] = {}  # session_key -> start_time
+        self._notified_sessions: set[str] = set()  # sessions already notified about queue
+        self._ack_delay: float = 2.0
+        self._coalesce_window: float = 0.5
         self._register_default_tools()
+
+    def _track_task(self, coro, name: str = "unnamed") -> asyncio.Task:
+        """Create a tracked task that logs exceptions on completion."""
+        task = asyncio.create_task(coro, name=name)
+        self._tracked_tasks.add(task)
+        def _done(t: asyncio.Task):
+            self._tracked_tasks.discard(t)
+            if not t.cancelled() and t.exception():
+                logger.error(f"Background task '{t.get_name()}' failed: {t.exception()}")
+        task.add_done_callback(_done)
+        return task
     
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -145,19 +164,65 @@ class AgentLoop:
                     timeout=1.0
                 )
                 
+                # 4B: Message coalescing — wait briefly and combine messages from same session
+                await asyncio.sleep(self._coalesce_window)
+                extra_msgs = []
+                while self.bus.inbound_size > 0:
+                    try:
+                        peek = await asyncio.wait_for(self.bus.consume_inbound(), timeout=0.05)
+                        if peek.session_key == msg.session_key and not peek.media:
+                            extra_msgs.append(peek)
+                        else:
+                            # Different session — put it back conceptually by re-publishing
+                            await self.bus.publish_inbound(peek)
+                            break
+                    except asyncio.TimeoutError:
+                        break
+                if extra_msgs:
+                    # Combine: latest message first, then earlier ones
+                    combined = [m.content for m in reversed(extra_msgs)] + [msg.content]
+                    msg.content = "\n---\n".join(combined)
+                    logger.info(f"Coalesced {len(extra_msgs) + 1} messages for {msg.session_key}")
+
+                # 4A: Delayed processing acknowledgment (WhatsApp uses native
+                # composing presence instead of a text "..." message)
+                ack_task = None
+
+                # 4C: Queue notification — tell user if we're busy
+                session_key = msg.session_key
+                if session_key in self._processing_sessions and session_key not in self._notified_sessions:
+                    if self.bus.inbound_size > 0:
+                        self._notified_sessions.add(session_key)
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=msg.channel, chat_id=msg.chat_id,
+                            content="Got your message, finishing up current task first.",
+                        ))
+
+                self._processing_sessions[session_key] = asyncio.get_event_loop().time()
+
                 # Process it
                 try:
                     response = await self._process_message(msg)
+                    # Cancel ack if we responded fast enough
+                    if ack_task and not ack_task.done():
+                        ack_task.cancel()
                     if response:
                         await self.bus.publish_outbound(response)
                 except Exception as e:
+                    if ack_task and not ack_task.done():
+                        ack_task.cancel()
                     logger.error(f"Error processing message: {e}")
+                    from nanobot.copilot.alerting.bus import get_alert_bus
+                    await get_alert_bus().alert("agent", "medium", f"Message processing error: {e}", "process_error")
                     # Send error response
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel,
                         chat_id=msg.chat_id,
                         content=f"Sorry, I encountered an error: {str(e)}"
                     ))
+                finally:
+                    self._processing_sessions.pop(session_key, None)
+                    self._notified_sessions.discard(session_key)
             except asyncio.TimeoutError:
                 continue
     
@@ -193,8 +258,9 @@ class AgentLoop:
         if self._satisfaction_detector:
             signal = self._satisfaction_detector.detect_regex(msg.content)
             if signal:
-                asyncio.create_task(
-                    self._satisfaction_detector.handle_signal(signal, msg.session_key)
+                self._track_task(
+                    self._satisfaction_detector.handle_signal(signal, msg.session_key),
+                    name="satisfaction_signal",
                 )
 
         # Get or create session
@@ -216,6 +282,41 @@ class AgentLoop:
         # Consolidate memory before processing if session is too large
         if len(session.messages) > self.memory_window:
             await self._consolidate_memory(session)
+
+        # Copilot: detect alert commands
+        if self._copilot_config:
+            from nanobot.copilot.alerting.commands import detect_alert_command
+            alert_cmd = detect_alert_command(msg.content)
+            if alert_cmd:
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                ab = get_alert_bus()
+                if alert_cmd == "less":
+                    new_h = min(ab._dedup_seconds / 3600 * 2, 24.0)
+                    ab.set_frequency(new_h)
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                          content=f"Alerts set to every {new_h:.0f} hours.")
+                elif alert_cmd == "more":
+                    new_h = max(ab._dedup_seconds / 3600 / 2, 1.0)
+                    ab.set_frequency(new_h)
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                          content=f"Alerts set to every {new_h:.0f} hours.")
+                elif alert_cmd == "mute":
+                    import time as _time
+                    mute_h = self._copilot_config.alert_mute_hours
+                    ab.mute_until(_time.time() + mute_h * 3600)
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                          content=f"Alerts muted for {mute_h:.0f} hours.")
+                elif alert_cmd == "unmute":
+                    ab.unmute()
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                          content="Alerts resumed.")
+                elif alert_cmd == "status":
+                    cfg = ab.get_config()
+                    status = f"Alert frequency: every {cfg['dedup_hours']}h"
+                    if cfg["muted"]:
+                        status += f" (muted)"
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                          content=status)
 
         # Copilot: detect private mode commands and manage timeout
         private_cmd = SessionManager.detect_private_mode_command(msg.content)
@@ -333,7 +434,12 @@ class AgentLoop:
                 if force_route:
                     chat_kwargs["force_route"] = force_route
                     force_route = None
-            response = await self.provider.chat(**chat_kwargs)
+            try:
+                response = await asyncio.wait_for(self.provider.chat(**chat_kwargs), timeout=self._llm_timeout)
+            except asyncio.TimeoutError:
+                logger.warning(f"LLM call timed out after {self._llm_timeout}s in agent loop")
+                final_content = "I'm sorry, the response timed out. Please try again."
+                break
 
             # Copilot: set route context on approval interceptor
             if self._approval_interceptor and is_router:
@@ -397,10 +503,10 @@ class AgentLoop:
 
                     # Copilot: audit logging
                     if self._copilot_config:
-                        asyncio.ensure_future(self._audit_log(
+                        self._track_task(self._audit_log(
                             msg.session_key, tool_call.name, args_str[:500],
                             str(result)[:500],
-                        ))
+                        ), name="audit_log")
 
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
@@ -443,8 +549,9 @@ class AgentLoop:
 
         # Copilot: store exchange in memory (async, never blocks response)
         if self._memory_manager:
-            asyncio.create_task(
-                self._memory_manager.remember_exchange(msg.content, final_content, session.key)
+            self._track_task(
+                self._memory_manager.remember_exchange(msg.content, final_content, session.key),
+                name="memory_remember_exchange",
             )
 
         return OutboundMessage(
@@ -505,12 +612,20 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model
-            )
-            
+            try:
+                response = await asyncio.wait_for(
+                    self.provider.chat(
+                        messages=messages,
+                        tools=self.tools.get_definitions(),
+                        model=self.model
+                    ),
+                    timeout=self._llm_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"LLM call timed out after {self._llm_timeout}s in system message loop")
+                final_content = "I'm sorry, the response timed out. Please try again."
+                break
+
             if response.has_tool_calls:
                 tool_call_dicts = [
                     {
@@ -595,12 +710,15 @@ class AgentLoop:
 Respond with ONLY valid JSON, no markdown fences."""
 
         try:
-            response = await self.provider.chat(
-                messages=[
-                    {"role": "system", "content": "You are a memory consolidation agent. Respond only with valid JSON."},
-                    {"role": "user", "content": prompt},
-                ],
-                model=self.model,
+            response = await asyncio.wait_for(
+                self.provider.chat(
+                    messages=[
+                        {"role": "system", "content": "You are a memory consolidation agent. Respond only with valid JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=self.model,
+                ),
+                timeout=self._llm_timeout,
             )
             text = (response.content or "").strip()
             if text.startswith("```"):
@@ -616,6 +734,9 @@ Respond with ONLY valid JSON, no markdown fences."""
             session.messages = session.messages[-keep_count:] if keep_count else []
             self.sessions.save(session)
             logger.info(f"Memory consolidation done, session trimmed to {len(session.messages)} messages")
+        except asyncio.TimeoutError:
+            logger.warning(f"Memory consolidation LLM call timed out after {self._llm_timeout}s")
+            return
         except Exception as e:
             logger.error(f"Memory consolidation failed: {e}")
 

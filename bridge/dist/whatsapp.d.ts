@@ -27,5 +27,7 @@ export declare class WhatsAppClient {
     connect(): Promise<void>;
     private extractMessageContent;
     sendMessage(to: string, text: string): Promise<void>;
+    markRead(jid: string, messageIds: string[]): Promise<void>;
+    sendPresence(jid: string, type: 'composing' | 'paused'): Promise<void>;
     disconnect(): Promise<void>;
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, TYPE_CHECKING
 
 from loguru import logger
@@ -33,6 +34,9 @@ class McpManager:
         self.configs: dict[str, McpServerConfig] = {}
         self._clients: dict[str, McpClient] = {}
         self._registered_tools: dict[str, list[str]] = {}  # server → tool names
+        self._health_task: asyncio.Task | None = None
+        self._max_reconnects: int = 5
+        self._reconnect_counts: dict[str, int] = {}
 
         for name, cfg_dict in mcp_config.items():
             self.configs[name] = McpServerConfig.from_dict(name, cfg_dict)
@@ -54,9 +58,52 @@ class McpManager:
                 logger.info(f"MCP: {name} connected, {count} tools registered")
             except Exception as e:
                 logger.warning(f"MCP: failed to connect to {name}: {e}")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("mcp", "high", f"MCP server '{name}' connection failed: {e}", "connect_failed")
                 results[name] = 0
 
         return results
+
+    async def start_health_loop(self, interval: float = 30.0) -> None:
+        """Start background health check loop."""
+        self._health_task = asyncio.create_task(self._health_loop(interval))
+
+    async def _health_loop(self, interval: float = 30.0) -> None:
+        """Check server health every interval seconds, reconnect dead ones."""
+        while True:
+            await asyncio.sleep(interval)
+            for name, client in list(self._clients.items()):
+                if not client.connected:
+                    count = self._reconnect_counts.get(name, 0)
+                    if count >= self._max_reconnects:
+                        logger.error(f"MCP: {name} exceeded max reconnects ({self._max_reconnects})")
+                        continue
+                    backoff = min(2 ** count, 300)
+                    self._reconnect_counts[name] = count + 1
+                    logger.warning(f"MCP: {name} disconnected, reconnecting (attempt {count + 1}) after {backoff}s backoff")
+                    await asyncio.sleep(backoff)
+                    try:
+                        await self.disconnect(name)
+                        new_client = McpClient(self.configs[name])
+                        await new_client.connect()
+                        self._clients[name] = new_client
+                        await self._register_tools_from_client(name, new_client)
+                        self._reconnect_counts[name] = 0
+                        logger.info(f"MCP: {name} reconnected successfully")
+                    except Exception as e:
+                        logger.error(f"MCP: {name} reconnect failed: {e}")
+                        from nanobot.copilot.alerting.bus import get_alert_bus
+                        await get_alert_bus().alert("mcp", "medium", f"MCP server '{name}' reconnect failed: {e}", "reconnect_failed")
+
+    async def stop_health_loop(self) -> None:
+        """Stop the health check loop."""
+        if self._health_task:
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except asyncio.CancelledError:
+                pass
+            self._health_task = None
 
     async def _register_tools_from_client(
         self, server_name: str, client: McpClient

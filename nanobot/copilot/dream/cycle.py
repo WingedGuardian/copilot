@@ -112,6 +112,23 @@ class DreamCycle:
         except Exception as e:
             report.errors.append(f"monitor: {e}")
 
+        # Job 6: Reconcile memory stores (Qdrant vs FTS5)
+        try:
+            reconciled = await self._reconcile_memory_stores()
+            if reconciled:
+                report.items_pruned += reconciled
+        except Exception as e:
+            report.errors.append(f"reconcile: {e}")
+            logger.error(f"Dream reconcile failed: {e}")
+
+        # Job 7: Cleanup zero vectors
+        try:
+            cleaned = await self._cleanup_zero_vectors()
+            if cleaned:
+                report.items_pruned += cleaned
+        except Exception as e:
+            report.errors.append(f"zero_vectors: {e}")
+
         report.duration_ms = int((time.time() - start) * 1000)
 
         # Log to DB
@@ -123,6 +140,8 @@ class DreamCycle:
                 await self._deliver(self._channel, self._chat_id, report.to_summary())
             except Exception as e:
                 logger.warning(f"Dream report delivery failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("dream", "medium", f"Dream report delivery failed: {e}", "delivery_failed")
 
         logger.info(f"Dream cycle complete in {report.duration_ms}ms")
         return report
@@ -205,7 +224,14 @@ class DreamCycle:
 
         # Copy SQLite
         if self._db_path and Path(self._db_path).exists():
-            shutil.copy2(self._db_path, backup_path / "copilot.db")
+            import sqlite3
+            src = sqlite3.connect(self._db_path)
+            dst = sqlite3.connect(str(backup_path / "copilot.db"))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
 
         # Prune old backups (keep 7 days)
         if self._backup_dir.exists():
@@ -235,6 +261,75 @@ class DreamCycle:
                 alerts.append(f"{sub.name}: {sub.details}")
 
         return {"alerts": alerts, "remediations": remediations}
+
+    async def _reconcile_memory_stores(self, max_per_cycle: int = 50) -> int:
+        """Reconcile Qdrant vectors with FTS5 index — remove orphans."""
+        if not self._memory or not self._db_path:
+            return 0
+
+        cleaned = 0
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    "SELECT id FROM episodes ORDER BY id DESC LIMIT ?", (max_per_cycle * 2,)
+                )
+                db_ids = {str(row[0]) for row in await cur.fetchall()}
+
+            if hasattr(self._memory, '_qdrant') and self._memory._qdrant:
+                try:
+                    result = await self._memory._qdrant.scroll(
+                        collection_name="episodes",
+                        limit=max_per_cycle,
+                        with_payload=False,
+                    )
+                    points = result[0] if result else []
+                    orphan_ids = [p.id for p in points if str(p.id) not in db_ids]
+                    if orphan_ids:
+                        await self._memory._qdrant.delete(
+                            collection_name="episodes",
+                            points_selector=orphan_ids,
+                        )
+                        cleaned = len(orphan_ids)
+                        logger.info(f"Dream: reconciled {cleaned} orphan vectors")
+                except Exception as e:
+                    logger.warning(f"Qdrant reconciliation failed: {e}")
+        except Exception as e:
+            logger.warning(f"Memory reconciliation failed: {e}")
+
+        return cleaned
+
+    async def _cleanup_zero_vectors(self) -> int:
+        """Find and delete near-zero vectors from Qdrant."""
+        if not self._memory or not hasattr(self._memory, '_qdrant') or not self._memory._qdrant:
+            return 0
+
+        cleaned = 0
+        try:
+            result = await self._memory._qdrant.scroll(
+                collection_name="episodes",
+                limit=100,
+                with_vectors=True,
+                with_payload=False,
+            )
+            points = result[0] if result else []
+            zero_ids = []
+            for p in points:
+                if p.vector and isinstance(p.vector, list):
+                    magnitude = sum(v * v for v in p.vector) ** 0.5
+                    if magnitude < 0.01:
+                        zero_ids.append(p.id)
+
+            if zero_ids:
+                await self._memory._qdrant.delete(
+                    collection_name="episodes",
+                    points_selector=zero_ids,
+                )
+                cleaned = len(zero_ids)
+                logger.info(f"Dream: cleaned {cleaned} near-zero vectors")
+        except Exception as e:
+            logger.warning(f"Zero vector cleanup failed: {e}")
+
+        return cleaned
 
     async def _log_report(self, report: DreamReport) -> None:
         """Log dream cycle to database."""

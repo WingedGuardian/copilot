@@ -89,7 +89,9 @@ class Embedder:
             vec = response.data[0].embedding
             return self._pad_or_trim(vec)
         except Exception:
-            pass
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            import asyncio
+            asyncio.ensure_future(get_alert_bus().alert("memory", "medium", "Both local+cloud embedding failed", "embedding_failed"))
 
         return [0.0] * self._dimensions
 

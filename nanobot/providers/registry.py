@@ -276,14 +276,14 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
 
     # === Local deployment (matched by config key, NOT by api_base) =========
 
-    # vLLM / any OpenAI-compatible local server.
+    # LM Studio / any OpenAI-compatible local server.
     # Detected when config key is "vllm" (provider_name="vllm").
     ProviderSpec(
         name="vllm",
         keywords=("vllm",),
-        env_key="HOSTED_VLLM_API_KEY",
-        display_name="vLLM/Local",
-        litellm_prefix="hosted_vllm",      # Llama-3-8B → hosted_vllm/Llama-3-8B
+        env_key="OPENAI_API_KEY",
+        display_name="LM Studio/Local",
+        litellm_prefix="openai",            # use openai-compat, not hosted_vllm
         skip_prefixes=(),
         env_extras=(),
         is_gateway=False,

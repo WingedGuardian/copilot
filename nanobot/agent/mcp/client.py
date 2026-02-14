@@ -241,3 +241,13 @@ class McpClient:
             pass
         except Exception as e:
             logger.error(f"MCP reader error for {self.config.name}: {e}")
+        finally:
+            self._connected = False
+            # Resolve all pending futures with errors
+            for req_id, future in list(self._pending.items()):
+                if not future.done():
+                    future.set_exception(
+                        RuntimeError(f"MCP connection to {self.config.name} lost")
+                    )
+            self._pending.clear()
+            logger.warning(f"MCP: {self.config.name} read loop ended, marked disconnected")

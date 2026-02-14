@@ -70,6 +70,15 @@ class MessageBus:
         """Stop the dispatcher loop."""
         self._running = False
     
+    async def peek_inbound(self) -> InboundMessage | None:
+        """Peek at the next inbound message without consuming it. Returns None if empty."""
+        if self.inbound.empty():
+            return None
+        msg = self.inbound.get_nowait()
+        # Put it back at the front (re-queue)
+        await self.inbound.put(msg)
+        return msg
+
     @property
     def inbound_size(self) -> int:
         """Number of pending inbound messages."""

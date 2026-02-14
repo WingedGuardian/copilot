@@ -132,6 +132,8 @@ class ApprovalQueue:
                 await db.commit()
         except Exception as e:
             logger.warning(f"Failed to persist approval: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("approval", "medium", f"Approval persistence failed: {e}", "persist_failed")
 
     async def _cleanup_persisted(self, approval_id: str) -> None:
         """Remove resolved approval from SQLite."""
@@ -144,3 +146,47 @@ class ApprovalQueue:
                 await db.commit()
         except Exception as e:
             logger.warning(f"Failed to cleanup approval: {e}")
+
+    async def recover_from_crash(self) -> int:
+        """Load pending approvals from SQLite on startup, auto-deny stale ones (>1hr old).
+
+        Returns number of recovered/denied approvals.
+        """
+        import json
+        count = 0
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    "SELECT id, session_key, tool_name, tool_args_json, summary, created_at, timeout_seconds "
+                    "FROM pending_approvals WHERE status = 'pending'"
+                )
+                rows = await cur.fetchall()
+
+                now = time.time()
+                for row in rows:
+                    approval_id, session_key, tool_name, args_json, summary, created_at, timeout_s = row
+                    age = now - created_at
+
+                    if age > 3600:  # >1 hour old: auto-deny
+                        await db.execute(
+                            "UPDATE pending_approvals SET status = 'denied_stale' WHERE id = ?",
+                            (approval_id,),
+                        )
+                        logger.info(f"Auto-denied stale approval {approval_id} (age: {age:.0f}s)")
+                    else:
+                        # Still valid — log but don't restore to in-memory queue
+                        # (the original asyncio.Event is lost on crash)
+                        await db.execute(
+                            "UPDATE pending_approvals SET status = 'denied_crash' WHERE id = ?",
+                            (approval_id,),
+                        )
+                        logger.info(f"Denied orphaned approval {approval_id} from crash recovery")
+                    count += 1
+
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Approval crash recovery failed: {e}")
+
+        if count:
+            logger.info(f"Approval crash recovery: processed {count} orphaned approvals")
+        return count

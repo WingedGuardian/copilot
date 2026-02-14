@@ -310,9 +310,13 @@ def _make_provider(config, cost_logger=None):
     # Local provider — always LM Studio via vllm config
     vllm_cfg = config.providers.vllm
     if vllm_cfg.api_key or vllm_cfg.api_base:
+        # Strip trailing /v1 — litellm's openai provider appends it
+        local_base = vllm_cfg.api_base.rstrip("/")
+        if local_base.endswith("/v1"):
+            local_base = local_base[:-3]
         local_provider = LiteLLMProvider(
             api_key=vllm_cfg.api_key or "lm-studio",
-            api_base=vllm_cfg.api_base,
+            api_base=local_base,
             default_model=config.copilot.local_model,
             provider_name="vllm",
         )
@@ -412,14 +416,35 @@ def gateway(
     cost_logger = None
     if config.copilot.enabled:
         import asyncio as _aio
-        from nanobot.copilot.cost.db import ensure_tables
+        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts
         from nanobot.copilot.cost.logger import CostLogger
         from pathlib import Path
 
         db_path = Path(config.copilot.db_path)
         _aio.run(ensure_tables(db_path))
+        _aio.run(migrate_alerts(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
+
+    # --- Copilot: initialise alert bus if enabled ---
+    alert_bus = None
+    if config.copilot.enabled:
+        from nanobot.copilot.alerting.bus import init_alert_bus
+
+        async def _alert_deliver(content):
+            from nanobot.bus.events import OutboundMessage
+            await bus.publish_outbound(OutboundMessage(
+                channel=config.copilot.monitor_channel,
+                chat_id=config.copilot.monitor_chat_id,
+                content=content,
+            ))
+
+        alert_bus = init_alert_bus(
+            db_path=str(db_path),
+            deliver_fn=_alert_deliver,
+            dedup_hours=config.copilot.alert_dedup_hours,
+        )
+        console.print("[green]v[/green] Alert bus enabled")
 
     provider = _make_provider(config, cost_logger=cost_logger)
     session_manager = SessionManager(config.workspace_path)
@@ -537,6 +562,9 @@ def gateway(
         )
         console.print("[green]v[/green] Approval system + metacognition enabled")
 
+        # Recover orphaned approvals from crash
+        _aio.run(approval_interceptor._queue.recover_from_crash())
+
         # Chain satisfaction detector onto extraction callback
         if extractor:
             _orig = extractor.on_result
@@ -614,6 +642,7 @@ def gateway(
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
+        llm_timeout=config.agents.defaults.llm_timeout,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
@@ -798,24 +827,35 @@ def gateway(
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
-    
+
+    # --- Process Supervisor ---
+    from nanobot.copilot.dream.supervisor import ProcessSupervisor
+    supervisor = ProcessSupervisor(check_interval=30.0, max_restarts=5)
+
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
-            # Start copilot services
+            # Register services with supervisor
+            supervisor.register("heartbeat", heartbeat.start)
             if task_worker:
+                supervisor.register("task_worker", task_worker.start)
                 await task_worker.start()
             if monitor_service:
+                supervisor.register("monitor", monitor_service.start)
                 await monitor_service.start()
             if copilot_heartbeat:
+                supervisor.register("copilot_heartbeat", copilot_heartbeat.start)
                 await copilot_heartbeat.start()
+            await supervisor.start()
+            console.print("[green]v[/green] Process supervisor started")
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
+            await supervisor.stop()
             if copilot_heartbeat:
                 copilot_heartbeat.stop()
             if monitor_service:
@@ -867,6 +907,7 @@ def agent(
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
+        llm_timeout=config.agents.defaults.llm_timeout,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,

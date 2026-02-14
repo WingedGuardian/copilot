@@ -181,6 +181,17 @@ export class WhatsAppClient {
         }
         await this.sock.sendMessage(to, { text });
     }
+    async markRead(jid, messageIds) {
+        if (!this.sock)
+            return;
+        await this.sock.readMessages([{ remoteJid: jid, id: messageIds[0], participant: undefined }]);
+    }
+    async sendPresence(jid, type) {
+        if (!this.sock)
+            return;
+        await this.sock.presenceSubscribe(jid);
+        await this.sock.sendPresenceUpdate(type, jid);
+    }
     async disconnect() {
         if (this.sock) {
             this.sock.end(undefined);

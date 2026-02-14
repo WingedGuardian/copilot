@@ -299,7 +299,7 @@ class RouterProvider(LLMProvider):
 
         if decision.target == "local":
             chain.append(
-                ProviderTier("lm_studio", self._local, self._local_model)
+                ProviderTier("lm_studio", self._local, self._local_model, is_local=True)
             )
 
         if decision.target in ("local", "fast"):

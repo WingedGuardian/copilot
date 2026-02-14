@@ -94,6 +94,8 @@ class CronService:
                 self._store = CronStore(jobs=jobs)
             except Exception as e:
                 logger.warning(f"Failed to load cron store: {e}")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                import asyncio; asyncio.ensure_future(get_alert_bus().alert("cron", "medium", f"Cron store load failed: {e}", "store_load_failed"))
                 self._store = CronStore()
         else:
             self._store = CronStore()
@@ -101,12 +103,15 @@ class CronService:
         return self._store
     
     def _save_store(self) -> None:
-        """Save jobs to disk."""
+        """Save jobs to disk atomically."""
+        import os
+        import tempfile
+
         if not self._store:
             return
-        
+
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         data = {
             "version": self._store.version,
             "jobs": [
@@ -141,8 +146,18 @@ class CronService:
                 for j in self._store.jobs
             ]
         }
-        
-        self.store_path.write_text(json.dumps(data, indent=2))
+
+        fd, tmp_path = tempfile.mkstemp(dir=self.store_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, str(self.store_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     
     async def start(self) -> None:
         """Start the cron service."""
@@ -231,6 +246,8 @@ class CronService:
             job.state.last_status = "error"
             job.state.last_error = str(e)
             logger.error(f"Cron: job '{job.name}' failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("cron", "medium", f"Cron job '{job.name}' failed: {e}", "job_failed")
         
         job.state.last_run_at_ms = start_ms
         job.updated_at_ms = _now_ms()

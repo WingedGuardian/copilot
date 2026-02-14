@@ -165,6 +165,7 @@ class AgentDefaults(BaseModel):
     temperature: float = 0.7
     max_tool_iterations: int = 20
     memory_window: int = 50
+    llm_timeout: int = 120  # seconds before LLM call times out
 
 
 class AgentsConfig(BaseModel):

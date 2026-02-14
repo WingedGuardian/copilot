@@ -242,6 +242,30 @@ async def migrate_phase8(db_path: str | Path) -> None:
     logger.info(f"Phase 8 migration complete in {db_path}")
 
 
+async def migrate_alerts(db_path: str | Path) -> None:
+    """Alert bus schema: alerts table for unified notification log.
+
+    Safe to call repeatedly.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                subsystem TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                error_key TEXT NOT NULL,
+                message TEXT NOT NULL,
+                delivered INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_alerts_subsystem ON alerts(subsystem, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity, timestamp);
+        """)
+        await db.commit()
+    logger.info(f"Alerts migration complete in {db_path}")
+
+
 async def migrate_ironclaw(db_path: str | Path) -> None:
     """IronClaw feature adoption: episodic FTS5 full-text search table.
 

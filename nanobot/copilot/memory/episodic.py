@@ -63,6 +63,8 @@ class EpisodicStore:
                 logger.info(f"Created Qdrant collection: {self.COLLECTION}")
         except Exception as e:
             logger.warning(f"Qdrant collection check failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "high", f"Qdrant collection init failed: {e}", "qdrant_init")
 
     async def store(
         self,
@@ -95,6 +97,8 @@ class EpisodicStore:
             )
         except Exception as e:
             logger.warning(f"Qdrant store failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "high", f"Qdrant store failed: {e}", "qdrant_store")
         return point_id
 
     async def store_extractions(
@@ -147,6 +151,8 @@ class EpisodicStore:
             )
         except Exception as e:
             logger.warning(f"Qdrant recall failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"Qdrant recall failed: {e}", "qdrant_recall")
             return []
 
         if not results:

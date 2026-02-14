@@ -1,7 +1,9 @@
 """Session management for conversation history."""
 
 import json
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -178,26 +180,79 @@ class SessionManager:
             )
         except Exception as e:
             logger.warning(f"Failed to load session {key}: {e}")
+            # Try backup file
+            bak_path = path.with_suffix(".jsonl.bak")
+            if bak_path.exists():
+                logger.info(f"Trying backup for session {key}")
+                try:
+                    return self._load_from_path(key, bak_path)
+                except Exception as e2:
+                    logger.warning(f"Backup also failed for {key}: {e2}")
             return None
     
+    def _load_from_path(self, key: str, path: Path) -> Session | None:
+        """Load a session from a specific file path."""
+        messages = []
+        metadata = {}
+        created_at = None
+
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                if data.get("_type") == "metadata":
+                    metadata = data.get("metadata", {})
+                    created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+                else:
+                    messages.append(data)
+
+        return Session(
+            key=key,
+            messages=messages,
+            created_at=created_at or datetime.now(),
+            metadata=metadata
+        )
+
     def save(self, session: Session) -> None:
-        """Save a session to disk."""
+        """Save a session to disk atomically (write-to-temp + os.replace)."""
         path = self._get_session_path(session.key)
-        
-        with open(path, "w") as f:
-            # Write metadata first
-            metadata_line = {
-                "_type": "metadata",
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata
-            }
-            f.write(json.dumps(metadata_line) + "\n")
-            
-            # Write messages
-            for msg in session.messages:
-                f.write(json.dumps(msg) + "\n")
-        
+
+        # Write to temp file in same directory, then atomic rename
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                # Write metadata first
+                metadata_line = {
+                    "_type": "metadata",
+                    "created_at": session.created_at.isoformat(),
+                    "updated_at": session.updated_at.isoformat(),
+                    "metadata": session.metadata
+                }
+                f.write(json.dumps(metadata_line) + "\n")
+
+                # Write messages
+                for msg in session.messages:
+                    f.write(json.dumps(msg) + "\n")
+
+            # Keep backup of previous version
+            if path.exists():
+                bak_path = path.with_suffix(".jsonl.bak")
+                try:
+                    os.replace(str(path), str(bak_path))
+                except OSError:
+                    pass
+
+            os.replace(tmp_path, str(path))
+        except BaseException:
+            # Clean up temp file on any error
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
         self._cache[session.key] = session
     
     def delete(self, key: str) -> bool:

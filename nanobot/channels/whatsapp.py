@@ -81,8 +81,10 @@ class WhatsAppChannel(BaseChannel):
         if not self._ws or not self._connected:
             logger.warning("WhatsApp bridge not connected")
             return
-        
+
         try:
+            # Stop composing indicator before sending
+            await self._send_presence(msg.chat_id, "paused")
             payload = {
                 "type": "send",
                 "to": msg.chat_id,
@@ -91,6 +93,28 @@ class WhatsAppChannel(BaseChannel):
             await self._ws.send(json.dumps(payload))
         except Exception as e:
             logger.error(f"Error sending WhatsApp message: {e}")
+
+    async def _send_read_receipt(self, jid: str, message_id: str) -> None:
+        """Mark a message as read (blue checkmarks)."""
+        if not self._ws or not self._connected:
+            return
+        try:
+            await self._ws.send(json.dumps({
+                "type": "read", "to": jid, "messageIds": [message_id],
+            }))
+        except Exception as e:
+            logger.debug(f"Failed to send read receipt: {e}")
+
+    async def _send_presence(self, jid: str, presence: str) -> None:
+        """Send composing/paused presence to a chat."""
+        if not self._ws or not self._connected:
+            return
+        try:
+            await self._ws.send(json.dumps({
+                "type": "presence", "to": jid, "presence": presence,
+            }))
+        except Exception as e:
+            logger.debug(f"Failed to send presence: {e}")
     
     async def _handle_bridge_message(self, raw: str) -> None:
         """Handle a message from the bridge."""
@@ -139,9 +163,18 @@ class WhatsAppChannel(BaseChannel):
                 media.append(img_path)
                 logger.info(f"Image received from {sender_id}: {img_path}")
 
+            # Prefer phone-number JID for replies (Baileys can't send to @lid)
+            reply_jid = pn if pn else sender
+
+            # Blue checkmarks + typing indicator
+            message_id = data.get("id")
+            if message_id:
+                await self._send_read_receipt(reply_jid, message_id)
+            await self._send_presence(reply_jid, "composing")
+
             await self._handle_message(
                 sender_id=sender_id,
-                chat_id=sender,  # Use full LID for replies
+                chat_id=reply_jid,
                 content=content,
                 media=media if media else None,
                 metadata={

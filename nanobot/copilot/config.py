@@ -207,6 +207,10 @@ class CopilotConfig(BaseModel):
         description="Hostnames/IPs blocked for SSRF protection",
     )
 
+    # Alert bus
+    alert_dedup_hours: float = 4.0
+    alert_mute_hours: float = 8.0  # default mute duration
+
     # Security: private mode timeout (seconds of inactivity)
     private_mode_timeout: int = 1800  # 30 minutes
 

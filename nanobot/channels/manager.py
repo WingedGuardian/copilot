@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -16,13 +20,14 @@ from nanobot.config.schema import Config
 class ChannelManager:
     """
     Manages chat channels and coordinates message routing.
-    
+
     Responsibilities:
     - Initialize enabled channels (Telegram, WhatsApp, etc.)
     - Start/stop channels
     - Route outbound messages
+    - Auto-start the WhatsApp bridge when needed
     """
-    
+
     def __init__(
         self,
         config: Config,
@@ -36,6 +41,11 @@ class ChannelManager:
         self._voice_transcriber = voice_transcriber
         self.channels: dict[str, BaseChannel] = {}
         self._dispatch_task: asyncio.Task | None = None
+        self._channel_tasks: dict[str, asyncio.Task] = {}
+        self._restart_counts: dict[str, int] = {}
+        self._max_restarts: int = 5
+        self._supervisor_task: asyncio.Task | None = None
+        self._bridge_process: subprocess.Popen | None = None
 
         self._init_channels()
     
@@ -152,25 +162,141 @@ class ChannelManager:
             await channel.start()
         except Exception as e:
             logger.error(f"Failed to start channel {name}: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("channel", "high", f"Channel '{name}' failed to start: {e}", "start_failed")
+
+    def _get_bridge_dir(self) -> Path | None:
+        """Find the bridge directory, building if needed. Returns None on failure."""
+        user_bridge = Path.home() / ".nanobot" / "bridge"
+
+        # Already built?
+        if (user_bridge / "dist" / "index.js").exists():
+            return user_bridge
+
+        if not shutil.which("npm"):
+            logger.error("npm not found — cannot start WhatsApp bridge")
+            return None
+
+        # Locate source
+        pkg_bridge = Path(__file__).parent.parent / "bridge"
+        src_bridge = Path(__file__).parent.parent.parent / "bridge"
+        source = None
+        if (pkg_bridge / "package.json").exists():
+            source = pkg_bridge
+        elif (src_bridge / "package.json").exists():
+            source = src_bridge
+
+        if not source:
+            logger.error("Bridge source not found")
+            return None
+
+        logger.info("Setting up WhatsApp bridge...")
+        user_bridge.parent.mkdir(parents=True, exist_ok=True)
+        if user_bridge.exists():
+            shutil.rmtree(user_bridge)
+        shutil.copytree(source, user_bridge, ignore=shutil.ignore_patterns("node_modules", "dist"))
+
+        try:
+            subprocess.run(["npm", "install"], cwd=user_bridge, check=True, capture_output=True)
+            subprocess.run(["npm", "run", "build"], cwd=user_bridge, check=True, capture_output=True)
+            logger.info("WhatsApp bridge built successfully")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Bridge build failed: {e}")
+            return None
+
+        return user_bridge
+
+    def _start_bridge(self) -> None:
+        """Start the WhatsApp bridge subprocess."""
+        bridge_dir = self._get_bridge_dir()
+        if not bridge_dir:
+            return
+
+        env = {**os.environ}
+        if self.config.channels.whatsapp.bridge_token:
+            env["BRIDGE_TOKEN"] = self.config.channels.whatsapp.bridge_token
+
+        logger.info("Starting WhatsApp bridge subprocess...")
+        self._bridge_process = subprocess.Popen(
+            ["node", "dist/index.js"],
+            cwd=bridge_dir,
+            env=env,
+        )
+        logger.info(f"WhatsApp bridge started (pid {self._bridge_process.pid})")
+
+    def _stop_bridge(self) -> None:
+        """Stop the WhatsApp bridge subprocess."""
+        if self._bridge_process and self._bridge_process.poll() is None:
+            logger.info("Stopping WhatsApp bridge...")
+            self._bridge_process.terminate()
+            try:
+                self._bridge_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._bridge_process.kill()
+            self._bridge_process = None
 
     async def start_all(self) -> None:
-        """Start all channels and the outbound dispatcher."""
+        """Start all channels with supervision."""
         if not self.channels:
             logger.warning("No channels enabled")
             return
-        
+
+        # Auto-start bridge if WhatsApp is enabled
+        if "whatsapp" in self.channels and self._bridge_process is None:
+            self._start_bridge()
+            # Give the bridge a moment to start listening
+            await asyncio.sleep(2)
+
         # Start outbound dispatcher
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
-        
-        # Start channels
-        tasks = []
+
+        # Start channels as tracked tasks
         for name, channel in self.channels.items():
             logger.info(f"Starting {name} channel...")
-            tasks.append(asyncio.create_task(self._start_channel(name, channel)))
-        
-        # Wait for all to complete (they should run forever)
-        await asyncio.gather(*tasks, return_exceptions=True)
+            self._channel_tasks[name] = asyncio.create_task(
+                self._start_channel(name, channel), name=f"channel:{name}"
+            )
+            self._restart_counts[name] = 0
+
+        # Start supervisor
+        self._supervisor_task = asyncio.create_task(self._supervise_channels())
+
+        # Wait for all channel tasks (they should run forever)
+        await asyncio.gather(
+            *self._channel_tasks.values(),
+            self._supervisor_task,
+            return_exceptions=True,
+        )
     
+    async def _supervise_channels(self) -> None:
+        """Monitor channel tasks and restart crashed ones with exponential backoff."""
+        while True:
+            await asyncio.sleep(15.0)
+            for name, task in list(self._channel_tasks.items()):
+                if task.done() and not task.cancelled():
+                    exc = task.exception()
+                    if exc:
+                        logger.error(f"Channel '{name}' crashed: {exc}")
+
+                    count = self._restart_counts.get(name, 0)
+                    if count >= self._max_restarts:
+                        logger.error(f"Channel '{name}' exceeded max restarts ({self._max_restarts})")
+                        continue
+
+                    self._restart_counts[name] = count + 1
+                    backoff = min(2 ** count, 300)
+                    logger.warning(
+                        f"Channel '{name}' restarting in {backoff}s "
+                        f"(attempt {count + 1}/{self._max_restarts})"
+                    )
+                    await asyncio.sleep(backoff)
+
+                    channel = self.channels.get(name)
+                    if channel:
+                        self._channel_tasks[name] = asyncio.create_task(
+                            self._start_channel(name, channel), name=f"channel:{name}"
+                        )
+
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""
         logger.info("Stopping all channels...")
@@ -182,7 +308,13 @@ class ChannelManager:
                 await self._dispatch_task
             except asyncio.CancelledError:
                 pass
-        
+        if self._supervisor_task:
+            self._supervisor_task.cancel()
+            try:
+                await self._supervisor_task
+            except asyncio.CancelledError:
+                pass
+
         # Stop all channels
         for name, channel in self.channels.items():
             try:
@@ -190,6 +322,9 @@ class ChannelManager:
                 logger.info(f"Stopped {name} channel")
             except Exception as e:
                 logger.error(f"Error stopping {name}: {e}")
+
+        # Stop bridge subprocess
+        self._stop_bridge()
     
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""

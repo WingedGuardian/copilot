@@ -38,10 +38,14 @@ class MemoryManager:
             await self._episodic._ensure_client()
         except Exception as e:
             logger.warning(f"Qdrant init failed (degraded mode): {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "high", f"Qdrant init failed: {e}", "qdrant_init")
         try:
             await self._fts.ensure_table()
         except Exception as e:
             logger.warning(f"FTS5 init failed (degraded mode): {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "high", f"FTS5 init failed: {e}", "fts_init")
 
     async def remember_exchange(
         self, user_msg: str, assistant_msg: str, session_key: str
@@ -54,6 +58,8 @@ class MemoryManager:
             )
         except Exception as e:
             logger.warning(f"Exchange storage failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"Exchange storage failed: {e}", "remember_exchange")
             point_id = ""
 
         # Also write to FTS5 for keyword search

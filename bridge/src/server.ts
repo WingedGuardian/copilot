@@ -7,9 +7,11 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { WhatsAppClient, InboundMessage } from './whatsapp.js';
 
 interface SendCommand {
-  type: 'send';
+  type: 'send' | 'read' | 'presence';
   to: string;
-  text: string;
+  text?: string;
+  messageIds?: string[];
+  presence?: 'composing' | 'paused';
 }
 
 interface BridgeMessage {
@@ -93,8 +95,13 @@ export class BridgeServer {
   }
 
   private async handleCommand(cmd: SendCommand): Promise<void> {
-    if (cmd.type === 'send' && this.wa) {
+    if (!this.wa) return;
+    if (cmd.type === 'send' && cmd.text) {
       await this.wa.sendMessage(cmd.to, cmd.text);
+    } else if (cmd.type === 'read' && cmd.messageIds) {
+      await this.wa.markRead(cmd.to, cmd.messageIds);
+    } else if (cmd.type === 'presence' && cmd.presence) {
+      await this.wa.sendPresence(cmd.to, cmd.presence);
     }
   }
 

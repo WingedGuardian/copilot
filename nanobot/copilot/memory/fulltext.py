@@ -84,6 +84,8 @@ class FullTextStore:
                 return row_id
         except Exception as e:
             logger.warning(f"FTS store failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "high", f"FTS5 insertion failed: {e}", "fts_store")
             return -1
 
     async def search(
@@ -143,6 +145,8 @@ class FullTextStore:
                 ]
         except Exception as e:
             logger.warning(f"FTS search failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"FTS5 search failed: {e}", "fts_search")
             return []
 
     @staticmethod
