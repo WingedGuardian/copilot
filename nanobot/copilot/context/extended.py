@@ -97,6 +97,7 @@ class ExtendedContextBuilder:
             media=media,
             channel=channel,
             chat_id=chat_id,
+            session_metadata=session_metadata,
         )
 
         # Inject identity docs (soul.md, user.md, agents.md)
@@ -204,7 +205,7 @@ class ExtendedContextBuilder:
             return self._identity_cache
 
         parts: list[str] = []
-        for fname in ("soul.md", "user.md", "agents.md"):
+        for fname in ("soul.md", "user.md", "agents.md", "policy.md"):
             fpath = self._docs_dir / fname
             if fpath.exists():
                 try:

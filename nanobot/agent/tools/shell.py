@@ -41,7 +41,7 @@ class ExecTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Execute a shell command and return its output. Use with caution."
+        return "Execute a shell command and return its output. Per POLICY.md: ask user before commands that modify system state."
     
     @property
     def parameters(self) -> dict[str, Any]:
@@ -108,10 +108,27 @@ class ExecTool(Tool):
         except Exception as e:
             return f"Error executing command: {str(e)}"
 
+    # Patterns that reference sensitive files/dirs — block from shell
+    _SECRETS_PATTERNS = [
+        re.compile(r"secrets\.json", re.I),
+        re.compile(r"whatsapp-auth", re.I),
+        re.compile(r"\.ssh/", re.I),
+        re.compile(r"\.gnupg/", re.I),
+        re.compile(r"credentials\.json", re.I),
+        re.compile(r"\.env\b", re.I),
+        re.compile(r"\.pem\b", re.I),
+        re.compile(r"\.key\b", re.I),
+    ]
+
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""
         cmd = command.strip()
         lower = cmd.lower()
+
+        # Block access to sensitive files
+        for pattern in self._SECRETS_PATTERNS:
+            if pattern.search(cmd):
+                return "Error: Command blocked by safety guard (references protected file)"
 
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):

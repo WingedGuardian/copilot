@@ -1,16 +1,45 @@
 """File system tools: read, write, edit."""
 
+import re
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
 
+# Paths the LLM must never read/write (resolved against home dir)
+_SENSITIVE_PATH_PATTERNS = [
+    re.compile(r"secrets\.json$"),
+    re.compile(r"\.pem$"),
+    re.compile(r"\.key$"),
+    re.compile(r"\.env$"),
+    re.compile(r"credentials\.json$"),
+]
+_SENSITIVE_DIRS = [
+    "whatsapp-auth",
+    ".ssh",
+    ".gnupg",
+]
+
+
+def _is_sensitive(resolved: Path) -> bool:
+    """Check if a resolved path points to sensitive content."""
+    s = str(resolved)
+    for pattern in _SENSITIVE_PATH_PATTERNS:
+        if pattern.search(s):
+            return True
+    for d in _SENSITIVE_DIRS:
+        if f"/{d}/" in s or s.endswith(f"/{d}"):
+            return True
+    return False
+
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
-    """Resolve path and optionally enforce directory restriction."""
+    """Resolve path and enforce directory + sensitivity restrictions."""
     resolved = Path(path).expanduser().resolve()
     if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
         raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
+    if _is_sensitive(resolved):
+        raise PermissionError(f"Access denied: {path} is a protected path")
     return resolved
 
 
@@ -69,7 +98,7 @@ class WriteFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Write content to a file at the given path. Creates parent directories if needed."
+        return "Write content to a file at the given path. Creates parent directories if needed. Per POLICY.md: ask user before writing outside memory/.md files."
     
     @property
     def parameters(self) -> dict[str, Any]:
@@ -112,7 +141,7 @@ class EditFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
+        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file. Per POLICY.md: ask user before editing outside memory/.md files."
     
     @property
     def parameters(self) -> dict[str, Any]:
