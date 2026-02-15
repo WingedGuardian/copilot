@@ -976,7 +976,7 @@ def gateway(
                 task_worker.stop()
             heartbeat.stop()
             cron.stop()
-            agent.stop()
+            await agent.stop()
             await channels.stop_all()
 
     asyncio.run(run())

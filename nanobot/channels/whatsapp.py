@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+from collections import OrderedDict
 from typing import Any
 
 from loguru import logger
@@ -28,6 +30,9 @@ class WhatsAppChannel(BaseChannel):
         self._ws = None
         self._connected = False
         self._transcriber = transcriber  # VoiceTranscriber or None
+        self._composing_tasks: dict[str, asyncio.Task] = {}  # jid -> refresh task
+        self._processed_message_ids: OrderedDict[str, None] = OrderedDict()
+        self._max_message_id_cache = 1000  # Prevent unbounded growth
     
     async def start(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
@@ -38,7 +43,8 @@ class WhatsAppChannel(BaseChannel):
         logger.info(f"Connecting to WhatsApp bridge at {bridge_url}...")
         
         self._running = True
-        
+        attempt = 0
+
         while self._running:
             try:
                 async with websockets.connect(bridge_url) as ws:
@@ -47,31 +53,37 @@ class WhatsAppChannel(BaseChannel):
                     if self.config.bridge_token:
                         await ws.send(json.dumps({"type": "auth", "token": self.config.bridge_token}))
                     self._connected = True
+                    attempt = 0  # Reset on successful connection
                     logger.info("Connected to WhatsApp bridge")
-                    
+
                     # Listen for messages
                     async for message in ws:
                         try:
                             await self._handle_bridge_message(message)
                         except Exception as e:
                             logger.error(f"Error handling bridge message: {e}")
-                    
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self._connected = False
                 self._ws = None
+                self._stop_all_composing()
                 logger.warning(f"WhatsApp bridge connection error: {e}")
-                
+
                 if self._running:
-                    logger.info("Reconnecting in 5 seconds...")
-                    await asyncio.sleep(5)
+                    import random
+                    delay = min(5 * (2 ** attempt) + random.uniform(0, 1), 120)
+                    logger.info(f"Reconnecting in {delay:.1f}s (attempt {attempt + 1})...")
+                    await asyncio.sleep(delay)
+                    attempt += 1
     
     async def stop(self) -> None:
         """Stop the WhatsApp channel."""
         self._running = False
         self._connected = False
-        
+        self._stop_all_composing()
+
         if self._ws:
             await self._ws.close()
             self._ws = None
@@ -83,7 +95,8 @@ class WhatsAppChannel(BaseChannel):
             return
 
         try:
-            # Stop composing indicator before sending
+            # Stop composing refresh loop and indicator before sending
+            self._stop_composing(msg.chat_id)
             await self._send_presence(msg.chat_id, "paused")
             payload = {
                 "type": "send",
@@ -115,6 +128,40 @@ class WhatsAppChannel(BaseChannel):
             }))
         except Exception as e:
             logger.debug(f"Failed to send presence: {e}")
+
+    def _start_composing(self, jid: str) -> None:
+        """Start composing indicator with periodic refresh (WhatsApp times out after ~15s)."""
+        self._stop_composing(jid)
+        self._composing_tasks[jid] = asyncio.create_task(self._composing_loop(jid))
+
+    def _stop_composing(self, jid: str) -> None:
+        """Cancel the composing refresh loop for a chat."""
+        task = self._composing_tasks.pop(jid, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _stop_all_composing(self) -> None:
+        """Cancel all composing tasks (cleanup on disconnect)."""
+        for jid in list(self._composing_tasks):
+            self._stop_composing(jid)
+
+    async def _composing_loop(self, jid: str) -> None:
+        """Re-send composing presence every 10s to keep the indicator alive.
+
+        Auto-stops after 5 minutes to prevent infinite '...' if the system hangs.
+        """
+        try:
+            elapsed = 0
+            max_duration = 300  # 5 minutes
+            while elapsed < max_duration:
+                await self._send_presence(jid, "composing")
+                await asyncio.sleep(10)
+                elapsed += 10
+            # Timed out — clear composing indicator
+            await self._send_presence(jid, "paused")
+            logger.warning(f"Composing indicator timed out for {jid} after {max_duration}s")
+        except asyncio.CancelledError:
+            pass
     
     async def _handle_bridge_message(self, raw: str) -> None:
         """Handle a message from the bridge."""
@@ -166,11 +213,22 @@ class WhatsAppChannel(BaseChannel):
             # Prefer phone-number JID for replies (Baileys can't send to @lid)
             reply_jid = pn if pn else sender
 
-            # Blue checkmarks + typing indicator
+            # Deduplicate messages by ID (prevents double-processing during reconnects)
             message_id = data.get("id")
             if message_id:
+                if message_id in self._processed_message_ids:
+                    logger.debug(f"Skipping duplicate message {message_id}")
+                    return
+                self._processed_message_ids[message_id] = None
+
+                # Prevent unbounded cache growth (FIFO eviction)
+                if len(self._processed_message_ids) > self._max_message_id_cache:
+                    to_remove = len(self._processed_message_ids) // 2
+                    for _ in range(to_remove):
+                        self._processed_message_ids.popitem(last=False)
+
                 await self._send_read_receipt(reply_jid, message_id)
-            await self._send_presence(reply_jid, "composing")
+            self._start_composing(reply_jid)
 
             await self._handle_message(
                 sender_id=sender_id,
@@ -183,6 +241,18 @@ class WhatsAppChannel(BaseChannel):
                     "is_group": data.get("isGroup", False)
                 }
             )
+
+            # Clean up temp media files
+            for fpath in media:
+                try:
+                    os.unlink(fpath)
+                except OSError:
+                    pass
+            if audio_path:
+                try:
+                    os.unlink(audio_path)
+                except OSError:
+                    pass
         
         elif msg_type == "status":
             # Connection status update

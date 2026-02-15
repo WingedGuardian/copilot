@@ -225,10 +225,16 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 continue
     
-    def stop(self) -> None:
-        """Stop the agent loop."""
+    async def stop(self) -> None:
+        """Stop the agent loop and cancel pending background tasks."""
         self._running = False
-        logger.info("Agent loop stopping")
+        if self._tracked_tasks:
+            logger.info(f"Cancelling {len(self._tracked_tasks)} tracked tasks...")
+            for task in self._tracked_tasks:
+                task.cancel()
+            await asyncio.gather(*self._tracked_tasks, return_exceptions=True)
+            self._tracked_tasks.clear()
+        logger.info("Agent loop stopped")
     
     async def _process_message(self, msg: InboundMessage, session_key: str | None = None) -> OutboundMessage | None:
         """
