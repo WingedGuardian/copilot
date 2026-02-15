@@ -52,24 +52,24 @@ class CopilotConfig(BaseModel):
     # Cloud model for quick, cheap tasks.  Used as fallback when local
     # is down, and for background work that doesn't need heavy reasoning.
     #
-    # Suggestions:
-    #   "anthropic/claude-3-haiku-20240307"  — $0.25/$1.25 per MTok
-    #   "anthropic/claude-3.5-haiku"         — newer, better quality
+    # Suggestions (OpenRouter model IDs):
+    #   "anthropic/claude-3.5-haiku"         — fast, cheap, good quality
+    #   "anthropic/claude-3-haiku"           — cheapest Claude
     #   "openai/gpt-4o-mini"                — $0.15/$0.60 per MTok
     #   "google/gemini-2.0-flash"            — very fast, competitive pricing
-    fast_model: str = "anthropic/claude-3-haiku-20240307"
+    fast_model: str = "anthropic/claude-haiku-4.5"
 
     # ── Big Model (cloud powerful tier) ─────────────────────────────────
     # Cloud model for complex reasoning, creative tasks, images, and long
     # context.  Also the escalation target when the local model determines
     # a task is beyond its capabilities.
     #
-    # Suggestions:
-    #   "anthropic/claude-sonnet-4-20250514" — best balance of cost/quality
-    #   "anthropic/claude-3.5-sonnet"        — previous gen, still excellent
+    # Suggestions (OpenRouter model IDs):
+    #   "anthropic/claude-sonnet-4.5"        — best balance of cost/quality
+    #   "anthropic/claude-opus-4.6"          — most capable
     #   "openai/gpt-4o"                      — strong all-rounder
     #   "google/gemini-2.0-pro"              — large context window
-    big_model: str = "anthropic/claude-sonnet-4-20250514"
+    big_model: str = "anthropic/claude-opus-4.6"
 
     # ── Background Extraction ───────────────────────────────────────────
     # Runs after every exchange to extract facts/decisions/entities/sentiment.
@@ -80,21 +80,11 @@ class CopilotConfig(BaseModel):
     #   "phi-3-mini-4k-instruct"   — 3.8B, good structured output
     #   "qwen2.5-3b-instruct"      — 3B, good JSON compliance
     # Cloud suggestions (used when local is down):
-    #   "anthropic/claude-3-haiku-20240307"  — cheap, reliable JSON
+    #   "anthropic/claude-3.5-haiku"          — cheap, reliable JSON
     #   "openai/gpt-4o-mini"                — cheap, excellent JSON
     #   "google/gemini-2.0-flash"            — fast, cheap
     extraction_local_model: str = ""   # empty = use routing_model
     extraction_cloud_model: str = ""   # empty = use fast_model
-
-    # ── Approval Parser SLM ─────────────────────────────────────────────
-    # Interprets ambiguous approval responses (regex handles 95%+ of cases,
-    # this is the fallback for things like "hmm, maybe after lunch").
-    #
-    # Suggestions (must run locally, intent classification task):
-    #   "llama-3.2-3b-instruct"    — 3B, good at intent detection
-    #   "phi-3-mini-4k-instruct"   — 3.8B
-    #   "smollm2-1.7b-instruct"    — 1.7B, fastest option
-    approval_slm_model: str = ""       # empty = use routing_model
 
     # ── Embeddings (Local) ──────────────────────────────────────────────
     # Used for storing/recalling episodic memories via Qdrant.
@@ -129,7 +119,7 @@ class CopilotConfig(BaseModel):
     #
     # Suggestions:
     #   ""                                     — use router (local → fast fallback)
-    #   "anthropic/claude-3-haiku-20240307"    — force cloud cheap for overnight
+    #   "anthropic/claude-3.5-haiku"            — force cloud cheap for overnight
     #   "openai/gpt-4o-mini"                  — force cloud cheap
     dream_model: str = ""              # empty = use router (local → fast → big)
 
@@ -139,7 +129,7 @@ class CopilotConfig(BaseModel):
     #
     # Suggestions:
     #   ""                                     — use router (local → fast fallback)
-    #   "anthropic/claude-3-haiku-20240307"    — force cloud cheap
+    #   "anthropic/claude-3.5-haiku"            — force cloud cheap
     heartbeat_model: str = ""          # empty = use router (local → fast → big)
 
     # ── Task Decomposition & Execution ──────────────────────────────────
@@ -177,11 +167,6 @@ class CopilotConfig(BaseModel):
     # Database path (relative to project data dir)
     db_path: str = "data/sqlite/copilot.db"
 
-    # Approval system
-    approval_channel: str = "whatsapp"
-    approval_chat_id: str = ""  # User's WhatsApp LID; empty = same as sender
-    approval_timeout: float = 300.0  # 5 minutes
-
     # Metacognition
     lesson_injection_count: int = 3
     lesson_min_confidence: float = 0.30
@@ -214,6 +199,9 @@ class CopilotConfig(BaseModel):
     # Security: private mode timeout (seconds of inactivity)
     private_mode_timeout: int = 1800  # 30 minutes
 
+    # /use override timeout (seconds of inactivity before auto-revert)
+    use_override_timeout: int = 1800  # 30 minutes
+
     # Tasks
     task_worker_interval: int = 60
 
@@ -236,10 +224,6 @@ class CopilotConfig(BaseModel):
     @property
     def resolved_extraction_cloud_model(self) -> str:
         return self.extraction_cloud_model or self.fast_model
-
-    @property
-    def resolved_approval_slm_model(self) -> str:
-        return self.approval_slm_model or self.routing_model
 
     @property
     def resolved_dream_model(self) -> str:

@@ -299,24 +299,31 @@ def _make_provider(config, cost_logger=None):
     # --- Copilot routing ---
     from nanobot.copilot.routing.router import RouterProvider
 
-    # Build cloud providers dict from any configured provider with an API key.
-    # The base_provider already points at the configured cloud provider, so we
-    # reuse it as the first (and often only) cloud tier.
+    # Build cloud providers from ALL configured providers with API keys.
+    from nanobot.providers.registry import find_by_name as _find_by_name
     cloud_providers: dict[str, LiteLLMProvider] = {}
-    provider_name = config.get_provider_name()
-    if provider_name:
-        cloud_providers[provider_name] = base_provider
+    for name in config.providers.model_fields:
+        if name in ("vllm", "custom"):
+            continue  # local / special
+        pcfg = getattr(config.providers, name)
+        if not pcfg.api_key:
+            continue
+        spec = _find_by_name(name)
+        api_base = pcfg.api_base or (spec.default_api_base if spec else None) or None
+        cloud_providers[name] = LiteLLMProvider(
+            api_key=pcfg.api_key,
+            api_base=api_base,
+            default_model=model,
+            extra_headers=pcfg.extra_headers,
+            provider_name=name,
+        )
 
     # Local provider — always LM Studio via vllm config
     vllm_cfg = config.providers.vllm
     if vllm_cfg.api_key or vllm_cfg.api_base:
-        # Strip trailing /v1 — litellm's openai provider appends it
-        local_base = vllm_cfg.api_base.rstrip("/")
-        if local_base.endswith("/v1"):
-            local_base = local_base[:-3]
         local_provider = LiteLLMProvider(
             api_key=vllm_cfg.api_key or "lm-studio",
-            api_base=local_base,
+            api_base=vllm_cfg.api_base,
             default_model=config.copilot.local_model,
             provider_name="vllm",
         )
@@ -402,13 +409,47 @@ def gateway(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
-    
+    import os, signal
+    from pathlib import Path as _Path
+
     if verbose:
         import logging
         logging.basicConfig(level=logging.DEBUG)
-    
+
+    # Prevent multiple instances (causes duplicate responses)
+    # Use fcntl.flock for atomic locking — no race window between check and write
+    import fcntl
+    pid_file = _Path("/tmp/nanobot-gateway.pid")
+    _pid_fd = open(pid_file, "a+")
+    try:
+        fcntl.flock(_pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _pid_fd.seek(0)
+        old_pid = _pid_fd.read().strip()
+        console.print(f"[red]Gateway already running (pid {old_pid}). Kill it first or remove {pid_file}[/red]")
+        raise typer.Exit(1)
+    _pid_fd.seek(0)
+    _pid_fd.truncate()
+    _pid_fd.write(str(os.getpid()))
+    _pid_fd.flush()
+    # Keep _pid_fd open — lock is held for process lifetime
+    import atexit
+    atexit.register(lambda: pid_file.unlink(missing_ok=True))
+
+    # Persistent log file (rotated, 7-day retention)
+    from loguru import logger as _loguru
+    _log_path = _Path.home() / ".nanobot" / "logs" / "gateway.log"
+    _log_path.parent.mkdir(parents=True, exist_ok=True)
+    _loguru.add(
+        str(_log_path),
+        rotation="10 MB",
+        retention="7 days",
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+    )
+
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
-    
+
     config = load_config()
     bus = MessageBus()
 
@@ -416,15 +457,18 @@ def gateway(
     cost_logger = None
     if config.copilot.enabled:
         import asyncio as _aio
-        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts
+        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts, migrate_routing_preferences
         from nanobot.copilot.cost.logger import CostLogger
         from pathlib import Path
 
         db_path = Path(config.copilot.db_path)
         _aio.run(ensure_tables(db_path))
         _aio.run(migrate_alerts(db_path))
+        _aio.run(migrate_routing_preferences(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
+        if not config.copilot.monitor_chat_id:
+            console.print("[yellow]Warning: copilot.monitor_chat_id is empty — alerts/dream reports won't be delivered[/yellow]")
 
     # --- Copilot: initialise alert bus if enabled ---
     alert_bus = None
@@ -496,7 +540,7 @@ def gateway(
             session = session_manager.get_or_create(session_key)
             extractions = session.metadata.get("extractions", [])
             extractions.append(result.model_dump())
-            session.metadata["extractions"] = extractions
+            session.metadata["extractions"] = extractions[-1000:]
             session_manager.save(session)
 
         extractor.on_result = _persist_extraction
@@ -524,7 +568,6 @@ def gateway(
         thread_tracker = ThreadTracker()
 
     # --- Copilot: Phase 3 components ---
-    approval_interceptor = None
     lesson_manager = None
     satisfaction_detector = None
     cost_alerter = None
@@ -542,28 +585,7 @@ def gateway(
         from nanobot.copilot.metacognition.detector import SatisfactionDetector
         satisfaction_detector = SatisfactionDetector(lesson_manager)
 
-        from nanobot.copilot.approval.patterns import RulesEngine
-        from nanobot.copilot.approval.queue import ApprovalQueue
-        from nanobot.copilot.approval.parser import NLApprovalParser
-        from nanobot.copilot.approval.interceptor import ApprovalInterceptor
-
-        approval_interceptor = ApprovalInterceptor(
-            bus=bus,
-            rules_engine=RulesEngine(db_path),
-            queue=ApprovalQueue(db_path),
-            parser=NLApprovalParser(
-                slm_provider=local_extractor_provider if extractor else None,
-                slm_model=config.copilot.resolved_approval_slm_model,
-            ),
-            lesson_manager=lesson_manager,
-            approval_channel=config.copilot.approval_channel,
-            approval_chat_id=config.copilot.approval_chat_id,
-            timeout=config.copilot.approval_timeout,
-        )
-        console.print("[green]v[/green] Approval system + metacognition enabled")
-
-        # Recover orphaned approvals from crash
-        _aio.run(approval_interceptor._queue.recover_from_crash())
+        console.print("[green]v[/green] Metacognition enabled")
 
         # Chain satisfaction detector onto extraction callback
         if extractor:
@@ -580,8 +602,8 @@ def gateway(
             db_path, bus,
             config.copilot.daily_cost_alert,
             config.copilot.per_call_cost_alert,
-            config.copilot.approval_channel,
-            config.copilot.approval_chat_id,
+            config.copilot.monitor_channel,
+            config.copilot.monitor_chat_id,
         )
 
     # --- Copilot: Phase 4 — Memory ---
@@ -612,7 +634,16 @@ def gateway(
                 db_path=db_path,
                 dimensions=config.copilot.embedding_local_dimensions,
             )
-            _aio.run(memory_manager.initialize())
+            for _mem_attempt in range(3):
+                try:
+                    _aio.run(memory_manager.initialize())
+                    break
+                except Exception as _mem_err:
+                    if _mem_attempt < 2:
+                        console.print(f"[yellow]Memory init attempt {_mem_attempt + 1} failed, retrying...[/yellow]")
+                        import time as _t; _t.sleep(2)
+                    else:
+                        raise _mem_err
             console.print("[green]v[/green] Memory system enabled (Qdrant + Redis + SQLite)")
         except Exception as e:
             console.print(f"[yellow]Warning: Memory init failed (degraded): {e}[/yellow]")
@@ -651,12 +682,22 @@ def gateway(
         extended_context=extended_context,
         extractor=extractor,
         thread_tracker=thread_tracker,
-        approval_interceptor=approval_interceptor,
         lesson_manager=lesson_manager,
         satisfaction_detector=satisfaction_detector,
         memory_manager=memory_manager,
         copilot_config=config.copilot if config.copilot.enabled else None,
     )
+
+    # Register file-based secrets for leak detection
+    for pname in config.providers.model_fields:
+        pcfg = getattr(config.providers, pname, None)
+        if pcfg:
+            key = getattr(pcfg, "api_key", "") or ""
+            if key and len(key) >= 8:
+                agent.secrets.register(f"provider:{pname}", key)
+    brave_key = config.tools.web.search.api_key or ""
+    if brave_key and len(brave_key) >= 8:
+        agent.secrets.register("brave_api_key", brave_key)
 
     # --- Copilot: Phase 4 — register memory tool ---
     if memory_manager:
@@ -666,6 +707,29 @@ def gateway(
     # --- Copilot: Phase 5 — register copilot tools ---
     if config.copilot.enabled:
         _register_copilot_tools(agent, config)
+
+    # --- Copilot: set_preference tool ---
+    pref_tool = None
+    if config.copilot.enabled:
+        from nanobot.copilot.tools.preferences import SetPreferenceTool
+        from nanobot.config.loader import get_config_path
+
+        reschedule_cbs: dict = {}
+        # Heartbeat reschedule uses a late-binding closure so it works
+        # even though copilot_heartbeat is created later in this function.
+        def _restart_heartbeat(val):
+            if copilot_heartbeat is not None:
+                copilot_heartbeat._interval_s = int(val)
+        reschedule_cbs["heartbeat_interval"] = _restart_heartbeat
+
+        pref_tool = SetPreferenceTool(
+            config_path=get_config_path(),
+            copilot_config=config.copilot,
+            router=provider if hasattr(provider, 'set_model') else None,
+            reschedule_callbacks=reschedule_cbs,
+        )
+        agent.tools.register(pref_tool)
+        console.print("[green]v[/green] Preference tool enabled")
 
     # --- Copilot: Phase 6 — status dashboard ---
     status_aggregator = None
@@ -680,6 +744,7 @@ def gateway(
                 qdrant_url=config.copilot.qdrant_url,
                 redis_url=config.copilot.redis_url,
                 memory_manager=memory_manager,
+                router=provider if hasattr(provider, '_fast_model') else None,
             )
             agent.tools.register(StatusTool(status_aggregator))
             console.print("[green]v[/green] Status dashboard enabled")
@@ -835,25 +900,72 @@ def gateway(
     async def run():
         try:
             await cron.start()
-            await heartbeat.start()
-            # Register services with supervisor
-            supervisor.register("heartbeat", heartbeat.start)
+            # Register services with supervisor — it calls start() for us
+            supervisor.register("heartbeat", heartbeat.start, lambda: heartbeat._task)
             if task_worker:
-                supervisor.register("task_worker", task_worker.start)
-                await task_worker.start()
+                supervisor.register("task_worker", task_worker.start, lambda: task_worker._task)
             if monitor_service:
-                supervisor.register("monitor", monitor_service.start)
-                await monitor_service.start()
+                supervisor.register("monitor", monitor_service.start, lambda: monitor_service._task)
             if copilot_heartbeat:
-                supervisor.register("copilot_heartbeat", copilot_heartbeat.start)
-                await copilot_heartbeat.start()
+                supervisor.register("copilot_heartbeat", copilot_heartbeat.start, lambda: copilot_heartbeat._task)
             await supervisor.start()
             console.print("[green]v[/green] Process supervisor started")
-            await asyncio.gather(
-                agent.run(),
-                channels.start_all(),
+
+            # Schedule dream cycle via croniter
+            dream_task = None
+            _dream_cancel_event = asyncio.Event()
+            if dream_cycle:
+                import time as _time
+                from croniter import croniter as _croniter
+
+                async def _dream_scheduler():
+                    from loguru import logger as _dream_log
+                    while True:
+                        # Re-read cron expr each iteration (supports runtime changes)
+                        cron_it = _croniter(config.copilot.dream_cron_expr, _time.time())
+                        delay = cron_it.get_next() - _time.time()
+                        if delay > 0:
+                            try:
+                                await asyncio.wait_for(_dream_cancel_event.wait(), timeout=delay)
+                                _dream_cancel_event.clear()
+                                continue  # Cancelled — re-read cron expr
+                            except asyncio.TimeoutError:
+                                pass  # Normal wake-up
+                        try:
+                            report = await dream_cycle.run()
+                            _dream_log.info(f"Dream cycle complete: {report.to_summary()}")
+                        except Exception as exc:
+                            _dream_log.error(f"Dream cycle failed: {exc}")
+
+                dream_task = asyncio.create_task(_dream_scheduler(), name="dream_scheduler")
+                from loguru import logger as _log
+                _log.info(f"Dream cycle scheduled: {config.copilot.dream_cron_expr}")
+
+                # Wire reschedule callback for set_preference tool
+                if config.copilot.enabled and pref_tool is not None:
+                    def _reschedule_dream(val):
+                        _dream_cancel_event.set()  # Wake scheduler to re-read cron
+                    pref_tool._reschedule["dream_cron_expr"] = _reschedule_dream
+
+            # Signal handling: SIGTERM/SIGINT trigger graceful shutdown
+            shutdown_event = asyncio.Event()
+            loop = asyncio.get_event_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, shutdown_event.set)
+
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(agent.run(), name="agent"),
+                    asyncio.create_task(channels.start_all(), name="channels"),
+                    asyncio.create_task(shutdown_event.wait(), name="shutdown"),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
             )
+            for t in pending:
+                t.cancel()
         except KeyboardInterrupt:
+            pass  # Handled by signal handler above
+        finally:
             console.print("\nShutting down...")
             await supervisor.stop()
             if copilot_heartbeat:
