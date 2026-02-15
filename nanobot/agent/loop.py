@@ -54,16 +54,17 @@ class AgentLoop:
         extended_context: "ExtendedContextBuilder | None" = None,
         extractor: "BackgroundExtractor | None" = None,
         thread_tracker: "ThreadTracker | None" = None,
-        approval_interceptor: "ApprovalInterceptor | None" = None,
         lesson_manager: "LessonManager | None" = None,
         satisfaction_detector: "SatisfactionDetector | None" = None,
         memory_manager: "MemoryManager | None" = None,
         copilot_config: "CopilotConfig | None" = None,
         llm_timeout: int = 120,
+        max_turn_time: int = 300,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
         self._llm_timeout = llm_timeout
+        self._max_turn_time = max_turn_time
         self._tracked_tasks: set[asyncio.Task] = set()
         self.bus = bus
         self.provider = provider
@@ -94,7 +95,6 @@ class AgentLoop:
         # Copilot extensions
         self._extractor = extractor
         self._thread_tracker = thread_tracker
-        self._approval_interceptor = approval_interceptor
         self._lesson_manager = lesson_manager
         self._satisfaction_detector = satisfaction_detector
         self._memory_manager = memory_manager
@@ -198,10 +198,9 @@ class AgentLoop:
                             content="Got your message, finishing up current task first.",
                         ))
 
-                self._processing_sessions[session_key] = asyncio.get_event_loop().time()
-
                 # Process it
                 try:
+                    self._processing_sessions[session_key] = asyncio.get_event_loop().time()
                     response = await self._process_message(msg)
                     # Cancel ack if we responded fast enough
                     if ack_task and not ack_task.done():
@@ -247,10 +246,6 @@ class AgentLoop:
         if msg.channel == "system":
             return await self._process_system_message(msg)
         
-        # Copilot: check if this is an approval response
-        if self._approval_interceptor and self._approval_interceptor.has_pending(msg.session_key):
-            return await self._approval_interceptor.handle_response(msg)
-
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
@@ -277,7 +272,52 @@ class AgentLoop:
                                   content="🐈 New session started. Memory consolidated.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands")
+                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/status — System status dashboard\n/onboard — Start the getting-to-know-you interview\n/profile — Show your current profile\n/use <provider> [fast|<model>] — Switch LLM provider (e.g. /use venice, /use openrouter fast, /use venice gpt-4o)\n/model — Alias for /use\n/use auto — Return to automatic routing\n/help — Show available commands")
+        if cmd == "/status":
+            status_tool = self.tools.get("status")
+            if status_tool:
+                result = await status_tool.execute(session_metadata=session.metadata)
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                  content="Status dashboard not available.")
+        if cmd == "/onboard":
+            session.metadata["onboarding_active"] = True
+            session.clear()
+            self.sessions.save(session)
+            # Fall through to normal LLM processing — the injected prompt handles the rest
+        elif cmd == "/profile":
+            profile_path = self.workspace / "USER.md"
+            if profile_path.exists():
+                content = profile_path.read_text(encoding="utf-8")
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                      content=f"🐈 Your profile:\n\n{content}")
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                  content="🐈 No profile set yet. Send /onboard to get started.")
+        elif cmd.startswith("/use ") or cmd.startswith("/model "):
+            parts = cmd.split(None, 2)  # /use provider [tier_or_model]
+            args = parts[1:] if len(parts) > 1 else []
+            if not args:
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                      content="Usage: /use <provider> [fast|<model>] or /use auto")
+            provider = args[0]
+            if provider == "auto":
+                session.deactivate_use_override()
+                self.sessions.save(session)
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                      content="🐈 Switched to auto-routing.")
+            tier = "big"
+            model = None
+            if len(args) > 1:
+                if args[1] == "fast":
+                    tier = "fast"
+                else:
+                    model = args[1]  # explicit model name
+            session.activate_use_override(provider, tier, model)
+            self.sessions.save(session)
+            desc = model or (f"{tier} model" if tier != "big" else "big model")
+            timeout_min = self._copilot_config.use_override_timeout // 60 if self._copilot_config else 30
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                  content=f"🐈 Routing to {provider} ({desc}). Auto-expires after {timeout_min}min idle. /use auto to revert.")
 
         # Consolidate memory before processing if session is too large
         if len(session.messages) > self.memory_window:
@@ -353,6 +393,34 @@ class AgentLoop:
                         content="Private mode ending in 2 minutes. Say 'stay private' to extend.",
                     ))
 
+        # Check /use override timeout
+        if session.metadata.get("force_provider") and hasattr(self.provider, 'check_use_override_timeout'):
+            session.touch_activity()
+            timeout_s = self._copilot_config.use_override_timeout if self._copilot_config else 1800
+            use_status = self.provider.check_use_override_timeout(session.metadata, timeout_s)
+            if use_status == "expired":
+                old_provider = session.metadata.get("force_provider", "")
+                old_tier = session.metadata.get("force_tier", "big")
+                old_model = session.metadata.get("force_model")
+                session.deactivate_use_override()
+                self.sessions.save(session)
+                # Store routing preference for conversation continuity
+                self._track_task(
+                    self._store_routing_preference(
+                        key, old_provider, old_tier, old_model, session,
+                    ),
+                    name="store_routing_pref",
+                )
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel, chat_id=msg.chat_id,
+                    content=f"Model override ({old_provider}) expired due to inactivity. Back to auto-routing.",
+                ))
+            elif use_status == "warning":
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel, chat_id=msg.chat_id,
+                    content="Model override expiring in 2 minutes. Send a message or /use <provider> to extend.",
+                ))
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
@@ -378,7 +446,11 @@ class AgentLoop:
         lessons_for_context = None
         if self._lesson_manager:
             try:
-                lessons_for_context = await self._lesson_manager.get_relevant_lessons(msg.content)
+                _lim = self._copilot_config.lesson_injection_count if self._copilot_config else 3
+                _min_conf = self._copilot_config.lesson_min_confidence if self._copilot_config else 0.30
+                lessons_for_context = await self._lesson_manager.get_relevant_lessons(
+                    msg.content, limit=_lim, min_confidence=_min_conf,
+                )
                 if lessons_for_context and self._satisfaction_detector:
                     self._satisfaction_detector.note_applied_lessons(
                         [l.id for l in lessons_for_context]
@@ -396,22 +468,42 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
-        # Copilot: pass session metadata so extended builder can inject extractions
-        if hasattr(self.context, '_base'):
-            build_kwargs["session_metadata"] = session.metadata
+        # Pass session metadata for onboarding prompt injection (base builder)
+        # and for extended builder's extraction injection (copilot mode)
+        build_kwargs["session_metadata"] = session.metadata
         if lessons_for_context and hasattr(self.context, '_base'):
             build_kwargs["lessons"] = lessons_for_context
         messages = self.context.build_messages(**build_kwargs)
         
+        # Check routing preferences for conversation continuity
+        if (
+            self._copilot_config
+            and not session.metadata.get("force_provider")
+            and not session.private_mode
+            and hasattr(self.provider, 'check_routing_preference')
+        ):
+            pref = await self.provider.check_routing_preference(
+                msg.content, key, self._copilot_config.db_path,
+            )
+            if pref:
+                session.activate_use_override(pref["provider"], pref["tier"], pref.get("model"))
+                self.sessions.save(session)
+                logger.info(f"Restored routing preference: {pref['provider']}")
+
         # Agent loop
         iteration = 0
+        _turn_start = __import__('time').monotonic()
         final_content = None
         tools_used: list[str] = []
-        force_route = None  # Set when web search consent is denied → re-route
         is_router = hasattr(self.provider, 'last_decision')
 
         while iteration < self.max_iterations:
             iteration += 1
+            # Wall-clock safety: prevent runaway turns
+            if __import__('time').monotonic() - _turn_start > self._max_turn_time:
+                logger.warning(f"Turn exceeded {self._max_turn_time}s wall-clock limit")
+                final_content = "I've been working on this for a while. Here's what I have so far — let me know if you'd like me to continue."
+                break
 
             # Copilot: check if context needs rebuilding before next LLM call
             if (
@@ -431,9 +523,6 @@ class AgentLoop:
             )
             if is_router:
                 chat_kwargs["session_metadata"] = session.metadata
-                if force_route:
-                    chat_kwargs["force_route"] = force_route
-                    force_route = None
             try:
                 response = await asyncio.wait_for(self.provider.chat(**chat_kwargs), timeout=self._llm_timeout)
             except asyncio.TimeoutError:
@@ -441,20 +530,8 @@ class AgentLoop:
                 final_content = "I'm sorry, the response timed out. Please try again."
                 break
 
-            # Copilot: set route context on approval interceptor
-            if self._approval_interceptor and is_router:
-                last_decision = self.provider.last_decision
-                if last_decision:
-                    self._approval_interceptor.set_route_context(
-                        target=last_decision.target,
-                        reason=last_decision.reason,
-                    )
-
             # Handle tool calls
             if response.has_tool_calls:
-                # Snapshot messages before adding tool calls (for possible re-route)
-                messages_snapshot = list(messages)
-
                 # Add assistant message with tool calls
                 tool_call_dicts = [
                     {
@@ -473,31 +550,10 @@ class AgentLoop:
                 )
 
                 # Execute tools
-                reroute_target = None
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
-
-                    # Copilot: approval check before execution
-                    if self._approval_interceptor:
-                        decision = await self._approval_interceptor.check(tool_call, msg)
-                        if decision.denied:
-                            if decision.reroute_model:
-                                # Consent denied with re-route — discard tool calls
-                                reroute_target = decision.reroute_model
-                                logger.info(
-                                    f"Consent denied for {tool_call.name}, "
-                                    f"re-routing to {reroute_target}"
-                                )
-                                break
-                            result = f"Action denied by user: {decision.reason}"
-                            messages = self.context.add_tool_result(
-                                messages, tool_call.id, tool_call.name, result
-                            )
-                            continue
-                        if decision.modified and decision.modified_args:
-                            tool_call.arguments = decision.modified_args
 
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
 
@@ -512,14 +568,11 @@ class AgentLoop:
                         messages, tool_call.id, tool_call.name, result
                     )
 
-                # Re-route: restore messages and re-run with forced route
-                if reroute_target:
-                    messages = messages_snapshot
-                    force_route = reroute_target
-                    continue
-
                 # Interleaved CoT: reflect before next action
-                messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
+                if iteration >= self.max_iterations - 3:
+                    messages.append({"role": "user", "content": "Summarize your findings and respond to the user."})
+                else:
+                    messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:
                 # No tool calls, we're done
                 final_content = response.content
@@ -607,10 +660,16 @@ class AgentLoop:
         
         # Agent loop (limited for announce handling)
         iteration = 0
+        _turn_start = __import__('time').monotonic()
         final_content = None
-        
+
         while iteration < self.max_iterations:
             iteration += 1
+            # Wall-clock safety: prevent runaway turns
+            if __import__('time').monotonic() - _turn_start > self._max_turn_time:
+                logger.warning(f"Turn exceeded {self._max_turn_time}s wall-clock limit")
+                final_content = "I've been working on this for a while. Here's what I have so far — let me know if you'd like me to continue."
+                break
             
             try:
                 response = await asyncio.wait_for(
@@ -651,11 +710,14 @@ class AgentLoop:
                         messages, tool_call.id, tool_call.name, result
                     )
                 # Interleaved CoT: reflect before next action
-                messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
+                if iteration >= self.max_iterations - 3:
+                    messages.append({"role": "user", "content": "Summarize your findings and respond to the user."})
+                else:
+                    messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:
                 final_content = response.content
                 break
-        
+
         if final_content is None:
             final_content = "Background task completed."
         
@@ -779,6 +841,44 @@ Respond with ONLY valid JSON, no markdown fences."""
         finally:
             if original_model is not None:
                 self.model = original_model
+
+    async def _store_routing_preference(
+        self, session_key: str, provider: str, tier: str, model: str | None, session,
+    ) -> None:
+        """Extract keywords from recent messages and store a routing preference."""
+        if not self._copilot_config:
+            return
+        try:
+            import aiosqlite
+            # Extract keywords from last 5 user messages
+            recent = [m["content"] for m in session.messages[-10:] if m.get("role") == "user"]
+            text = " ".join(recent).lower()
+            # Simple keyword extraction: words 4+ chars, top 10 by frequency
+            from collections import Counter
+            words = [w for w in text.split() if len(w) >= 4 and w.isalpha()]
+            top = [w for w, _ in Counter(words).most_common(10)]
+            if not top:
+                return
+            kw_str = ",".join(top)
+
+            db_path = self._copilot_config.db_path
+            async with aiosqlite.connect(db_path) as db:
+                # Enforce max 20 preferences per session
+                await db.execute(
+                    """DELETE FROM routing_preferences WHERE id IN (
+                        SELECT id FROM routing_preferences WHERE session_key = ?
+                        ORDER BY last_matched DESC LIMIT -1 OFFSET 19
+                    )""", (session_key,),
+                )
+                await db.execute(
+                    """INSERT INTO routing_preferences (session_key, provider, tier, model, keywords)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (session_key, provider, tier, model, kw_str),
+                )
+                await db.commit()
+            logger.debug(f"Stored routing preference: {provider}/{tier} keywords={kw_str[:60]}")
+        except Exception as e:
+            logger.warning(f"Store routing preference failed: {e}")
 
     async def _audit_log(
         self,
