@@ -21,18 +21,24 @@ We aim to respond to security reports within 48 hours.
 **CRITICAL**: Never commit API keys to version control.
 
 ```bash
-# ✅ Good: Store in config file with restricted permissions
-chmod 600 ~/.nanobot/config.json
+# ✅ Good: Secrets automatically stored separately with restricted permissions
+# Secrets are in ~/.nanobot/secrets.json (mode 0600)
+# Config preferences are in ~/.nanobot/config.json
 
 # ❌ Bad: Hardcoding keys in code or committing them
 ```
 
+**Automatic Secrets Separation** (as of 2026-02-14):
+- API keys stored in `~/.nanobot/secrets.json` with file permissions `0600` (owner read/write only)
+- Auto-migration on first load: extracts API keys from legacy `config.json`
+- Deep merge on load: secrets override empty config values
+- Cloud models and tools **cannot read** API keys from config file
+
 **Recommendations:**
-- Store API keys in `~/.nanobot/config.json` with file permissions set to `0600`
-- Consider using environment variables for sensitive keys
-- Use OS keyring/credential manager for production deployments
+- Secrets file is created automatically with secure permissions
 - Rotate API keys regularly
 - Use separate API keys for development and production
+- Consider OS keyring/credential manager for enterprise deployments
 
 ### 2. Channel Access Control
 
@@ -60,23 +66,43 @@ chmod 600 ~/.nanobot/config.json
 - Use full phone numbers with country code for WhatsApp
 - Review access logs regularly for unauthorized access attempts
 
-### 3. Shell Command Execution
+### 3. Shell Command Execution & POLICY.md Guardrails
 
-The `exec` tool can execute shell commands. While dangerous command patterns are blocked, you should:
+The `exec` tool can execute shell commands. **POLICY.md guardrails** (as of 2026-02-13) provide runtime safety:
 
-- ✅ Review all tool usage in agent logs
-- ✅ Understand what commands the agent is running
-- ✅ Use a dedicated user account with limited privileges
-- ✅ Never run nanobot as root
-- ❌ Don't disable security checks
-- ❌ Don't run on systems with sensitive data without careful review
+**Safety Features:**
+- ✅ **Regex-based safety checks** block dangerous commands before execution
+- ✅ **Forensic audit log** records all tool calls to SQLite `tool_audit_log` table
+- ✅ **Policy violation reporting** logs blocked commands with reason
+- ✅ **Read-only commands** (ls, cat, grep) execute without prompt
+- ❌ **Destructive operations** are blocked and logged
 
-**Blocked patterns:**
+**Blocked patterns (via POLICY.md):**
 - `rm -rf /` - Root filesystem deletion
 - Fork bombs
 - Filesystem formatting (`mkfs.*`)
 - Raw disk writes
+- `dd` commands to sensitive devices
 - Other destructive operations
+
+**Best Practices:**
+- ✅ Review `tool_audit_log` table regularly for security events
+- ✅ Understand what commands the agent is running
+- ✅ Use a dedicated user account with limited privileges
+- ✅ Never run nanobot as root
+- ❌ Don't disable security checks or modify POLICY.md without review
+- ❌ Don't run on systems with sensitive data without careful review
+
+**Forensic Review:**
+```sql
+# Check recent tool calls
+sqlite3 ~/.nanobot/data/sqlite/copilot.db "
+SELECT timestamp, tool_name, policy_check, result_summary
+FROM tool_audit_log
+ORDER BY timestamp DESC
+LIMIT 20;
+"
+```
 
 ### 4. File System Access
 
@@ -146,6 +172,7 @@ For production use:
    ```bash
    chmod 700 ~/.nanobot
    chmod 600 ~/.nanobot/config.json
+   chmod 600 ~/.nanobot/secrets.json  # Auto-created with 0600
    chmod 700 ~/.nanobot/whatsapp-auth
    ```
 
@@ -186,7 +213,8 @@ For production use:
 - **Logs may contain sensitive information** - secure log files appropriately
 - **LLM providers see your prompts** - review their privacy policies
 - **Chat history is stored locally** - protect the `~/.nanobot` directory
-- **API keys are in plain text** - use OS keyring for production
+- **API keys stored in secrets.json** (mode 0600) - separate from config, not accessible to tools
+- **Tool audit log** contains forensic trail - protect `copilot.db` database file
 
 ### 10. Incident Response
 
@@ -208,13 +236,15 @@ If you suspect a security breach:
 
 ✅ **Input Validation**
 - Path traversal protection on file operations
-- Dangerous command pattern detection
+- Dangerous command pattern detection via POLICY.md
 - Input length limits on HTTP requests
 
-✅ **Authentication**
-- Allow-list based access control
+✅ **Authentication & Authorization**
+- Allow-list based access control (`allowFrom` config)
 - Failed authentication attempt logging
 - Open by default (configure allowFrom for production use)
+- POLICY.md guardrails for runtime safety checks
+- Forensic audit log for all tool calls
 
 ✅ **Resource Protection**
 - Command execution timeouts (60s default)
@@ -231,10 +261,10 @@ If you suspect a security breach:
 ⚠️ **Current Security Limitations:**
 
 1. **No Rate Limiting** - Users can send unlimited messages (add your own if needed)
-2. **Plain Text Config** - API keys stored in plain text (use keyring for production)
-3. **No Session Management** - No automatic session expiry
-4. **Limited Command Filtering** - Only blocks obvious dangerous patterns
-5. **No Audit Trail** - Limited security event logging (enhance as needed)
+2. **Session Cache Growth** - SessionManager cache capped at 256 entries (LRU eviction, added 2026-02-16)
+3. **No Session Management** - No automatic session expiry timeout
+4. **Regex-based Command Filtering** - POLICY.md uses pattern matching (not semantic analysis)
+5. **Audit Log Retention** - No automatic pruning of `tool_audit_log` (grows unbounded)
 
 ## Security Checklist
 
@@ -253,7 +283,7 @@ Before deploying nanobot:
 
 ## Updates
 
-**Last Updated**: 2026-02-03
+**Last Updated**: 2026-02-16
 
 For the latest security updates and announcements, check:
 - GitHub Security Advisories: https://github.com/HKUDS/nanobot/security/advisories

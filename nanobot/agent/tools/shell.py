@@ -41,7 +41,7 @@ class ExecTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Execute a shell command and return its output. Per POLICY.md: ask user before commands that modify system state."
+        return "Execute a shell command and return its output. Use with caution."
     
     @property
     def parameters(self) -> dict[str, Any]:

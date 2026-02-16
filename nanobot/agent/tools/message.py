@@ -34,7 +34,7 @@ class MessageTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Send a message to the user. Per POLICY.md: ask user before messaging persons/channels other than the current user."
+        return "Send a message to the user. Use this when you want to communicate something."
     
     @property
     def parameters(self) -> dict[str, Any]:

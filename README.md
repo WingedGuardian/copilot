@@ -20,6 +20,7 @@
 
 ## 📢 News
 
+- **2026-02-16** 🛡️ Production hardening complete — memory leak fixes, graceful shutdown, POLICY.md guardrails, and secrets separation. See [CHANGELOG.md](CHANGELOG.md) for details.
 - **2026-02-13** 🎉 Released v0.1.3.post7 — includes security hardening and multiple improvements. All users are recommended to upgrade to the latest version. See [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.3.post7) for more details.
 - **2026-02-12** 🧠 Redesigned memory system — Less code, more reliable. Join the [discussion](https://github.com/HKUDS/nanobot/discussions/566) about it!
 - **2026-02-10** 🎉 Released v0.1.3.post6 with improvements! Check the updates [notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.3.post6) and our [roadmap](https://github.com/HKUDS/nanobot/discussions/431).
@@ -117,7 +118,7 @@ For OpenRouter - recommended for global users:
   },
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-opus-4-5"
+      "model": "anthropic/claude-sonnet-4-5-20250929"
     }
   }
 }
@@ -659,12 +660,14 @@ That's it! Environment variables, model prefixing, config matching, and `nanobot
 
 ### Security
 
-> For production deployments, set `"restrictToWorkspace": true` in your config to sandbox the agent.
+> **Production Safety**: nanobot uses `POLICY.md` for runtime guardrails (regex-based safety checks) and maintains a forensic audit log. Secrets are stored separately in `~/.nanobot/secrets.json` with restricted permissions (0600).
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `tools.restrictToWorkspace` | `false` | When `true`, restricts **all** agent tools (shell, file read/write/edit, list) to the workspace directory. Prevents path traversal and out-of-scope access. |
 | `channels.*.allowFrom` | `[]` (allow all) | Whitelist of user IDs. Empty = allow everyone; non-empty = only listed users can interact. |
+| **POLICY.md guardrails** | Active | Regex-based safety checks block dangerous commands. Tool calls are logged to `tool_audit_log` table for forensic review. |
+| **Secrets separation** | Active | API keys stored in `secrets.json` (mode 0600), separate from config. Auto-migrated on first load. |
 
 
 ## CLI Reference

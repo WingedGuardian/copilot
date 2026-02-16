@@ -33,15 +33,43 @@ CREATE TABLE IF NOT EXISTS lessons (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_applied TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    user_id TEXT DEFAULT 'user',
+    status TEXT CHECK(status IN ('pending','planning','awaiting','active','completed','failed'))
+        DEFAULT 'pending',
+    checkpoint_tier TEXT CHECK(checkpoint_tier IN ('trivial','operational','strategic','commitment'))
+        DEFAULT 'strategic',
+    current_assignee TEXT,
+    context_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    title TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    parent_id TEXT,
+    priority INTEGER DEFAULT 3,
+    deadline TEXT,
+    session_key TEXT DEFAULT '',
+    step_count INTEGER DEFAULT 0,
+    steps_completed INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS cost_log (
+    id INTEGER PRIMARY KEY,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    model TEXT,
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    cost_usd REAL,
+    task_type TEXT,
+    thread_id TEXT
+);
 """
 
 
 async def ensure_tables(db_path: str | Path) -> None:
-    """Create copilot tables if they don't exist.
-
-    Existing tables (cost_log, approval_rules, tasks) from Phase 1 are left
-    untouched — their schema is compatible.
-    """
+    """Create copilot tables if they don't exist."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -266,6 +294,31 @@ async def migrate_alerts(db_path: str | Path) -> None:
     logger.info(f"Alerts migration complete in {db_path}")
 
 
+async def migrate_routing_preferences(db_path: str | Path) -> None:
+    """Routing preferences: keyword-based provider memory for conversation continuity.
+
+    Safe to call repeatedly.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS routing_preferences (
+                id INTEGER PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                tier TEXT DEFAULT 'big',
+                model TEXT,
+                keywords TEXT NOT NULL,
+                confidence REAL DEFAULT 0.8,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_matched TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_rp_session ON routing_preferences(session_key);
+        """)
+        await db.commit()
+    logger.info(f"Routing preferences migration complete in {db_path}")
+
+
 async def migrate_ironclaw(db_path: str | Path) -> None:
     """IronClaw feature adoption: episodic FTS5 full-text search table.
 
@@ -291,7 +344,7 @@ async def migrate_ironclaw(db_path: str | Path) -> None:
                     session_key,
                     timestamp UNINDEXED,
                     importance UNINDEXED,
-                    content=episodic_fts,
+                    content=episodic_fts_content,
                     content_rowid='rowid'
                 )
             """)
@@ -300,3 +353,27 @@ async def migrate_ironclaw(db_path: str | Path) -> None:
 
         await db.commit()
     logger.info(f"IronClaw migration complete in {db_path}")
+
+
+async def migrate_heartbeat_events(db_path: str | Path) -> None:
+    """Heartbeat events table: event-driven news feed for session context.
+
+    Safe to call repeatedly.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS heartbeat_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                event_type TEXT NOT NULL,
+                severity TEXT DEFAULT 'info',
+                message TEXT NOT NULL,
+                source TEXT DEFAULT 'heartbeat',
+                acknowledged INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_hb_events_ack
+                ON heartbeat_events(acknowledged, created_at);
+        """)
+        await db.commit()
+    logger.info(f"Heartbeat events migration complete in {db_path}")

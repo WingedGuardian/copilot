@@ -2,7 +2,7 @@
 
 ## Automated Unit Tests
 
-**33 tests** covering core subsystems. Run with:
+**42 tests** covering core subsystems. Run with:
 
 ```bash
 python -m pytest tests/copilot/ --ignore=tests/copilot/test_integration.py -v
@@ -12,11 +12,12 @@ python -m pytest tests/copilot/ --ignore=tests/copilot/test_integration.py -v
 
 | Module | Tests | What's Tested |
 |--------|:-----:|---------------|
-| `routing/test_heuristics.py` | 11 | Intent detection, complexity patterns, priority order, lesson overrides |
-| `approval/test_parser.py` | 6 | NL approval parsing, rule creation, ambiguous responses |
+| `routing/test_heuristics.py` | 15 | Intent detection, complexity patterns, priority order, lesson overrides, tool routing |
 | `context/test_budget.py` | 7 | Token counting (tiktoken + fallback), window sizes, continuation threshold |
+| `context/test_policy_loading.py` | 2 | POLICY.md injection into identity docs, graceful absence handling |
 | `extraction/test_schemas.py` | 3 | ExtractionResult validation, sentiment values |
 | `memory/test_embedder.py` | 3 | Vector generation, truncation, batch embedding |
+| `memory/test_fulltext.py` | 9 | FTS5 store/search, session filtering, count, RRF score fusion |
 | `metacognition/test_detector.py` | 3 | Satisfaction signal detection (positive/negative regex) |
 
 All unit tests **PASS** (85s runtime).
@@ -53,8 +54,10 @@ python -m nanobot gateway --verbose
 
 # Should output:
 # ✓ Phase 2 extensions enabled
-# ✓ Approval system + metacognition enabled
+# ✓ POLICY.md guardrails loaded
+# ✓ Metacognition enabled
 # ✓ Memory subsystem ready
+# ✓ SLM work queue initialized
 # ✓ Task worker started
 # ✓ Dream cycle registered
 # ✓ HeartbeatService started
@@ -119,35 +122,34 @@ Via WhatsApp, send to the bot:
    Route: big (user_upgrade) → anthropic/claude-sonnet-4-20250514
    ```
 
-3. **Approval flow (shell command)**
+3. **Policy-gated shell command**
    ```
    > run ls -la
    ```
-   Expected: Bot asks for approval via WhatsApp
+   Expected: Command executes (read-only, allowed by POLICY.md)
+
    ```
-   [Approval Needed]
-   Tool: exec
-   Command: ls -la
-   Reply: approve / deny / modify
+   > run rm -rf /tmp/junk
+   ```
+   Expected: Blocked by dangerous-command pattern in POLICY.md. Bot responds with refusal, no execution.
+
+   Check logs:
+   ```
+   Policy violation: blocked dangerous command pattern
    ```
 
-   Reply: `yes`
-
-   Expected: Command executes, result returned
-
-4. **Approval denial + lesson creation**
+4. **SLM queue resilience**
+   Stop LM Studio, then:
    ```
-   > run rm -rf /
+   > My favorite IDE is VS Code
    ```
-   Expected: Approval request
+   Expected: Response works (heuristic extraction), `/status` shows SLM Queue pending > 0
 
-   Reply: `no, too dangerous`
-
-   Check database:
-   ```sql
-   sqlite3 data/sqlite/copilot.db "SELECT * FROM lessons WHERE source='denial';"
+   Restart LM Studio, wait 1 minute, then:
    ```
-   Should show new lesson: "User denied: too dangerous"
+   > /status
+   ```
+   Expected: SLM Queue pending count decreasing or at 0
 
 5. **Complexity routing**
    ```
@@ -227,8 +229,7 @@ Check forensic trail:
 sqlite3 data/sqlite/copilot.db "
 SELECT
   tool_name,
-  approved_by,
-  denied,
+  policy_check,
   result_summary
 FROM tool_audit_log
 ORDER BY timestamp DESC
@@ -240,18 +241,20 @@ LIMIT 10;
 
 ## Verification Checklist
 
-- [ ] All 33 unit tests pass
+- [ ] All 42 unit tests pass
 - [ ] Gateway boots clean (verbose mode)
 - [ ] Simple message routes to local model
 - [ ] Intent-based upgrade routes to big model
-- [ ] Approval flow blocks shell commands
-- [ ] Denial creates lesson in database
+- [ ] POLICY.md blocks dangerous commands
+- [ ] Read-only commands execute without prompt
 - [ ] Complexity routing works (code blocks → big)
 - [ ] Memory stores and recalls facts
 - [ ] Self-escalation triggers on complex tasks
 - [ ] Conversations persist across restarts
 - [ ] Cost logging tracks spend
 - [ ] Tool audit log records all actions
+- [ ] SLM queue buffers when LM Studio offline
+- [ ] SLM queue drains when LM Studio returns
 
 ---
 
@@ -271,10 +274,10 @@ LIMIT 10;
 - Check Qdrant collection: `curl http://localhost:6333/collections/episodic_memory`
 - Check embeddings: `python -c "import asyncio; from nanobot.copilot.memory.embedder import Embedder; print(asyncio.run(Embedder().embed('test')))"`
 
-### Approval not working
-- Check approval queue: `sqlite3 data/sqlite/copilot.db "SELECT * FROM pending_approvals;"`
-- Verify approval timeout (default 300s)
-- Check WhatsApp delivery (bridge logs)
+### Policy violations not blocking
+- Check POLICY.md exists: `cat data/copilot/policy.md`
+- Verify policy loading in gateway logs: look for "POLICY.md guardrails loaded"
+- Check tool audit log for `policy_check` column values
 
 ---
 
@@ -286,7 +289,8 @@ Measured on Proxmox VM (no GPU) + 5070ti (LM Studio):
 |-----------|-----:|-------|
 | Local routing (simple message) | ~2s | qwen2.5-14b-instruct |
 | Cloud routing (complex task) | ~4s | claude-sonnet-4 |
-| Approval flow (round-trip) | <1s | Local + WhatsApp |
+| Policy check (per tool call) | <1ms | Regex match |
+| SLM queue drain (per item) | ~2s | llama-3.2-3b-instruct |
 | Memory recall (semantic search) | <100ms | Qdrant |
 | Background extraction | ~3s | llama-3.2-3b-instruct |
 

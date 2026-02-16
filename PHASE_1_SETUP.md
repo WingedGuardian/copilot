@@ -155,13 +155,13 @@ Other available models for future use:
 
 ## 🎯 What Phase 1 Does NOT Do (Deferred to Later Phases)
 
-- **Sentry Router** (Phase 2): Intelligent routing, structured JSON, confidence scoring
-- **Task queue** (Phase 3): SQLite-backed persistent queue with worker loop
-- **Memory layer** (Phase 4): QDrant + Redis + SQLite tiered memory
-- **Cloud LLM failover** (Phase 2+): OpenRouter/Venice/MiniMax (needs API keys)
-- **Tool layer / MCP** (Phase 5): AWS, Playwright, Git, Proxmox tools
-- **Approval system** (Phase 7): Dynamic rules, spend thresholds
-- **Dream cycle** (Phase 8): Nightly maintenance, cost analytics, backup
+- **Sentry Router** (Phase 2): Intelligent routing, structured JSON, confidence scoring — ✅ Done
+- **Task queue** (Phase 3): SQLite-backed persistent queue with worker loop — ✅ Done
+- **Memory layer** (Phase 4): QDrant + Redis + SQLite tiered memory — ✅ Done
+- **Cloud LLM failover** (Phase 2+): OpenRouter/Venice/MiniMax — ✅ Done
+- **Tool layer / MCP** (Phase 5): AWS, Playwright, Git, Proxmox tools — Deferred to V2
+- **Approval system** (Phase 7): Built, encountered deadlocks, removed. Replaced with POLICY.md guardrails.
+- **Dream cycle** (Phase 8): Nightly maintenance, cost analytics, backup — ✅ Done
 
 Phase 1 establishes the foundation: nanobot ↔ LM Studio ↔ WhatsApp works end-to-end.
 

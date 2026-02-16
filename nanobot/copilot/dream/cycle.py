@@ -25,6 +25,7 @@ class DreamReport:
     backup_status: str = ""
     alerts: list[str] = field(default_factory=list)
     remediations: int = 0
+    reflection: str = ""
     errors: list[str] = field(default_factory=list)
     duration_ms: int = 0
 
@@ -42,8 +43,12 @@ class DreamReport:
             lines.append(f"Backup: {self.backup_status}")
         if self.alerts:
             lines.append(f"Alerts: {len(self.alerts)}")
+        if self.reflection:
+            lines.append(f"Reflection: {self.reflection}")
         if self.errors:
             lines.append(f"Errors: {'; '.join(self.errors[:3])}")
+        if len(lines) == 2:  # Only header + duration — quiet night
+            lines.append("Quiet night. All systems healthy.")
         return "\n".join(lines)
 
 
@@ -129,19 +134,39 @@ class DreamCycle:
         except Exception as e:
             report.errors.append(f"zero_vectors: {e}")
 
+        # Job 8: Cleanup stale routing preferences (>7 days)
+        try:
+            await self._cleanup_routing_preferences()
+        except Exception as e:
+            report.errors.append(f"routing_prefs: {e}")
+
+        # Job 9: MEMORY.md token budget check
+        try:
+            await self._check_memory_budget()
+        except Exception as e:
+            report.errors.append(f"memory_budget: {e}")
+
+        # Job 10: Metacognitive self-reflection
+        try:
+            report.reflection = await self._self_reflect(report)
+        except Exception as e:
+            report.errors.append(f"reflection: {e}")
+
         report.duration_ms = int((time.time() - start) * 1000)
 
         # Log to DB
         await self._log_report(report)
 
-        # Deliver summary
+        # Always deliver summary to user
         if self._deliver and self._chat_id:
             try:
                 await self._deliver(self._channel, self._chat_id, report.to_summary())
             except Exception as e:
                 logger.warning(f"Dream report delivery failed: {e}")
-            from nanobot.copilot.alerting.bus import get_alert_bus
-            await get_alert_bus().alert("dream", "medium", f"Dream report delivery failed: {e}", "delivery_failed")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("dream", "medium", f"Dream report delivery failed: {e}", "delivery_failed")
+        elif self._deliver:
+            logger.warning("Dream report ready but no chat_id configured for delivery")
 
         logger.info(f"Dream cycle complete in {report.duration_ms}ms")
         return report
@@ -222,16 +247,23 @@ class DreamCycle:
         backup_path = self._backup_dir / date_str
         backup_path.mkdir(parents=True, exist_ok=True)
 
-        # Copy SQLite
+        # Copy SQLite (run in executor to avoid blocking the event loop)
         if self._db_path and Path(self._db_path).exists():
-            import sqlite3
-            src = sqlite3.connect(self._db_path)
-            dst = sqlite3.connect(str(backup_path / "copilot.db"))
-            try:
-                src.backup(dst)
-            finally:
-                dst.close()
-                src.close()
+            import asyncio
+
+            def _do_backup():
+                import sqlite3
+                src = sqlite3.connect(self._db_path)
+                try:
+                    dst = sqlite3.connect(str(backup_path / "copilot.db"))
+                    try:
+                        src.backup(dst)
+                    finally:
+                        dst.close()
+                finally:
+                    src.close()
+
+            await asyncio.get_event_loop().run_in_executor(None, _do_backup)
 
         # Prune old backups (keep 7 days)
         if self._backup_dir.exists():
@@ -299,9 +331,21 @@ class DreamCycle:
         return cleaned
 
     async def _cleanup_zero_vectors(self) -> int:
-        """Find and delete near-zero vectors from Qdrant."""
+        """Find and delete near-zero vectors from Qdrant.
+
+        Skips points whose session_key has a pending re-embedding in the SLM queue.
+        """
         if not self._memory or not hasattr(self._memory, '_qdrant') or not self._memory._qdrant:
             return 0
+
+        # Get protected session keys (pending embedding in SLM queue)
+        protected_sessions: set[str] = set()
+        slm_queue = getattr(self, "_slm_queue", None)
+        if slm_queue:
+            try:
+                protected_sessions = await slm_queue.pending_session_keys("embedding")
+            except Exception:
+                pass  # If queue check fails, proceed with cleanup normally
 
         cleaned = 0
         try:
@@ -309,16 +353,23 @@ class DreamCycle:
                 collection_name="episodes",
                 limit=100,
                 with_vectors=True,
-                with_payload=False,
+                with_payload=True,
             )
             points = result[0] if result else []
             zero_ids = []
+            skipped = 0
             for p in points:
                 if p.vector and isinstance(p.vector, list):
                     magnitude = sum(v * v for v in p.vector) ** 0.5
                     if magnitude < 0.01:
+                        session_key = (p.payload or {}).get("session_key", "")
+                        if session_key in protected_sessions:
+                            skipped += 1
+                            continue
                         zero_ids.append(p.id)
 
+            if skipped:
+                logger.info(f"Dream: skipped {skipped} zero-vectors (pending re-embed)")
             if zero_ids:
                 await self._memory._qdrant.delete(
                     collection_name="episodes",
@@ -330,6 +381,71 @@ class DreamCycle:
             logger.warning(f"Zero vector cleanup failed: {e}")
 
         return cleaned
+
+    async def _self_reflect(self, report: DreamReport) -> str:
+        """Metacognitive self-reflection: what could be improved?"""
+        if not self._execute_fn:
+            return ""
+
+        prompt = (
+            "You are performing a nightly self-reflection. Based on today's activity, "
+            f"consider: {report.cost_summary or 'no cost data'}. "
+            f"Lessons reviewed: {report.lessons_reviewed}, deactivated: {report.lessons_deactivated}. "
+            f"Alerts: {len(report.alerts)}. Errors: {len(report.errors)}. "
+            "In 1-2 sentences, what could I do better? What am I not currently capable of "
+            "that the user might want? Store any actionable insight as a lesson using the "
+            "memory tool if appropriate. Keep the reflection brief and actionable."
+        )
+        try:
+            result = await self._execute_fn(prompt)
+            # Extract first line as summary for report
+            summary = (result or "").strip().split("\n")[0][:200]
+            return summary
+        except Exception as e:
+            logger.warning(f"Self-reflection failed: {e}")
+            return ""
+
+    async def _check_memory_budget(self) -> None:
+        """Warn if MEMORY.md exceeds ~400 token budget (~300 words)."""
+        memory_path = Path("/home/ubuntu/.nanobot/workspace/memory/MEMORY.md")
+        if not memory_path.exists():
+            return
+        text = memory_path.read_text()
+        word_count = len(text.split())
+        estimated_tokens = int(word_count * 1.3)
+        if estimated_tokens > 400:
+            msg = (
+                f"MEMORY.md has grown to ~{estimated_tokens} tokens "
+                f"({word_count} words, budget: 400 tokens). "
+                "Move non-behavioral content to Qdrant via recall_messages."
+            )
+            logger.warning(msg)
+            # Write as heartbeat event so the LLM sees it next session
+            if self._db_path:
+                try:
+                    async with aiosqlite.connect(self._db_path) as db:
+                        await db.execute(
+                            """INSERT INTO heartbeat_events
+                               (event_type, severity, message, source)
+                               VALUES (?, ?, ?, ?)""",
+                            ("memory_budget", "medium", msg, "dream_cycle"),
+                        )
+                        await db.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to write memory budget event: {e}")
+
+    async def _cleanup_routing_preferences(self) -> None:
+        """Remove routing preferences older than 7 days."""
+        if not self._db_path:
+            return
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    "DELETE FROM routing_preferences WHERE created_at < datetime('now', '-7 days')"
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Routing preference cleanup failed: {e}")
 
     async def _log_report(self, report: DreamReport) -> None:
         """Log dream cycle to database."""

@@ -25,10 +25,34 @@ from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import SessionManager
 
 
+# Short model names → full litellm identifiers
+MODEL_ALIASES: dict[str, str] = {
+    "haiku": "anthropic/claude-haiku-4.5",
+    "sonnet": "anthropic/claude-sonnet-4-20250514",
+    "opus": "anthropic/claude-opus-4-20250514",
+    "claude": "anthropic/claude-sonnet-4-20250514",
+    "gpt4": "openai/gpt-4o",
+    "gpt4o": "openai/gpt-4o",
+    "gpt4mini": "openai/gpt-4o-mini",
+    "o1": "openai/o1",
+    "o3": "openai/o3-mini",
+    "gemini": "google/gemini-2.0-flash",
+    "flash": "google/gemini-2.0-flash",
+    "deepseek": "deepseek/deepseek-chat",
+    "r1": "deepseek/deepseek-reasoner",
+}
+
+# Error response prefixes (used for is_error tagging)
+_ERROR_PREFIXES = (
+    "I'm having trouble connecting",
+    "I'm sorry, the response timed out",
+)
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
-    
+
     It:
     1. Receives messages from the bus
     2. Builds context with history, memory, skills
@@ -116,6 +140,13 @@ class AgentLoop:
             self._tracked_tasks.discard(t)
             if not t.cancelled() and t.exception():
                 logger.error(f"Background task '{t.get_name()}' failed: {t.exception()}")
+                try:
+                    from nanobot.copilot.alerting.bus import get_alert_bus
+                    asyncio.ensure_future(get_alert_bus().alert(
+                        "agent", "medium", f"Background task '{t.get_name()}' failed: {t.exception()}", "task_failed"
+                    ))
+                except Exception:
+                    pass
         task.add_done_callback(_done)
         return task
     
@@ -282,7 +313,11 @@ class AgentLoop:
         if cmd == "/status":
             status_tool = self.tools.get("status")
             if status_tool:
-                result = await status_tool.execute(session_metadata=session.metadata)
+                result = await status_tool.execute(
+                    session_metadata=session.metadata,
+                    session=session,
+                    session_manager=self.sessions,
+                )
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="Status dashboard not available.")
@@ -317,7 +352,15 @@ class AgentLoop:
                 if args[1] == "fast":
                     tier = "fast"
                 else:
-                    model = args[1]  # explicit model name
+                    raw = args[1]
+                    model = MODEL_ALIASES.get(raw.lower(), raw)
+                    if model == raw and "/" not in model:
+                        valid = ", ".join(sorted(MODEL_ALIASES.keys()))
+                        return OutboundMessage(
+                            channel=msg.channel, chat_id=msg.chat_id,
+                            content=f"Unknown model '{raw}'. Short names: {valid}\n"
+                                    f"Or use full ID like 'anthropic/claude-haiku-4.5'.",
+                        )
             session.activate_use_override(provider, tier, model)
             self.sessions.save(session)
             desc = model or (f"{tier} model" if tier != "big" else "big model")
@@ -380,8 +423,7 @@ class AgentLoop:
             logger.info(f"Private mode extended for {key}")
 
         if session.private_mode:
-            session.touch_activity()
-            # Check timeout (via router if available)
+            # Check timeout BEFORE touching activity (otherwise elapsed is always ~0)
             if hasattr(self.provider, 'check_private_mode_timeout'):
                 timeout_status = self.provider.check_private_mode_timeout(session.metadata)
                 if timeout_status == "expired" and private_cmd != "extend":
@@ -398,11 +440,11 @@ class AgentLoop:
                         chat_id=msg.chat_id,
                         content="Private mode ending in 2 minutes. Say 'stay private' to extend.",
                     ))
-
-        # Check /use override timeout
-        if session.metadata.get("force_provider") and hasattr(self.provider, 'check_use_override_timeout'):
             session.touch_activity()
-            timeout_s = self._copilot_config.use_override_timeout if self._copilot_config else 1800
+
+        # Check /use override timeout (check BEFORE touch_activity so elapsed reflects actual idle time)
+        if session.metadata.get("force_provider") and hasattr(self.provider, 'check_use_override_timeout'):
+            timeout_s = self._copilot_config.use_override_timeout if self._copilot_config else 3600
             use_status = self.provider.check_use_override_timeout(session.metadata, timeout_s)
             if use_status == "expired":
                 old_provider = session.metadata.get("force_provider", "")
@@ -426,6 +468,7 @@ class AgentLoop:
                     channel=msg.channel, chat_id=msg.chat_id,
                     content="Model override expiring in 2 minutes. Send a message or /use <provider> to extend.",
                 ))
+            session.touch_activity()
 
         # Update tool contexts
         message_tool = self.tools.get("message")
@@ -439,7 +482,11 @@ class AgentLoop:
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(msg.channel, msg.chat_id)
-        
+
+        recall_tool = self.tools.get("recall_messages")
+        if recall_tool:
+            recall_tool._current_session_key = msg.session_key
+
         # Copilot: thread tagging — detect explicit "> TopicName" prefix
         if self._thread_tracker:
             forced_id, forced_label = self._thread_tracker.check_message(msg.content)
@@ -479,6 +526,33 @@ class AgentLoop:
         build_kwargs["session_metadata"] = session.metadata
         if lessons_for_context and hasattr(self.context, '_base'):
             build_kwargs["lessons"] = lessons_for_context
+
+        # Proactive episodic memory recall (cross-session, gracefully degrades)
+        if self._memory_manager and hasattr(self.context, '_base'):
+            try:
+                memory_ctx = await asyncio.wait_for(
+                    self._memory_manager.proactive_recall(
+                        msg.content, session.key, limit=3
+                    ),
+                    timeout=2.0,
+                )
+                if memory_ctx:
+                    build_kwargs["memory_context"] = memory_ctx
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug(f"Proactive recall skipped: {e}")
+
+        # Heartbeat event injection (news feed from background monitoring)
+        if self._copilot_config and hasattr(self.context, '_base'):
+            try:
+                from nanobot.copilot.context.events import get_unacknowledged_events
+                events_ctx = await get_unacknowledged_events(
+                    self._copilot_config.db_path
+                )
+                if events_ctx:
+                    build_kwargs["recent_events"] = events_ctx
+            except Exception as e:
+                logger.debug(f"Event injection skipped: {e}")
+
         messages = self.context.build_messages(**build_kwargs)
         
         # Check routing preferences for conversation continuity
@@ -508,6 +582,8 @@ class AgentLoop:
             # Wall-clock safety: prevent runaway turns
             if __import__('time').monotonic() - _turn_start > self._max_turn_time:
                 logger.warning(f"Turn exceeded {self._max_turn_time}s wall-clock limit")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("agent", "medium", f"Turn exceeded {self._max_turn_time}s wall-clock limit", "turn_timeout")
                 final_content = "I've been working on this for a while. Here's what I have so far — let me know if you'd like me to continue."
                 break
 
@@ -533,6 +609,8 @@ class AgentLoop:
                 response = await asyncio.wait_for(self.provider.chat(**chat_kwargs), timeout=self._llm_timeout)
             except asyncio.TimeoutError:
                 logger.warning(f"LLM call timed out after {self._llm_timeout}s in agent loop")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("llm", "medium", f"LLM call timed out ({self._llm_timeout}s) in agent loop", "llm_timeout")
                 final_content = "I'm sorry, the response timed out. Please try again."
                 break
 
@@ -596,8 +674,14 @@ class AgentLoop:
         
         # Save to session (include tool names so consolidation sees what happened)
         session.add_message("user", msg.content)
+        is_error = final_content.startswith(_ERROR_PREFIXES)
+
+        # Track which model handled this turn (for orientation hints on switches)
+        if not is_error:
+            session.metadata["last_model_used"] = self.model
         session.add_message("assistant", final_content,
-                            tools_used=tools_used if tools_used else None)
+                            tools_used=tools_used if tools_used else None,
+                            **({"is_error": True} if is_error else {}))
         self.sessions.save(session)
 
         # Copilot: background extraction (async, never blocks response)
@@ -674,9 +758,11 @@ class AgentLoop:
             # Wall-clock safety: prevent runaway turns
             if __import__('time').monotonic() - _turn_start > self._max_turn_time:
                 logger.warning(f"Turn exceeded {self._max_turn_time}s wall-clock limit")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("agent", "medium", f"Turn exceeded {self._max_turn_time}s wall-clock limit", "turn_timeout")
                 final_content = "I've been working on this for a while. Here's what I have so far — let me know if you'd like me to continue."
                 break
-            
+
             try:
                 response = await asyncio.wait_for(
                     self.provider.chat(
@@ -688,6 +774,8 @@ class AgentLoop:
                 )
             except asyncio.TimeoutError:
                 logger.warning(f"LLM call timed out after {self._llm_timeout}s in system message loop")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("llm", "medium", f"LLM call timed out ({self._llm_timeout}s) in system message loop", "llm_timeout")
                 final_content = "I'm sorry, the response timed out. Please try again."
                 break
 

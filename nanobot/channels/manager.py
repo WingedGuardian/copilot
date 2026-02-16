@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import os
+import signal
 import shutil
 import subprocess
 from pathlib import Path
@@ -206,33 +208,75 @@ class ChannelManager:
 
         return user_bridge
 
+    @staticmethod
+    def _kill_stale_bridge(port: int = 3001) -> None:
+        """Kill any process occupying the bridge port (orphan from previous run)."""
+        import re, time
+        # Use `ss` to find PID listening on the bridge port
+        try:
+            result = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            # Parse output like: LISTEN 0 511 127.0.0.1:3001 ... users:(("node",pid=12345,fd=18))
+            for match in re.finditer(r'pid=(\d+)', result.stdout):
+                pid = int(match.group(1))
+                logger.warning(f"Killing stale bridge on port {port} (pid {pid})")
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(1)
+                return
+        except Exception:
+            pass
+
     def _start_bridge(self) -> None:
         """Start the WhatsApp bridge subprocess."""
         bridge_dir = self._get_bridge_dir()
         if not bridge_dir:
             return
 
+        # Kill any orphaned bridge from a previous crash
+        self._kill_stale_bridge()
+
         env = {**os.environ}
         if self.config.channels.whatsapp.bridge_token:
             env["BRIDGE_TOKEN"] = self.config.channels.whatsapp.bridge_token
+
+        def _child_setup():
+            """Set process group and parent-death signal for bridge child."""
+            # Put bridge in gateway's process group so _stop_bridge can kill it
+            os.setpgid(0, 0)
+            # Ask kernel to SIGTERM this child when parent dies
+            try:
+                PR_SET_PDEATHSIG = 1
+                ctypes.CDLL("libc.so.6").prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+            except Exception:
+                pass
 
         logger.info("Starting WhatsApp bridge subprocess...")
         self._bridge_process = subprocess.Popen(
             ["node", "dist/index.js"],
             cwd=bridge_dir,
             env=env,
+            preexec_fn=_child_setup,
         )
         logger.info(f"WhatsApp bridge started (pid {self._bridge_process.pid})")
 
     def _stop_bridge(self) -> None:
-        """Stop the WhatsApp bridge subprocess."""
+        """Stop the WhatsApp bridge subprocess and its entire process group."""
         if self._bridge_process and self._bridge_process.poll() is None:
             logger.info("Stopping WhatsApp bridge...")
-            self._bridge_process.terminate()
+            try:
+                # Kill entire process group (bridge + any children)
+                os.killpg(self._bridge_process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 self._bridge_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self._bridge_process.kill()
+                try:
+                    os.killpg(self._bridge_process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             self._bridge_process = None
 
     async def start_all(self) -> None:
@@ -277,10 +321,14 @@ class ChannelManager:
                     exc = task.exception()
                     if exc:
                         logger.error(f"Channel '{name}' crashed: {exc}")
+                        from nanobot.copilot.alerting.bus import get_alert_bus
+                        await get_alert_bus().alert("channel", "high", f"Channel '{name}' crashed: {exc}", f"crash_{name}")
 
                     count = self._restart_counts.get(name, 0)
                     if count >= self._max_restarts:
                         logger.error(f"Channel '{name}' exceeded max restarts ({self._max_restarts})")
+                        from nanobot.copilot.alerting.bus import get_alert_bus
+                        await get_alert_bus().alert("channel", "high", f"Channel '{name}' exceeded max restarts ({self._max_restarts})", f"max_restart_{name}")
                         continue
 
                     self._restart_counts[name] = count + 1

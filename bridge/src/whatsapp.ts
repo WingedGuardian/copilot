@@ -19,6 +19,8 @@ import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 
+const MAX_MEDIA_BYTES = 25 * 1024 * 1024; // 25 MB
+
 const VERSION = '0.1.0';
 
 export interface InboundMessage {
@@ -133,11 +135,15 @@ export class WhatsAppClient {
         if (msg.message?.audioMessage) {
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
-            const tmpDir = '/tmp';
-            const filename = `nanobot_audio_${msg.key.id || Date.now()}.ogg`;
-            audioPath = path.join(tmpDir, filename);
-            fs.writeFileSync(audioPath, buffer as Buffer);
-            console.log(`Voice note saved to ${audioPath}`);
+            if ((buffer as Buffer).length > MAX_MEDIA_BYTES) {
+              console.warn(`Audio too large (${(buffer as Buffer).length} bytes), skipping`);
+            } else {
+              const tmpDir = '/tmp';
+              const filename = `nanobot_audio_${msg.key.id || Date.now()}.ogg`;
+              audioPath = path.join(tmpDir, filename);
+              fs.writeFileSync(audioPath, buffer as Buffer);
+              console.log(`Voice note saved to ${audioPath}`);
+            }
           } catch (err) {
             console.error('Failed to download voice note:', err);
           }
@@ -148,12 +154,16 @@ export class WhatsAppClient {
         if (msg.message?.documentMessage) {
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
-            const tmpDir = '/tmp';
-            const origName = msg.message.documentMessage.fileName || `doc_${msg.key.id || Date.now()}`;
-            const filename = `nanobot_${origName}`;
-            documentPath = path.join(tmpDir, filename);
-            fs.writeFileSync(documentPath, buffer as Buffer);
-            console.log(`Document saved to ${documentPath}`);
+            if ((buffer as Buffer).length > MAX_MEDIA_BYTES) {
+              console.warn(`Document too large (${(buffer as Buffer).length} bytes), skipping`);
+            } else {
+              const tmpDir = '/tmp';
+              const origName = msg.message.documentMessage.fileName || `doc_${msg.key.id || Date.now()}`;
+              const filename = `nanobot_${origName}`;
+              documentPath = path.join(tmpDir, filename);
+              fs.writeFileSync(documentPath, buffer as Buffer);
+              console.log(`Document saved to ${documentPath}`);
+            }
           } catch (err) {
             console.error('Failed to download document:', err);
           }
@@ -164,11 +174,15 @@ export class WhatsAppClient {
         if (msg.message?.imageMessage) {
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
-            const tmpDir = '/tmp';
-            const filename = `nanobot_image_${msg.key.id || Date.now()}.jpg`;
-            imagePath = path.join(tmpDir, filename);
-            fs.writeFileSync(imagePath, buffer as Buffer);
-            console.log(`Image saved to ${imagePath}`);
+            if ((buffer as Buffer).length > MAX_MEDIA_BYTES) {
+              console.warn(`Image too large (${(buffer as Buffer).length} bytes), skipping`);
+            } else {
+              const tmpDir = '/tmp';
+              const filename = `nanobot_image_${msg.key.id || Date.now()}.jpg`;
+              imagePath = path.join(tmpDir, filename);
+              fs.writeFileSync(imagePath, buffer as Buffer);
+              console.log(`Image saved to ${imagePath}`);
+            }
           } catch (err) {
             console.error('Failed to download image:', err);
           }
@@ -226,21 +240,29 @@ export class WhatsAppClient {
     return null;
   }
 
-  async sendMessage(to: string, text: string): Promise<void> {
-    if (!this.sock) {
-      throw new Error('Not connected');
-    }
+  private isUsableJid(jid: string): boolean {
+    // Baileys' jidDecode crashes on @lid JIDs — only allow @s.whatsapp.net and @g.us
+    return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@g.us');
+  }
 
+  async sendMessage(to: string, text: string): Promise<void> {
+    if (!this.sock) throw new Error('Not connected');
+    if (!this.isUsableJid(to)) {
+      console.warn(`Skipping sendMessage: unsupported JID format "${to}"`);
+      return;
+    }
     await this.sock.sendMessage(to, { text });
   }
 
   async markRead(jid: string, messageIds: string[]): Promise<void> {
     if (!this.sock) return;
+    if (!this.isUsableJid(jid)) return;
     await this.sock.readMessages([{ remoteJid: jid, id: messageIds[0], participant: undefined }]);
   }
 
   async sendPresence(jid: string, type: 'composing' | 'paused'): Promise<void> {
     if (!this.sock) return;
+    if (!this.isUsableJid(jid)) return;
     await this.sock.presenceSubscribe(jid);
     await this.sock.sendPresenceUpdate(type, jid);
   }

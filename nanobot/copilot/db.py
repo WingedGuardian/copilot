@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +24,17 @@ class SqlitePool:
     """
 
     _instances: dict[str, "SqlitePool"] = {}
+    _lock = threading.Lock()
 
     def __new__(cls, db_path: str, pool_size: int = 4) -> "SqlitePool":
-        """Singleton per db_path."""
+        """Singleton per db_path (thread-safe)."""
         key = str(Path(db_path).resolve())
-        if key not in cls._instances:
-            inst = super().__new__(cls)
-            inst._initialized = False
-            cls._instances[key] = inst
-        return cls._instances[key]
+        with cls._lock:
+            if key not in cls._instances:
+                inst = super().__new__(cls)
+                inst._initialized = False
+                cls._instances[key] = inst
+            return cls._instances[key]
 
     def __init__(self, db_path: str, pool_size: int = 4):
         if self._initialized:

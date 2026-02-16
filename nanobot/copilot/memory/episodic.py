@@ -73,6 +73,7 @@ class EpisodicStore:
         role: str = "exchange",
         metadata: dict[str, Any] | None = None,
         importance: float = 0.5,
+        conversation_ts: float | None = None,
     ) -> str:
         """Embed and store a single memory point. Returns point ID."""
         await self._ensure_client()
@@ -84,7 +85,7 @@ class EpisodicStore:
             "text": text,
             "session_key": session_key,
             "role": role,
-            "timestamp": time.time(),
+            "timestamp": conversation_ts or time.time(),
             "access_count": 0,
             "importance": importance,
             **(metadata or {}),
@@ -102,7 +103,8 @@ class EpisodicStore:
         return point_id
 
     async def store_extractions(
-        self, extractions: dict[str, Any], session_key: str
+        self, extractions: dict[str, Any], session_key: str,
+        conversation_ts: float | None = None,
     ) -> list[str]:
         """Store individual facts/decisions/entities as separate high-importance points."""
         ids = []
@@ -114,6 +116,7 @@ class EpisodicStore:
                     session_key=session_key,
                     role=role,
                     importance=0.8,
+                    conversation_ts=conversation_ts,
                 )
                 ids.append(pid)
         return ids

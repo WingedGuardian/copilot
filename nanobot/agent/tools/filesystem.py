@@ -98,7 +98,7 @@ class WriteFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Write content to a file at the given path. Creates parent directories if needed. Per POLICY.md: ask user before writing outside memory/.md files."
+        return "Write content to a file at the given path. Creates parent directories if needed."
     
     @property
     def parameters(self) -> dict[str, Any]:
@@ -141,7 +141,7 @@ class EditFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file. Per POLICY.md: ask user before editing outside memory/.md files."
+        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
     
     @property
     def parameters(self) -> dict[str, Any]:

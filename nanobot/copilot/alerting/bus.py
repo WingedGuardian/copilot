@@ -27,6 +27,7 @@ class AlertBus:
         self._dedup_seconds = dedup_hours * 3600
         self._mute_until: float = 0.0
         self._last_sent: dict[str, float] = {}  # "subsystem:error_key" -> timestamp
+        self._alert_count: int = 0
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -41,6 +42,14 @@ class AlertBus:
         dedup_key = f"{subsystem}:{error_key}"
         now = time.time()
         delivered = False
+
+        # Lazy prune expired dedup entries every 100 alerts
+        self._alert_count += 1
+        if self._alert_count % 100 == 0:
+            self._last_sent = {
+                k: ts for k, ts in self._last_sent.items()
+                if (now - ts) < self._dedup_seconds
+            }
 
         should_deliver = self._should_deliver(severity, dedup_key, now)
         if should_deliver:
@@ -131,9 +140,15 @@ def init_alert_bus(
     return _alert_bus
 
 
+_warned_uninitialized = False
+
+
 def get_alert_bus() -> AlertBus:
     """Return the global AlertBus (lazy no-op if not initialised)."""
-    global _alert_bus
+    global _alert_bus, _warned_uninitialized
     if _alert_bus is None:
+        if not _warned_uninitialized:
+            logger.warning("AlertBus not initialized — alerts will not be delivered")
+            _warned_uninitialized = True
         _alert_bus = AlertBus(":memory:")
     return _alert_bus

@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import time
+from collections import OrderedDict
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -55,20 +56,33 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
     
+    # Error patterns to filter from LLM context (raw JSONL retains everything)
+    _ERROR_PREFIXES = (
+        "I'm having trouble connecting",
+        "I'm sorry, the response timed out",
+    )
+
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """
-        Get message history for LLM context.
-        
+        Get message history for LLM context, filtering error noise.
+
         Args:
             max_messages: Maximum messages to return.
-        
+
         Returns:
             List of messages in LLM format.
         """
-        # Get recent messages
-        recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
-        
-        # Convert to LLM format (just role and content)
+        filtered = [
+            m for m in self.messages
+            if not (
+                m["role"] == "assistant"
+                and (
+                    m.get("is_error")
+                    or any(m["content"].startswith(p) for p in self._ERROR_PREFIXES)
+                )
+            )
+        ]
+        recent = filtered[-max_messages:] if len(filtered) > max_messages else filtered
         return [{"role": m["role"], "content": m["content"]} for m in recent]
     
     @property
@@ -101,6 +115,26 @@ class Session:
         """Update last user message timestamp (for private mode timeout)."""
         self.metadata["last_user_message_at"] = time.time()
 
+    def activate_use_override(
+        self, provider: str, tier: str = "big", model: str | None = None
+    ) -> None:
+        """Enable a manual /use override with optional tier/model."""
+        self.metadata["force_provider"] = provider
+        self.metadata["force_tier"] = tier
+        if model:
+            self.metadata["force_model"] = model
+        else:
+            self.metadata.pop("force_model", None)
+        self.metadata["force_provider_since"] = time.time()
+        self.metadata["last_user_message_at"] = time.time()
+
+    def deactivate_use_override(self) -> None:
+        """Clear the manual /use override."""
+        self.metadata.pop("force_provider", None)
+        self.metadata.pop("force_tier", None)
+        self.metadata.pop("force_model", None)
+        self.metadata.pop("force_provider_since", None)
+
     def clear(self) -> None:
         """Clear all messages in the session."""
         self.messages = []
@@ -117,7 +151,8 @@ class SessionManager:
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.sessions_dir = ensure_dir(Path.home() / ".nanobot" / "sessions")
-        self._cache: dict[str, Session] = {}
+        self._cache: OrderedDict[str, Session] = OrderedDict()
+        self._max_cache_size: int = 256
     
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
@@ -134,16 +169,20 @@ class SessionManager:
         Returns:
             The session.
         """
-        # Check cache
+        # Check cache (move to end = most recently used)
         if key in self._cache:
+            self._cache.move_to_end(key)
             return self._cache[key]
-        
+
         # Try to load from disk
         session = self._load(key)
         if session is None:
             session = Session(key=key)
-        
+
         self._cache[key] = session
+        # Evict least-recently-used sessions if over limit
+        while len(self._cache) > self._max_cache_size:
+            self._cache.popitem(last=False)
         return session
     
     def _load(self, key: str) -> Session | None:
@@ -242,7 +281,7 @@ class SessionManager:
                 try:
                     os.replace(str(path), str(bak_path))
                 except OSError:
-                    pass
+                    logger.warning(f"Failed to create backup for session {session.key}")
 
             os.replace(tmp_path, str(path))
         except BaseException:
@@ -254,7 +293,10 @@ class SessionManager:
             raise
 
         self._cache[session.key] = session
-    
+        self._cache.move_to_end(session.key)
+        while len(self._cache) > self._max_cache_size:
+            self._cache.popitem(last=False)
+
     def delete(self, key: str) -> bool:
         """
         Delete a session.

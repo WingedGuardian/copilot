@@ -14,3 +14,4 @@ class ExtractionResult(BaseModel):
     topic_shift: bool = False
     suggested_topic: str | None = None
     token_count_estimate: int = 0
+    conversation_ts: float = 0.0  # When the exchange happened (for deferred processing)

@@ -17,8 +17,8 @@ class MessageBus:
     """
     
     def __init__(self):
-        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
-        self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue(maxsize=1000)
+        self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue(maxsize=1000)
         self._outbound_subscribers: dict[str, list[Callable[[OutboundMessage], Awaitable[None]]]] = {}
         self._running = False
     
@@ -70,15 +70,6 @@ class MessageBus:
         """Stop the dispatcher loop."""
         self._running = False
     
-    async def peek_inbound(self) -> InboundMessage | None:
-        """Peek at the next inbound message without consuming it. Returns None if empty."""
-        if self.inbound.empty():
-            return None
-        msg = self.inbound.get_nowait()
-        # Put it back at the front (re-queue)
-        await self.inbound.put(msg)
-        return msg
-
     @property
     def inbound_size(self) -> int:
         """Number of pending inbound messages."""

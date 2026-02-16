@@ -71,12 +71,15 @@ class MemoryManager:
         return point_id
 
     async def remember_extractions(
-        self, extractions: dict[str, Any], session_key: str
+        self, extractions: dict[str, Any], session_key: str,
+        conversation_ts: float | None = None,
     ) -> list[str]:
         """Store extractions to Qdrant + FTS5 + SQLite structured items."""
         ids = []
         try:
-            ids = await self._episodic.store_extractions(extractions, session_key)
+            ids = await self._episodic.store_extractions(
+                extractions, session_key, conversation_ts=conversation_ts,
+            )
         except Exception as e:
             logger.warning(f"Extraction storage failed: {e}")
 
@@ -142,7 +145,7 @@ class MemoryManager:
             top_text = episodes[0].text
             await self._working.set_topic(session_key, top_text[:100])
 
-        return self._format_for_injection(episodes)
+        return self._format_for_injection(episodes, budget_tokens=200)
 
     @staticmethod
     def _format_for_injection(episodes: list[Episode], budget_tokens: int = 800) -> str:

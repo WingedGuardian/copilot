@@ -89,11 +89,13 @@ class Embedder:
             vec = response.data[0].embedding
             return self._pad_or_trim(vec)
         except Exception:
-            from nanobot.copilot.alerting.bus import get_alert_bus
-            import asyncio
-            asyncio.ensure_future(get_alert_bus().alert("memory", "medium", "Both local+cloud embedding failed", "embedding_failed"))
+            try:
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("memory", "high", "Both local+cloud embedding failed — skipping storage", "embedding_failed")
+            except Exception:
+                pass
 
-        return [0.0] * self._dimensions
+        raise RuntimeError("Embedding failed: both local and cloud unavailable")
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Batch embedding with same local-then-cloud fallback."""
@@ -115,7 +117,9 @@ class Embedder:
         results = []
         for text in truncated:
             vec = await self._embed_cloud(text)
-            results.append(vec if vec is not None else [0.0] * self._dimensions)
+            if vec is None:
+                raise RuntimeError("Embedding failed: both local and cloud unavailable")
+            results.append(vec)
         return results
 
     async def _embed_cloud(self, text: str) -> list[float] | None:

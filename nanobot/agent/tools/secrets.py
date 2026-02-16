@@ -59,6 +59,12 @@ class SecretsProvider:
             )
         return self._store.get(key, "")
 
+    def register(self, key: str, value: str) -> None:
+        """Register an additional secret (e.g. from secrets.json) for leak detection."""
+        if value and len(value) >= 8:
+            self._allowed.add(key)
+            self._store[key] = value
+
     def has(self, key: str) -> bool:
         """Check if a key is loaded (non-empty)."""
         return key in self._store and bool(self._store[key])

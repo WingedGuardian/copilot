@@ -38,9 +38,13 @@ class StatusTool(Tool):
             },
         }
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, session_metadata: dict | None = None, session=None, session_manager=None, **kwargs: Any) -> str:
         try:
-            report = await self._aggregator.collect()
+            report = await self._aggregator.collect(
+                session_metadata=session_metadata,
+                session=session,
+                session_manager=session_manager,
+            )
             return report.to_text()
         except Exception as e:
             return f"Status collection failed: {e}"

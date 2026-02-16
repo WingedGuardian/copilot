@@ -82,12 +82,15 @@ class ExtendedContextBuilder:
         chat_id: str | None = None,
         session_metadata: dict[str, Any] | None = None,
         lessons: list | None = None,
+        memory_context: str | None = None,
+        recent_events: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build messages with tiered context injection.
 
         ``session_metadata`` is the ``Session.metadata`` dict, expected to
         contain an ``"extractions"`` key with a list of extraction result dicts.
         ``lessons`` is a list of active Lesson objects to inject.
+        ``memory_context`` is pre-fetched episodic memory from proactive_recall.
         """
         # Start from the base builder's output
         messages = self._base.build_messages(
@@ -100,10 +103,14 @@ class ExtendedContextBuilder:
             session_metadata=session_metadata,
         )
 
-        # Inject identity docs (soul.md, user.md, agents.md)
+        # Inject identity docs (soul.md, user.md, agents.md, capabilities.md)
         identity_docs = self._load_identity_docs()
         if identity_docs:
             self._inject_into_system(messages, identity_docs)
+
+        # Inject heartbeat events (news feed from background monitoring)
+        if recent_events:
+            self._inject_into_system(messages, recent_events)
 
         # Inject Tier 2: structured extractions into system prompt
         if session_metadata:
@@ -117,6 +124,19 @@ class ExtendedContextBuilder:
             lesson_block = LessonManager.format_for_injection(lessons)
             if lesson_block:
                 self._inject_into_system(messages, lesson_block)
+
+        # Inject proactive episodic memory (cross-session recall)
+        if memory_context:
+            self._inject_into_system(messages, memory_context)
+
+        # Orientation hint when context may be incomplete (< 3 exchanges)
+        real_history = [m for m in history if m.get("role") in ("user", "assistant")]
+        if 0 < len(real_history) < 6:
+            self._inject_into_system(
+                messages,
+                "Note: You may be continuing a prior conversation. "
+                "Use recall_messages to review recent exchanges if needed.",
+            )
 
         return messages
 
@@ -205,7 +225,7 @@ class ExtendedContextBuilder:
             return self._identity_cache
 
         parts: list[str] = []
-        for fname in ("soul.md", "user.md", "agents.md", "policy.md"):
+        for fname in ("soul.md", "user.md", "agents.md", "policy.md", "capabilities.md"):
             fpath = self._docs_dir / fname
             if fpath.exists():
                 try:

@@ -142,6 +142,45 @@ write_file(
 
 ---
 
+## Memory & Context
+
+### recall_messages
+Scroll up in conversation history. Retrieves recent messages that may not be in your current context window. Use when you sense the user is continuing a prior discussion.
+
+```python
+recall_messages(count: int = 20)  # max 50
+```
+
+**When to use:**
+- User references something from earlier in the conversation
+- Context feels thin or incomplete
+- After a model switch or session restart
+
+**Returns:** Timestamped message list with role labels. Error messages are filtered out.
+
+**Note:** `/status` now includes SLM Queue stats (pending items, processed count, last drain time). Use this to monitor extraction backlog when LM Studio is offline.
+
+### memory
+Search, store, or query the episodic memory system. Cross-session semantic search across all stored exchanges and facts.
+
+```python
+# Search across all sessions
+memory(action="search", query="authentication setup")
+
+# Store a fact or preference
+memory(action="store", content="User prefers TypeScript", category="preference")
+
+# Check memory health
+memory(action="stats")
+```
+
+**Actions:**
+- `search` — Semantic search across memories (limit 5 results, scored by relevance)
+- `store` — Save facts, preferences, or entities for long-term recall
+- `stats` — Check Redis/Qdrant connection status and episode count
+
+---
+
 ## Adding Custom Tools
 
 To add custom tools:

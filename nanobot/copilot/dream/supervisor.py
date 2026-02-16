@@ -15,13 +15,29 @@ class ProcessSupervisor:
         self._running = False
         self._supervisor_task: asyncio.Task | None = None
 
-    def register(self, name: str, start_fn: Callable[[], Awaitable[None]]) -> None:
-        """Register a service to be supervised."""
+    def register(
+        self,
+        name: str,
+        start_fn: Callable[[], Awaitable[None]],
+        get_task_fn: Callable[[], asyncio.Task | None] | None = None,
+    ) -> None:
+        """Register a service to be supervised.
+
+        Args:
+            name: Service identifier.
+            start_fn: Async callable that starts the service.
+            get_task_fn: Optional callable returning the service's internal
+                long-running asyncio.Task.  When provided, the supervisor
+                awaits this task after ``start_fn`` returns, keeping the
+                wrapper alive for the health loop.
+        """
         self._services[name] = {
             "start_fn": start_fn,
+            "get_task_fn": get_task_fn,
             "task": None,
             "restarts": 0,
             "backoff": 1.0,
+            "last_restart_at": 0.0,
         }
 
     async def start(self) -> None:
@@ -45,10 +61,20 @@ class ProcessSupervisor:
         logger.info("ProcessSupervisor stopped")
 
     async def _run_service(self, name: str) -> None:
-        """Run a service, catching crashes."""
+        """Run a service, catching crashes.
+
+        If the service uses a fire-and-forget ``start()`` (spawns an internal
+        task then returns), we await that internal task so the supervisor's
+        wrapper stays alive for the health loop.
+        """
         svc = self._services[name]
         try:
             await svc["start_fn"]()
+            get_task = svc.get("get_task_fn")
+            if get_task:
+                internal = get_task()
+                if internal and isinstance(internal, asyncio.Task):
+                    await internal
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -60,6 +86,13 @@ class ProcessSupervisor:
             await asyncio.sleep(self._check_interval)
             for name, svc in self._services.items():
                 task = svc["task"]
+                # Reset restart counter after sustained uptime (10 min)
+                if task and not task.done() and svc["restarts"] > 0 and svc["last_restart_at"] > 0:
+                    uptime = asyncio.get_event_loop().time() - svc["last_restart_at"]
+                    if uptime > 600:
+                        logger.info(f"Service '{name}' stable for {uptime:.0f}s, reset restart counter")
+                        svc["restarts"] = 0
+                        svc["backoff"] = 1.0
                 if task and task.done() and not task.cancelled():
                     if svc["restarts"] >= self._max_restarts:
                         logger.error(
@@ -87,6 +120,7 @@ class ProcessSupervisor:
                         )
                     await asyncio.sleep(svc["backoff"])
                     if self._running:
+                        svc["last_restart_at"] = asyncio.get_event_loop().time()
                         svc["task"] = asyncio.create_task(
                             self._run_service(name), name=f"supervisor:{name}"
                         )

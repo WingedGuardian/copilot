@@ -9,6 +9,23 @@ from loguru import logger
 from nanobot.providers.base import LLMProvider, LLMResponse
 
 
+def _fire_alert(message: str) -> None:
+    """Fire an alert without silently losing errors."""
+    import asyncio
+
+    async def _send():
+        try:
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("llm", "medium", message, "provider_failed")
+        except Exception as e:
+            logger.warning(f"Alert delivery failed: {e}")
+
+    try:
+        asyncio.ensure_future(_send())
+    except RuntimeError:
+        pass  # No event loop — skip alert
+
+
 @dataclass
 class ProviderTier:
     """A single tier in the failover chain."""
@@ -61,8 +78,8 @@ class CircuitBreaker:
         """Record a failure — may trip the circuit."""
         s = self._get(name)
         now = time.time()
-        # Prune old failures outside window
-        s["failures"] = [t for t in s["failures"] if now - t < self._window_s]
+        # Prune old failures outside window, cap at 50 entries
+        s["failures"] = [t for t in s["failures"] if now - t < self._window_s][-49:]
         s["failures"].append(now)
 
         if s["state"] == "half-open":
@@ -70,8 +87,7 @@ class CircuitBreaker:
             s["state"] = "open"
             s["opened_at"] = now
             logger.warning(f"CircuitBreaker: {name} -> open (probe failed)")
-            from nanobot.copilot.alerting.bus import get_alert_bus
-            import asyncio; asyncio.ensure_future(get_alert_bus().alert("llm", "medium", f"LLM provider '{name}' circuit opened", "provider_failed"))
+            _fire_alert(f"LLM provider '{name}' circuit opened")
         elif len(s["failures"]) >= self._failure_threshold:
             s["state"] = "open"
             s["opened_at"] = now
@@ -139,6 +155,33 @@ class FailoverChain:
                     f"Provider {tier.name} ({tier.model}) failed in {latency_ms}ms: {e}"
                 )
                 continue
+
+        # All circuits open — force probe through least-recently-opened provider
+        if last_error is None and chain:
+            probe = min(
+                chain,
+                key=lambda t: self._breaker._get(t.name).get("opened_at", 0),
+            )
+            logger.info(f"CircuitBreaker: all open — forcing probe through {probe.name}")
+            start = time.monotonic()
+            try:
+                response = await probe.provider.chat(
+                    messages=messages, tools=tools, model=probe.model, **kwargs,
+                )
+                latency_ms = int((time.monotonic() - start) * 1000)
+                if (
+                    response.content
+                    and response.content.startswith("Error calling LLM:")
+                    and response.finish_reason == "error"
+                ):
+                    raise RuntimeError(response.content)
+                response.model_used = probe.model
+                self._breaker.record_success(probe.name)
+                return response, probe, latency_ms
+            except Exception as e:
+                self._breaker.record_failure(probe.name)
+                logger.warning(f"Forced probe {probe.name} failed: {e}")
+                last_error = e
 
         raise RuntimeError(
             f"All providers failed. Last error: {last_error}"

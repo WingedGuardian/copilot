@@ -1,15 +1,21 @@
 """Background SLM extraction — runs async after each exchange, never blocks."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import re
-from typing import Any
+import time
+from typing import Any, TYPE_CHECKING
 
 from loguru import logger
 
 from nanobot.providers.base import LLMProvider
 from nanobot.copilot.cost.logger import CostLogger
 from nanobot.copilot.extraction.schemas import ExtractionResult
+
+if TYPE_CHECKING:
+    from nanobot.copilot.slm_queue.manager import SlmWorkQueue
 
 _EXTRACTION_PROMPT = """\
 Extract structured information from this user↔assistant exchange.
@@ -52,6 +58,7 @@ class BackgroundExtractor:
         self._local_model = local_model
         self._fallback_model = fallback_model
         self._current_task: asyncio.Task | None = None
+        self._slm_queue: SlmWorkQueue | None = None
 
         # Callback set by the agent loop to persist results
         self.on_result: Any = None  # async def on_result(session_key, result)
@@ -79,7 +86,11 @@ class BackgroundExtractor:
     ) -> None:
         """Execute extraction and persist results."""
         try:
-            result = await self.extract(user_message, assistant_response)
+            conversation_ts = time.time()
+            result = await self.extract(
+                user_message, assistant_response,
+                session_key=session_key, conversation_ts=conversation_ts,
+            )
             if self.on_result:
                 await self.on_result(session_key, result)
             logger.debug(
@@ -96,10 +107,14 @@ class BackgroundExtractor:
         self,
         user_message: str,
         assistant_response: str,
+        session_key: str = "",
+        conversation_ts: float | None = None,
     ) -> ExtractionResult:
         """Extract structured information from an exchange.
 
-        Tries local SLM → Haiku fallback → heuristic fallback.
+        Tries local SLM → queue for deferred processing → heuristic fallback.
+        Cloud fallback (Haiku) is intentionally skipped — extraction is non-urgent
+        background work that the local SLM queue drainer handles when available.
         """
         prompt = _EXTRACTION_PROMPT.format(
             user_message=user_message[:2000],
@@ -128,39 +143,48 @@ class BackgroundExtractor:
             except (asyncio.TimeoutError, Exception) as e:
                 logger.debug(f"Local extraction failed: {e}")
 
-        # Try Haiku fallback
-        if self._fallback:
+        # Queue for deferred SLM processing when local is unavailable
+        if self._slm_queue and session_key:
             try:
-                response = await self._fallback.chat(
-                    messages=messages,
-                    model=self._fallback_model,
-                    max_tokens=512,
-                    temperature=0.1,
+                await self._slm_queue.enqueue_extraction(
+                    user_message, assistant_response,
+                    session_key, conversation_ts,
                 )
-                if self._cost_logger:
-                    tokens_in = response.usage.get("prompt_tokens", 0)
-                    tokens_out = response.usage.get("completion_tokens", 0)
-                    cost = self._cost_logger.calculate_cost(
-                        self._fallback_model, tokens_in, tokens_out
-                    )
-                    await self._cost_logger.log_call(
-                        model=self._fallback_model,
-                        tokens_in=tokens_in,
-                        tokens_out=tokens_out,
-                        cost_usd=cost,
-                        task_type="extraction",
-                    )
-                result = self._parse_json(response.content)
-                if result:
-                    result.token_count_estimate = (
-                        len(user_message) + len(assistant_response)
-                    ) // 4
-                    return result
-            except Exception as e:
-                logger.debug(f"Fallback extraction failed: {e}")
+                logger.debug(f"Extraction queued for {session_key}")
+            except Exception as qe:
+                logger.debug(f"Queue enqueue failed: {qe}")
 
-        # Heuristic fallback
+        # Heuristic fallback (immediate low-quality results)
         return self._heuristic_extract(user_message, assistant_response)
+
+    async def extract_local_only(
+        self,
+        user_message: str,
+        assistant_response: str,
+    ) -> ExtractionResult:
+        """Extract using local SLM only. Raises on failure (used by queue drainer)."""
+        if not self._local:
+            raise RuntimeError("No local provider configured")
+        prompt = _EXTRACTION_PROMPT.format(
+            user_message=user_message[:2000],
+            assistant_response=assistant_response[:2000],
+        )
+        response = await asyncio.wait_for(
+            self._local.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model=self._local_model,
+                max_tokens=512,
+                temperature=0.1,
+            ),
+            timeout=15.0,
+        )
+        result = self._parse_json(response.content)
+        if not result:
+            raise ValueError("Local SLM returned unparseable extraction")
+        result.token_count_estimate = (
+            len(user_message) + len(assistant_response)
+        ) // 4
+        return result
 
     @staticmethod
     def _parse_json(text: str | None) -> ExtractionResult | None:

@@ -274,6 +274,31 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
     ),
 
+    # Venice AI: OpenAI-compatible API.
+    ProviderSpec(
+        name="venice",
+        keywords=("venice",),
+        env_key="OPENAI_API_KEY",
+        display_name="Venice AI",
+        litellm_prefix="openai",
+        skip_prefixes=("openai/",),
+        is_gateway=True,
+        detect_by_base_keyword="venice",
+        default_api_base="https://api.venice.ai/api/v1",
+        strip_model_prefix=True,
+    ),
+
+    # Nvidia NIM: free-tier API for hosted models.
+    ProviderSpec(
+        name="nvidia",
+        keywords=("nvidia",),
+        env_key="NVIDIA_NIM_API_KEY",
+        display_name="Nvidia NIM",
+        litellm_prefix="nvidia_nim",
+        skip_prefixes=("nvidia_nim/",),
+        default_api_base="https://integrate.api.nvidia.com/v1",
+    ),
+
     # === Local deployment (matched by config key, NOT by api_base) =========
 
     # LM Studio / any OpenAI-compatible local server.
@@ -281,9 +306,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         name="vllm",
         keywords=("vllm",),
-        env_key="OPENAI_API_KEY",
+        env_key="HOSTED_VLLM_API_KEY",
         display_name="LM Studio/Local",
-        litellm_prefix="openai",            # use openai-compat, not hosted_vllm
+        litellm_prefix="hosted_vllm",       # litellm uses api_base directly
         skip_prefixes=(),
         env_extras=(),
         is_gateway=False,

@@ -29,12 +29,11 @@ class CopilotConfig(BaseModel):
     # Should be large enough for proper conversational responses (~14-20B).
     #
     # Suggestions (LM Studio, 5070ti 16GB VRAM, Q4 quantization):
+    #   "huihui-qwen3-30b-a3b-instruct-2507-abliterated-i1@q4_k_m" — 30B MoE (3B active), strong reasoning
     #   "qwen2.5-14b-instruct"              — 14B, excellent all-rounder
-    #   "mistral-nemo-instruct-2407"         — 12B, strong reasoning
-    #   "deepseek-r1-distill-qwen-14b"      — 14B, reasoning focused
+    #   "mistral-small-3.2-24b-instruct-2506" — 24B, strong reasoning
     #   "llama-3.1-8b-instruct"             — 8B, conservative but fast
-    #   "gemma-2-9b-it"                     — 9B, good reasoning
-    local_model: str = "qwen2.5-14b-instruct"
+    local_model: str = "huihui-qwen3-30b-a3b-instruct-2507-abliterated-i1@q4_k_m"
 
     # ── Routing Model (lightweight background SLM) ──────────────────────
     # Tiny model (~3B) for background tasks that don't need a full
@@ -200,13 +199,18 @@ class CopilotConfig(BaseModel):
     private_mode_timeout: int = 1800  # 30 minutes
 
     # /use override timeout (seconds of inactivity before auto-revert)
-    use_override_timeout: int = 1800  # 30 minutes
+    use_override_timeout: int = 3600  # 60 minutes
 
     # Tasks
     task_worker_interval: int = 60
 
+    # SLM deferred work queue
+    slm_queue_enabled: bool = True
+    slm_queue_size_limit: int = 500
+    slm_drain_rate: int = 30  # items per minute when draining
+
     # Dream + Monitoring + Heartbeat
-    dream_cron_expr: str = "0 3 * * *"
+    dream_cron_expr: str = "0 12 * * *"  # 7 AM EST (UTC-5)
     backup_dir: str = "/home/ubuntu/executive-copilot/backups"
     monitor_interval: int = 300
     heartbeat_interval: int = 7200  # 2 hours (daytime only)

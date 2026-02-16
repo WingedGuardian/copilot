@@ -57,6 +57,10 @@ class SatisfactionDetector:
             for lid in self._recently_applied:
                 await self._lesson_manager.mark_helpful(lid)
             logger.debug(f"Reinforced {len(self._recently_applied)} lessons from positive signal")
+        elif polarity == "negative" and self._recently_applied:
+            for lid in self._recently_applied:
+                await self._lesson_manager.penalize(lid)
+            logger.debug(f"Penalized {len(self._recently_applied)} lessons from negative signal")
         self._recently_applied = []
 
     async def on_extraction_result(

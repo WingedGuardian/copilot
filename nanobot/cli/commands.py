@@ -457,7 +457,7 @@ def gateway(
     cost_logger = None
     if config.copilot.enabled:
         import asyncio as _aio
-        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts, migrate_routing_preferences
+        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts, migrate_routing_preferences, migrate_heartbeat_events
         from nanobot.copilot.cost.logger import CostLogger
         from pathlib import Path
 
@@ -465,8 +465,14 @@ def gateway(
         _aio.run(ensure_tables(db_path))
         _aio.run(migrate_alerts(db_path))
         _aio.run(migrate_routing_preferences(db_path))
+        _aio.run(migrate_heartbeat_events(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
+        # Auto-derive monitor_chat_id from whatsapp.allow_from if not set
+        if not config.copilot.monitor_chat_id and config.copilot.monitor_channel == "whatsapp":
+            if config.whatsapp.allow_from:
+                config.copilot.monitor_chat_id = config.whatsapp.allow_from[0] + "@s.whatsapp.net"
+                console.print(f"[green]✓[/green] monitor_chat_id auto-set from whatsapp.allow_from")
         if not config.copilot.monitor_chat_id:
             console.print("[yellow]Warning: copilot.monitor_chat_id is empty — alerts/dream reports won't be delivered[/yellow]")
 
@@ -659,6 +665,35 @@ def gateway(
                 await memory_manager.remember_extractions(data, session_key)
             extractor.on_result = _persist_extract_and_memorize
 
+    # --- Copilot: SLM deferred work queue ---
+    slm_queue = None
+    slm_drainer = None
+    if config.copilot.enabled and config.copilot.slm_queue_enabled and extractor and memory_manager:
+        import asyncio as _aio_q
+        from nanobot.copilot.db import SqlitePool
+        from nanobot.copilot.slm_queue.manager import SlmWorkQueue
+        from nanobot.copilot.slm_queue.drainer import SlmQueueDrainer
+
+        _slm_pool = SqlitePool(config.copilot.db_path)
+        _aio_q.run(_slm_pool.start())
+        slm_queue = SlmWorkQueue(_slm_pool, size_limit=config.copilot.slm_queue_size_limit)
+        _aio_q.run(slm_queue.initialize())
+
+        # Wire queue into extractor
+        extractor._slm_queue = slm_queue
+
+        # LM Studio base URL for health probes
+        _lm_url = (config.providers.vllm.api_base or "http://192.168.50.100:1234").rstrip("/v1").rstrip("/")
+
+        slm_drainer = SlmQueueDrainer(
+            queue=slm_queue,
+            extractor=extractor,
+            memory_manager=memory_manager,
+            lm_studio_url=_lm_url,
+            rate_per_minute=config.copilot.slm_drain_rate,
+        )
+        console.print("[green]✓[/green] SLM work queue enabled")
+
     # --- Copilot: extended context with identity docs + memory ---
     if extended_context and config.copilot.enabled:
         extended_context._docs_dir = Path(config.copilot.copilot_docs_dir)
@@ -699,10 +734,14 @@ def gateway(
     if brave_key and len(brave_key) >= 8:
         agent.secrets.register("brave_api_key", brave_key)
 
-    # --- Copilot: Phase 4 — register memory tool ---
+    # --- Copilot: Phase 4 — register memory + recall tools ---
     if memory_manager:
         from nanobot.copilot.memory.tool import MemoryTool
         agent.tools.register(MemoryTool(memory_manager))
+
+    if config.copilot.enabled:
+        from nanobot.copilot.tools.recall import RecallMessagesTool
+        agent.tools.register(RecallMessagesTool(session_manager))
 
     # --- Copilot: Phase 5 — register copilot tools ---
     if config.copilot.enabled:
@@ -844,6 +883,11 @@ def gateway(
                 delivery_chat_id=config.copilot.monitor_chat_id,
             )
 
+            if slm_queue:
+                dream_cycle._slm_queue = slm_queue
+            if slm_queue and status_aggregator:
+                status_aggregator._slm_queue = slm_queue
+
             monitor_service = MonitorService(
                 status_aggregator=status_aggregator,
                 deliver_fn=_deliver_msg,
@@ -863,6 +907,8 @@ def gateway(
                 delivery_chat_id=config.copilot.monitor_chat_id,
                 db_path=str(db_path),
                 interval_s=config.copilot.heartbeat_interval,
+                qdrant_url=config.copilot.qdrant_url,
+                redis_url=config.copilot.redis_url,
             )
             console.print("[green]v[/green] Dream cycle + monitor + heartbeat enabled")
         except Exception as e:
@@ -908,6 +954,8 @@ def gateway(
                 supervisor.register("monitor", monitor_service.start, lambda: monitor_service._task)
             if copilot_heartbeat:
                 supervisor.register("copilot_heartbeat", copilot_heartbeat.start, lambda: copilot_heartbeat._task)
+            if slm_drainer:
+                supervisor.register("slm_drainer", slm_drainer.start, lambda: slm_drainer._task)
             await supervisor.start()
             console.print("[green]v[/green] Process supervisor started")
 
@@ -968,6 +1016,8 @@ def gateway(
         finally:
             console.print("\nShutting down...")
             await supervisor.stop()
+            if slm_drainer:
+                await slm_drainer.stop()
             if copilot_heartbeat:
                 copilot_heartbeat.stop()
             if monitor_service:

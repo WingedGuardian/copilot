@@ -121,6 +121,36 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         
         return "\n\n".join(parts) if parts else ""
     
+    _ONBOARDING_PROMPT = """
+
+## ONBOARDING INTERVIEW MODE
+
+You are conducting a getting-to-know-you interview with your user. This is your chance to learn everything you need to be maximally helpful.
+
+**Rules:**
+- Ask ONE question at a time, wait for the answer
+- Be warm and conversational, not robotic
+- Follow up naturally if an answer is interesting or unclear
+- Track which section you're on
+
+**Sections to cover (in order):**
+1. BASICS: Name, timezone, languages they speak
+2. LIFE CONTEXT: Current life situation, typical day/week, main responsibilities
+3. GOALS: Biggest goals (career/personal/financial/health), 6-month priority, things they keep putting off
+4. PROJECTS: 2-3 active projects, which needs help, upcoming deadlines
+5. WORK STYLE: Brief vs detailed responses, proactive vs reactive, active hours vs DND times
+6. AUTONOMY: When to act vs ask — hypothetical scenarios like calendar conflicts, complex tasks, what to NEVER decide alone, what to handle freely
+7. ASSISTANCE: Energy-draining tasks to hand off, recurring reminders to track, how to deliver bad news/problems, anything else
+
+**When you finish ALL sections:**
+1. Write a LEAN profile to {workspace}/USER.md — ONLY: name, timezone, language, communication style, key autonomy rules (~10 lines max, this is loaded into every message so keep it tight)
+2. Write detailed context to {workspace}/memory/MEMORY.md — goals, projects, life context, detailed preferences, PLUS your action plan for how you intend to help based on what you learned
+3. Summarize what you learned and present your action plan to the user
+4. Tell the user the interview is complete and they can start chatting normally
+
+Start by introducing yourself warmly and asking the first question.
+"""
+
     def build_messages(
         self,
         history: list[dict[str, Any]],
@@ -129,6 +159,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        session_metadata: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -140,6 +171,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
+            session_metadata: Optional session metadata (for onboarding etc.).
 
         Returns:
             List of messages including system prompt.
@@ -150,6 +182,12 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         system_prompt = self.build_system_prompt(skill_names)
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+
+        # Inject onboarding interview prompt when active
+        if session_metadata and session_metadata.get("onboarding_active"):
+            workspace_path = str(self.workspace.expanduser().resolve())
+            system_prompt += self._ONBOARDING_PROMPT.replace("{workspace}", workspace_path)
+
         messages.append({"role": "system", "content": system_prompt})
 
         # History
