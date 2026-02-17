@@ -97,7 +97,7 @@ pip install nanobot-ai
 ## 🚀 Quick Start
 
 > [!TIP]
-> Set your API key in `~/.nanobot/config.json`.
+> API keys are stored in `~/.nanobot/secrets.json` (auto-created with secure permissions).
 > Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
 
 **1. Initialize**
@@ -106,19 +106,14 @@ pip install nanobot-ai
 nanobot onboard
 ```
 
-**2. Configure** (`~/.nanobot/config.json`)
+**2. Configure** (`~/.nanobot/secrets.json` for API keys, `~/.nanobot/config.json` for preferences)
 
-For OpenRouter - recommended for global users:
+For OpenRouter - recommended for global users, add to `secrets.json`:
 ```json
 {
   "providers": {
     "openrouter": {
       "apiKey": "sk-or-v1-xxx"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-sonnet-4-5-20250929"
     }
   }
 }
@@ -148,7 +143,6 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000
 {
   "providers": {
     "vllm": {
-      "apiKey": "dummy",
       "apiBase": "http://localhost:8000/v1"
     }
   },

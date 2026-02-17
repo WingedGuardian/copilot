@@ -29,10 +29,10 @@ We aim to respond to security reports within 48 hours.
 ```
 
 **Automatic Secrets Separation** (as of 2026-02-14):
-- API keys stored in `~/.nanobot/secrets.json` with file permissions `0600` (owner read/write only)
-- Auto-migration on first load: extracts API keys from legacy `config.json`
+- API keys, phone numbers (`allowFrom`), and chat IDs stored in `~/.nanobot/secrets.json` with file permissions `0600` (owner read/write only)
+- Auto-migration on first load: extracts secrets from legacy `config.json`
 - Deep merge on load: secrets override empty config values
-- Cloud models and tools **cannot read** API keys from config file
+- Cloud models and tools **cannot read** secrets — blocked by `_SENSITIVE_PATH_PATTERNS` (filesystem tools) and `_SECRETS_PATTERNS` (shell tool)
 
 **Recommendations:**
 - Secrets file is created automatically with secure permissions
