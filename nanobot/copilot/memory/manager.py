@@ -30,6 +30,7 @@ class MemoryManager:
         self._fts = FullTextStore(db_path)
         self._working = WorkingMemory(redis_url)
         self._db_path = str(db_path)
+        self._slm_queue: Any = None  # Set by commands.py for deferred re-embedding
 
     async def initialize(self) -> None:
         """Connect to all backends."""
@@ -62,6 +63,15 @@ class MemoryManager:
             await get_alert_bus().alert("memory", "medium", f"Exchange storage failed: {e}", "remember_exchange")
             point_id = ""
 
+        # Queue re-embedding if local embedding was unavailable (zero-vector stored)
+        if self._slm_queue and not self._embedder._local_available:
+            try:
+                await self._slm_queue.enqueue_embedding(
+                    text=combined, session_key=session_key, role="exchange",
+                )
+            except Exception:
+                pass
+
         # Also write to FTS5 for keyword search
         try:
             await self._fts.store(combined, session_key)
@@ -82,6 +92,19 @@ class MemoryManager:
             )
         except Exception as e:
             logger.warning(f"Extraction storage failed: {e}")
+
+        # Queue re-embedding if local embedding was unavailable (zero-vectors stored)
+        if self._slm_queue and not self._embedder._local_available:
+            for key in ("facts", "decisions", "constraints", "entities"):
+                for item in extractions.get(key, []):
+                    try:
+                        await self._slm_queue.enqueue_embedding(
+                            text=item, session_key=session_key,
+                            role=key.rstrip("s"), importance=0.8,
+                            conversation_ts=conversation_ts,
+                        )
+                    except Exception:
+                        pass
 
         # Also write extractions to FTS5
         for key in ("facts", "decisions", "constraints", "entities"):

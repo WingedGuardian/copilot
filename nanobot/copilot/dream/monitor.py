@@ -25,6 +25,7 @@ class MonitorService:
         delivery_chat_id: str = "",
         interval_s: int = 300,
         remediation_fns: dict[str, Callable] | None = None,
+        silent_subsystems: set[str] | None = None,
     ):
         self._status = status_aggregator
         self._deliver = deliver_fn
@@ -32,6 +33,7 @@ class MonitorService:
         self._chat_id = delivery_chat_id
         self._interval = interval_s
         self._remediation_fns = remediation_fns or {}
+        self._silent = silent_subsystems or set()
 
         # State tracking
         self._prev_health: dict[str, bool] = {}  # name -> was_healthy
@@ -77,28 +79,30 @@ class MonitorService:
                 # Transition: healthy -> unhealthy
                 self._unresolved[sub.name] = time.time()
 
-                # Attempt remediation
-                remediated = False
-                if sub.name in self._remediation_fns:
-                    try:
-                        await self._remediation_fns[sub.name]()
-                        remediated = True
-                    except Exception:
-                        pass
+                if sub.name not in self._silent:
+                    # Attempt remediation
+                    remediated = False
+                    if sub.name in self._remediation_fns:
+                        try:
+                            await self._remediation_fns[sub.name]()
+                            remediated = True
+                        except Exception:
+                            pass
 
-                # Notify
-                if remediated:
-                    await self._notify(f"[Fixed] {sub.name} restarted automatically")
-                else:
-                    await self._notify(f"[Down] {sub.name}: {sub.details}")
+                    # Notify
+                    if remediated:
+                        await self._notify(f"[Fixed] {sub.name} restarted automatically")
+                    else:
+                        await self._notify(f"[Down] {sub.name}: {sub.details}")
 
             elif not was_healthy and sub.healthy:
                 # Transition: unhealthy -> healthy (recovery)
                 down_since = self._unresolved.pop(sub.name, time.time())
-                duration = time.time() - down_since
-                hours = int(duration // 3600)
-                minutes = int((duration % 3600) // 60)
-                await self._notify(f"[Recovered] {sub.name} back online after {hours}h{minutes}m")
+                if sub.name not in self._silent:
+                    duration = time.time() - down_since
+                    hours = int(duration // 3600)
+                    minutes = int((duration % 3600) // 60)
+                    await self._notify(f"[Recovered] {sub.name} back online after {hours}h{minutes}m")
 
             self._prev_health[sub.name] = sub.healthy
 
@@ -115,12 +119,13 @@ class MonitorService:
             return
         if now.hour != 7:  # Only nag at 7 AM
             return
-        if not self._unresolved:
+        nag_items = {k: v for k, v in self._unresolved.items() if k not in self._silent}
+        if not nag_items:
             return
 
         self._last_nag_date = today
         lines = ["[Morning Health Summary]"]
-        for name, since in self._unresolved.items():
+        for name, since in nag_items.items():
             duration = time.time() - since
             hours = int(duration // 3600)
             lines.append(f"  {name}: down for {hours}h")

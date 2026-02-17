@@ -22,6 +22,8 @@ class TaskStep:
     status: str = "pending"
     depends_on: str | None = None
     result: str | None = None
+    tool_type: str = "general"
+    recommended_model: str = ""
 
 
 @dataclass
@@ -39,6 +41,7 @@ class Task:
     deadline: str | None = None
     step_count: int = 0
     steps_completed: int = 0
+    pending_questions: str | None = None
 
 
 class TaskManager:
@@ -246,6 +249,56 @@ class TaskManager:
         except Exception as e:
             logger.warning(f"Task log failed: {e}")
 
+    async def set_pending_questions(self, task_id: str, questions: str) -> None:
+        """Set pending questions and move task to awaiting status."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET pending_questions = ?, status = 'awaiting' WHERE id = ?",
+                (questions, task_id),
+            )
+            await db.commit()
+            await self._log_event(task_id, "questions_set", questions[:200], db=db)
+
+    async def clear_pending_questions(self, task_id: str) -> None:
+        """Clear pending questions and move task back to active."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET pending_questions = NULL, status = 'active' WHERE id = ?",
+                (task_id,),
+            )
+            await db.commit()
+            await self._log_event(task_id, "questions_cleared", "", db=db)
+
+    async def get_tasks_with_questions(self) -> list[Task]:
+        """Get tasks that have pending questions (status = awaiting)."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT * FROM tasks WHERE pending_questions IS NOT NULL AND status = 'awaiting'"
+            )
+            rows = await cur.fetchall()
+            return [self._row_to_task(dict(r)) for r in rows]
+
+    async def add_steps_v2(self, task_id: str, steps: list[dict]) -> list[TaskStep]:
+        """Add steps with tool_type metadata. Each dict needs 'description', optional 'tool_type'."""
+        result = []
+        async with aiosqlite.connect(self._db_path) as db:
+            for i, step in enumerate(steps):
+                desc = step["description"]
+                tool_type = step.get("tool_type", "general")
+                rec_model = step.get("recommended_model", "")
+                await db.execute(
+                    """INSERT OR IGNORE INTO task_steps (task_id, step_index, description, tool_type, recommended_model)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (task_id, i, desc, tool_type, rec_model),
+                )
+                result.append(TaskStep(task_id=task_id, step_index=i, description=desc, tool_type=tool_type, recommended_model=rec_model))
+            await db.execute(
+                "UPDATE tasks SET step_count = ? WHERE id = ?", (len(steps), task_id),
+            )
+            await db.commit()
+        return result
+
     @staticmethod
     def _row_to_task(row: dict) -> Task:
         return Task(
@@ -259,4 +312,5 @@ class TaskManager:
             deadline=row.get("deadline"),
             step_count=row.get("step_count", 0),
             steps_completed=row.get("steps_completed", 0),
+            pending_questions=row.get("pending_questions"),
         )

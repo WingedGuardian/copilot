@@ -23,7 +23,9 @@ class TaskTool(Tool):
         return (
             "Create, list, and manage persistent tasks. "
             "Actions: 'create' (new task), 'list' (show tasks), 'get' (task details), "
-            "'complete' (mark done), 'fail' (mark failed), 'add_steps' (decompose task)."
+            "'complete' (mark done), 'fail' (mark failed), 'add_steps' (decompose task), "
+            "'resume' (clear pending questions and resume task), "
+            "'status_summary' (one-line summary of all active tasks)."
         )
 
     @property
@@ -33,7 +35,7 @@ class TaskTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list", "get", "complete", "fail", "add_steps"],
+                    "enum": ["create", "list", "get", "complete", "fail", "add_steps", "resume", "status_summary"],
                     "description": "Action to perform",
                 },
                 "title": {
@@ -87,7 +89,8 @@ class TaskTool(Tool):
             lines = [f"Tasks ({len(tasks)}):"]
             for t in tasks:
                 progress = f"{t.steps_completed}/{t.step_count}" if t.step_count else "no steps"
-                lines.append(f"  [{t.id}] {t.title} ({t.status}, {progress}, P{t.priority})")
+                suffix = " [HAS QUESTIONS]" if t.pending_questions else ""
+                lines.append(f"  [{t.id}] {t.title} ({t.status}, {progress}, P{t.priority}){suffix}")
             return "\n".join(lines)
 
         elif action == "get":
@@ -102,6 +105,8 @@ class TaskTool(Tool):
                 f"Status: {task.status} | Priority: {task.priority}",
                 f"Description: {task.description or '(none)'}",
             ]
+            if task.pending_questions:
+                lines.append(f"Pending questions:\n{task.pending_questions}")
             if task.steps:
                 lines.append(f"Steps ({task.steps_completed}/{task.step_count}):")
                 for s in task.steps:
@@ -126,5 +131,32 @@ class TaskTool(Tool):
                 return "Error: 'task_id' and 'steps' are required."
             created = await self._manager.add_steps(task_id, steps)
             return f"Added {len(created)} steps to task {task_id}."
+
+        elif action == "resume":
+            task_id = kwargs.get("task_id", "")
+            if not task_id:
+                return "Error: 'task_id' is required."
+            task = await self._manager.get_task(task_id)
+            if not task:
+                return f"Task {task_id} not found."
+            if not task.pending_questions:
+                return f"Task {task_id} has no pending questions."
+            await self._manager.clear_pending_questions(task_id)
+            return f"Task {task_id} resumed. Questions cleared, status set to active."
+
+        elif action == "status_summary":
+            tasks = await self._manager.list_tasks()
+            active = [t for t in tasks if t.status in ("pending", "active", "awaiting")]
+            if not active:
+                return "No active tasks."
+            parts = []
+            for t in active:
+                if t.status == "awaiting":
+                    parts.append(f"[{t.id}] {t.title} (awaiting answers)")
+                elif t.step_count:
+                    parts.append(f"[{t.id}] {t.title} ({t.steps_completed}/{t.step_count})")
+                else:
+                    parts.append(f"[{t.id}] {t.title} ({t.status})")
+            return f"{len(active)} active: " + "; ".join(parts)
 
         return f"Unknown action: {action}"

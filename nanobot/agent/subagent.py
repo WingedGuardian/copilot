@@ -54,6 +54,7 @@ class SubagentManager:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
+        max_iterations: int = 15,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
@@ -63,6 +64,7 @@ class SubagentManager:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
+        self.max_iterations = max_iterations
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._subagent_info: dict[str, SubagentInfo] = {}
     
@@ -147,11 +149,10 @@ class SubagentManager:
             ]
             
             # Run agent loop (limited iterations)
-            max_iterations = 15
             iteration = 0
             final_result: str | None = None
             
-            while iteration < max_iterations:
+            while iteration < self.max_iterations:
                 iteration += 1
                 
                 response = await self.provider.chat(

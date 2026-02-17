@@ -65,6 +65,7 @@ class DreamCycle:
         deliver_fn: Callable | None = None,
         delivery_channel: str = "whatsapp",
         delivery_chat_id: str = "",
+        docs_dir: str = "data/copilot",
     ):
         self._db_path = db_path
         self._memory = memory_manager
@@ -74,6 +75,7 @@ class DreamCycle:
         self._deliver = deliver_fn
         self._channel = delivery_channel
         self._chat_id = delivery_chat_id
+        self._docs_dir = docs_dir
 
     async def run(self) -> DreamReport:
         """Run all 5 maintenance jobs and return report."""
@@ -446,6 +448,84 @@ class DreamCycle:
                 await db.commit()
         except Exception as e:
             logger.warning(f"Routing preference cleanup failed: {e}")
+
+    async def run_weekly(self) -> str:
+        """Weekly strategic review — audits model pool, cost trends, proposes changes."""
+        if not self._execute_fn:
+            return "No execute function configured"
+
+        pool_path = Path(self._docs_dir) / "models.md"
+        pool_content = pool_path.read_text() if pool_path.exists() else "(no model pool file found)"
+
+        weekly_stats = await self._get_weekly_stats()
+
+        prompt = f"""You are performing a weekly strategic review. This runs every Sunday.
+
+## Current Model Pool
+{pool_content}
+
+## This Week's Stats
+{weekly_stats}
+
+## Review Checklist
+1. **Model Pool Audit**: Are any models in the pool obsolete? Are there newer/better alternatives? Flag any that underperformed this week.
+2. **Cost Trends**: Compare this week's cost to last week. Are we overspending on any tier?
+3. **Routing Effectiveness**: Were tasks routed to appropriate models?
+4. **Free Tier Usage**: Are we maximizing free tier allocations? Could any paid calls shift to free options?
+5. **New Developments**: Research whether any new models have been released or existing models updated that should be added to or replace entries in the pool.
+
+## Response Format
+Provide a concise weekly report with:
+- Model pool changes recommended (add/remove/replace) with reasoning
+- Cost trend analysis (1-2 sentences)
+- Top 3 actionable suggestions for next week
+- Note the current date as "Last Reviewed" for the model pool
+
+Keep it brief — this goes to WhatsApp."""
+
+        try:
+            result = await self._execute_fn(prompt)
+        except Exception as e:
+            logger.error(f"Weekly review agent call failed: {e}")
+            return f"Weekly review failed: {e}"
+
+        if self._deliver and self._chat_id:
+            try:
+                await self._deliver(self._channel, self._chat_id, f"Weekly Review\n\n{result}")
+            except Exception as e:
+                logger.warning(f"Weekly review delivery failed: {e}")
+
+        logger.info("Weekly review complete")
+        return result or ""
+
+    async def _get_weekly_stats(self) -> str:
+        """Collect cost and usage stats for the past 7 days."""
+        if not self._db_path:
+            return "No cost data available"
+
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute("""
+                    SELECT model, COUNT(*) as calls, SUM(cost_usd) as total
+                    FROM cost_log WHERE timestamp >= datetime('now', '-7 days')
+                    GROUP BY model ORDER BY total DESC
+                """)
+                rows = await cur.fetchall()
+
+                cur2 = await db.execute("""
+                    SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log
+                    WHERE timestamp >= datetime('now', '-14 days')
+                      AND timestamp < datetime('now', '-7 days')
+                """)
+                prior = (await cur2.fetchone())[0]
+                this_week = sum(r[2] or 0 for r in rows)
+
+            lines = [f"This week: ${this_week:.2f} (prior week: ${prior:.2f})"]
+            for model, calls, cost in rows:
+                lines.append(f"  {model}: ${cost:.2f} ({calls} calls)")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Stats query failed: {e}"
 
     async def _log_report(self, report: DreamReport) -> None:
         """Log dream cycle to database."""

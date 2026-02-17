@@ -14,6 +14,8 @@ _SECRET_KEYS = {
     "secret", "app_secret", "appSecret", "client_secret", "clientSecret",
     "password", "imap_password", "smtp_password",
     "monitor_chat_id", "monitorChatId",
+    "approval_chat_id", "approvalChatId",
+    "allow_from", "allowFrom",
 }
 
 # Sections with flat secret keys (key is direct child, not nested under a name)

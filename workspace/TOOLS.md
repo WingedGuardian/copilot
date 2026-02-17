@@ -81,6 +81,29 @@ spawn(task: str, label: str = None) -> str
 
 Use for complex or time-consuming tasks that can run independently. The subagent will complete the task and report back when done.
 
+## Task Management
+
+### task
+Create and manage persistent tasks with background execution.
+
+```
+task(action="create", title="Research VPS providers", description="Find top 3 under $20/month")
+task(action="list")
+task(action="get", task_id="abc123")
+task(action="complete", task_id="abc123")
+task(action="fail", task_id="abc123")
+task(action="add_steps", task_id="abc123", steps=["Step 1", "Step 2"])
+task(action="resume", task_id="abc123")
+task(action="status_summary")
+```
+
+**When to use:**
+- Multi-step requests (research, building, comparisons)
+- Work the user wants done in the background
+- Anything that would take >30 seconds of execution
+
+The background TaskWorker picks up pending tasks, decomposes them into steps via a frontier model, executes each step, and sends progress updates to WhatsApp.
+
 ## Scheduled Reminders (Cron)
 
 Use the `exec` tool to create scheduled reminders with `nanobot cron add`:

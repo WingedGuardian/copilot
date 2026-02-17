@@ -99,13 +99,20 @@ class CopilotConfig(BaseModel):
     embedding_local_dimensions: int = 768
 
     # ── Embeddings (Cloud Fallback) ─────────────────────────────────────
-    # Used when local LM Studio is unreachable.  Zero-vector returned only
-    # if both local and cloud fail.
+    # Used when local LM Studio is unreachable.  Zero-vector stored + queued
+    # for re-embedding if both local and cloud fail.
     #
-    # Suggestions:
-    #   "text-embedding-3-small"   — 1536d (can specify lower), $0.02/MTok
-    #   "text-embedding-3-large"   — 3072d, highest quality, $0.13/MTok
-    #   "text-embedding-ada-002"   — 1536d, legacy but cheap
+    # Free providers (OpenAI-compatible, just set key + base + model):
+    #   Jina AI    — jina-embeddings-v3, 768d, 1M tok/mo free
+    #                key: https://jina.ai/embeddings  base: https://api.jina.ai/v1
+    #   Voyage AI  — voyage-3-lite, 512d, 200M tok/mo free
+    #                key: https://dash.voyageai.com   base: https://api.voyageai.com/v1
+    #   Nomic      — nomic-embed-text-v1.5, 768d, 5M tok/mo free
+    #                key: https://atlas.nomic.ai      base: https://api-atlas.nomic.ai/v1
+    #
+    # Paid providers:
+    #   OpenAI     — text-embedding-3-small, 1536d, $0.02/MTok (no base needed)
+    #   OpenAI     — text-embedding-3-large, 3072d, $0.13/MTok
     cloud_embedding_api_key: str = ""
     cloud_embedding_api_base: str = ""   # empty = default OpenAI endpoint
     cloud_embedding_model: str = "text-embedding-3-small"
@@ -120,7 +127,7 @@ class CopilotConfig(BaseModel):
     #   ""                                     — use router (local → fast fallback)
     #   "anthropic/claude-3.5-haiku"            — force cloud cheap for overnight
     #   "openai/gpt-4o-mini"                  — force cloud cheap
-    dream_model: str = ""              # empty = use router (local → fast → big)
+    dream_model: str = "google/gemini-3-thinking"  # reasoning model, free tier
 
     # ── Heartbeat ───────────────────────────────────────────────────────
     # Proactive tasks from heartbeat.md (every 2h during daytime).
@@ -139,6 +146,7 @@ class CopilotConfig(BaseModel):
     #   ""                                     — use router (local → fast → big)
     #   "anthropic/claude-sonnet-4-20250514"   — force big model for multi-step
     task_model: str = ""               # empty = use router (local → fast → big)
+    decomposition_model: str = ""      # empty = use big_model (frontier for decomposition)
 
     # ── Self-Escalation ─────────────────────────────────────────────────
     # When the local model determines a task is beyond its capabilities,
@@ -211,6 +219,7 @@ class CopilotConfig(BaseModel):
 
     # Dream + Monitoring + Heartbeat
     dream_cron_expr: str = "0 12 * * *"  # 7 AM EST (UTC-5)
+    weekly_review_cron_expr: str = "0 14 * * 0"  # Sunday 9 AM EST (UTC-5)
     backup_dir: str = "/home/ubuntu/executive-copilot/backups"
     monitor_interval: int = 300
     heartbeat_interval: int = 7200  # 2 hours (daytime only)
@@ -240,3 +249,7 @@ class CopilotConfig(BaseModel):
     @property
     def resolved_task_model(self) -> str:
         return self.task_model or ""
+
+    @property
+    def resolved_decomposition_model(self) -> str:
+        return self.decomposition_model or self.big_model
