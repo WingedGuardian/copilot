@@ -11,9 +11,9 @@ class AlertBus:
     """Global alert bus with dedup, mute, and SQLite persistence.
 
     Severity levels:
-        high   — immediate delivery (bypasses dedup window)
-        medium — delivered if outside dedup window
-        low    — SQLite only, no notification
+        high   — WhatsApp delivery (deduped) + /status Active Alerts
+        medium — /status Active Alerts only (no WhatsApp)
+        low    — SQLite only, invisible in /status
     """
 
     def __init__(
@@ -84,13 +84,11 @@ class AlertBus:
     # ── Internals ─────────────────────────────────────────────────────
 
     def _should_deliver(self, severity: str, dedup_key: str, now: float) -> bool:
-        if severity == "low":
-            return False
+        if severity != "high":
+            return False  # Only high severity gets WhatsApp delivery
         if now < self._mute_until:
             return False
-        if severity == "high":
-            return True
-        # medium: check dedup window
+        # high: deduped delivery
         last = self._last_sent.get(dedup_key, 0.0)
         return (now - last) >= self._dedup_seconds
 

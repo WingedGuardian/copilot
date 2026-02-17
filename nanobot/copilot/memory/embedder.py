@@ -91,7 +91,7 @@ class Embedder:
         except Exception:
             try:
                 from nanobot.copilot.alerting.bus import get_alert_bus
-                await get_alert_bus().alert("memory", "high", "Both local+cloud embedding failed — using zero-vector", "embedding_failed")
+                await get_alert_bus().alert("memory", "medium", "Embedding API unavailable — using zero-vector (queued for re-embed)", "embedding_failed")
             except Exception:
                 pass
 
