@@ -9,13 +9,26 @@ from nanobot.config.schema import Config
 
 # Keys that are secrets (nested under their respective sections)
 _SECRET_KEYS = {
+    # API keys and passwords
     "api_key", "apiKey",
     "token", "bot_token", "botToken", "app_token", "appToken",
     "secret", "app_secret", "appSecret", "client_secret", "clientSecret",
     "password", "imap_password", "smtp_password",
+    # Auth tokens missed by generic "token" (nested under channel-specific keys)
+    "bridge_token", "bridgeToken",
+    "claw_token", "clawToken",
+    "encrypt_key", "encryptKey",
+    "verification_token", "verificationToken",
+    "client_id", "clientId",
+    # User PII
     "monitor_chat_id", "monitorChatId",
     "approval_chat_id", "approvalChatId",
     "allow_from", "allowFrom",
+    "imap_username", "imapUsername",
+    "smtp_username", "smtpUsername",
+    "from_address", "fromAddress",
+    # Copilot secrets
+    "cloud_embedding_api_key", "cloudEmbeddingApiKey",
 }
 
 # Sections with flat secret keys (key is direct child, not nested under a name)
