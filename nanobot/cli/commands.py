@@ -840,6 +840,11 @@ def gateway(
             from nanobot.copilot.tools.ops_log import OpsLogTool
             agent.tools.register(OpsLogTool(db_path=str(db_path)))
             console.print("[green]v[/green] Ops log tool enabled")
+
+            from nanobot.copilot.tools.use_model import UseModelTool
+            _timeout_min = (config.copilot.use_override_timeout or 1800) // 60
+            agent.tools.register(UseModelTool(session_manager, timeout_minutes=_timeout_min))
+            console.print("[green]v[/green] Model override tool enabled")
         except Exception as e:
             console.print(f"[yellow]Warning: Status init failed: {e}[/yellow]")
 

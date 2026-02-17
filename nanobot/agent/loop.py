@@ -612,6 +612,9 @@ class AgentLoop:
         recall_tool = self.tools.get("recall_messages")
         if recall_tool:
             recall_tool._current_session_key = msg.session_key
+        use_model_tool = self.tools.get("use_model")
+        if use_model_tool:
+            use_model_tool._current_session_key = msg.session_key
 
         # Copilot: thread tagging — detect explicit "> TopicName" prefix
         if self._thread_tracker:

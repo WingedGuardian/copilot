@@ -18,6 +18,9 @@
 - task — Create and manage persistent tasks with background execution
 - recall_messages — Search episodic memory (Qdrant)
 - status — System dashboard
+- ops_log — Query own operational history (dream, heartbeat, alerts, cost)
+- use_model — Temporarily route session to a specific model (like /use but callable by you)
+- set_preference — Change persistent config settings (models, schedules, thresholds)
 
 ## Skills
 Skills in `~/.nanobot/workspace/skills/` define specialized capabilities.
