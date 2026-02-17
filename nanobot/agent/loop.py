@@ -49,6 +49,100 @@ _ERROR_PREFIXES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# /help command helpers
+# ---------------------------------------------------------------------------
+
+_HELP_COMMANDS = (
+    "/new — Start a new conversation\n"
+    "/status — System health, costs, routing, memory\n"
+    "/tasks — List active tasks with status\n"
+    "/task <id> — Detailed task view\n"
+    "/cancel <id> — Cancel a running task\n"
+    "/onboard — Start the getting-to-know-you interview\n"
+    "/profile — Show your current profile\n"
+    "/use <provider> [fast|<model>] — Switch LLM provider\n"
+    "/use auto — Return to automatic routing\n"
+    "/private — Local-only mode\n"
+    "/help [topic] — This help (topics: routing, policy, memory, tasks, models, alerts)"
+)
+
+
+def _load_help_section(topic: str, docs_dir: str | None) -> str | None:
+    """Load a ## section from help.md by topic name."""
+    if not docs_dir:
+        return None
+    help_path = Path(docs_dir) / "help.md"
+    try:
+        content = help_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, PermissionError):
+        return None
+    import re
+    pattern = rf"^## {re.escape(topic)}\s*\n(.*?)(?=^## |\Z)"
+    match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
+    return match.group(1).strip() if match else None
+
+
+def _list_help_topics(docs_dir: str | None) -> list[str]:
+    """List available ## topics from help.md."""
+    if not docs_dir:
+        return []
+    help_path = Path(docs_dir) / "help.md"
+    try:
+        content = help_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, PermissionError):
+        return []
+    import re
+    return re.findall(r"^## (\w+)", content, re.MULTILINE)
+
+
+def _generate_tips(copilot_config, session_meta: dict) -> list[str]:
+    """Generate dynamic tips based on config and session state."""
+    if not copilot_config:
+        return []
+    tips = []
+    if session_meta.get("force_provider"):
+        provider = session_meta["force_provider"]
+        tips.append(f"  \u26a0\ufe0f Manual routing active ({provider}) — `/use auto` to revert")
+    if session_meta.get("private_mode"):
+        tips.append("  \U0001f512 Private mode active — all requests stay local")
+    if hasattr(copilot_config, "dream_cron_expr"):
+        tips.append(f"  \U0001f4a4 Dream cycle: {copilot_config.dream_cron_expr}")
+    if hasattr(copilot_config, "heartbeat_interval"):
+        hrs = copilot_config.heartbeat_interval / 3600
+        tips.append(f"  \U0001f493 Heartbeat: every {hrs:.0f}h")
+    return tips[:5]
+
+
+def _build_help_response(
+    topic: str | None,
+    copilot_config,
+    session_meta: dict,
+    help_md_dir: str | None,
+) -> str:
+    """Build /help response. Static commands + dynamic tips + topic drill-down."""
+    docs_dir = help_md_dir or (copilot_config.copilot_docs_dir if copilot_config else None)
+
+    # --- Topic drill-down ---
+    if topic:
+        section = _load_help_section(topic, docs_dir)
+        if section:
+            return f"**{topic.title()}**\n\n{section}"
+        available = _list_help_topics(docs_dir)
+        topics_str = ", ".join(available) if available else "routing, policy, memory, tasks, models, alerts"
+        return f"Topic '{topic}' not found. Available topics: {topics_str}"
+
+    # --- Summary mode ---
+    parts = ["\U0001f408 **nanobot help**\n", "**Commands:**\n" + _HELP_COMMANDS]
+
+    tips = _generate_tips(copilot_config, session_meta)
+    if tips:
+        parts.append("\n**Tips:**\n" + "\n".join(tips))
+
+    parts.append("\nType `/help <topic>` for details. Topics: routing, policy, memory, tasks, models, alerts")
+    return "\n".join(parts)
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
@@ -123,6 +217,7 @@ class AgentLoop:
         self._satisfaction_detector = satisfaction_detector
         self._memory_manager = memory_manager
         self._copilot_config = copilot_config
+        self._task_manager = None  # Set externally when copilot task queue is enabled
 
         self._running = False
         # Phase 4: Message UX
@@ -307,9 +402,11 @@ class AgentLoop:
             self.sessions.save(session)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 New session started. Memory consolidated.")
-        if cmd == "/help":
-            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/status — System status dashboard\n/onboard — Start the getting-to-know-you interview\n/profile — Show your current profile\n/use <provider> [fast|<model>] — Switch LLM provider (e.g. /use venice, /use openrouter fast, /use venice gpt-4o)\n/model — Alias for /use\n/use auto — Return to automatic routing\n/help — Show available commands")
+        if cmd == "/help" or cmd.startswith("/help "):
+            topic = cmd[6:].strip() or None
+            docs_dir = self._copilot_config.copilot_docs_dir if self._copilot_config else None
+            content = _build_help_response(topic, self._copilot_config, session.metadata, docs_dir)
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
         if cmd == "/status":
             status_tool = self.tools.get("status")
             if status_tool:
@@ -334,6 +431,38 @@ class AgentLoop:
                                       content=f"🐈 Your profile:\n\n{content}")
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 No profile set yet. Send /onboard to get started.")
+        elif cmd == "/tasks" and self._task_manager:
+            tasks = await self._task_manager.list_tasks()
+            if not tasks:
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="No tasks.")
+            lines = [f"Tasks ({len(tasks)}):"]
+            for t in tasks:
+                progress = f"{t.steps_completed}/{t.step_count}" if t.step_count else "-"
+                lines.append(f"  [{t.id}] {t.title} ({t.status}, {progress})")
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines))
+        elif cmd.startswith("/task ") and self._task_manager:
+            task_id = cmd.split(None, 1)[1].strip()
+            task = await self._task_manager.get_task(task_id)
+            if not task:
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"Task {task_id} not found.")
+            lines = [f"Task [{task.id}]: {task.title}", f"Status: {task.status} | Priority: P{task.priority}"]
+            if task.description:
+                lines.append(f"Description: {task.description}")
+            if task.pending_questions:
+                lines.append(f"Pending questions:\n{task.pending_questions}")
+            if task.steps:
+                lines.append(f"Steps ({task.steps_completed}/{task.step_count}):")
+                for s in task.steps:
+                    icon = {"completed": "done", "failed": "FAIL", "active": ">>", "pending": "  "}.get(s.status, "  ")
+                    lines.append(f"  {icon} {s.step_index}. {s.description}")
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines))
+        elif cmd.startswith("/cancel ") and self._task_manager:
+            task_id = cmd.split(None, 1)[1].strip()
+            task = await self._task_manager.get_task(task_id)
+            if not task:
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"Task {task_id} not found.")
+            await self._task_manager.update_status(task_id, "failed")
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"Task [{task_id}] cancelled.")
         elif cmd.startswith("/use ") or cmd.startswith("/model "):
             parts = cmd.split(None, 2)  # /use provider [tier_or_model]
             args = parts[1:] if len(parts) > 1 else []
