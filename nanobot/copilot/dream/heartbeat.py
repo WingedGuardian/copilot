@@ -89,8 +89,18 @@ class CopilotHeartbeatService:
         events: list[dict] = []
 
         # 1. Programmatic health checks (no LLM)
-        events += await self._check_qdrant()
-        events += await self._check_redis()
+        qdrant_events = await self._check_qdrant()
+        redis_events = await self._check_redis()
+        events += qdrant_events
+        events += redis_events
+
+        # Auto-resolve alerts for subsystems that are now healthy
+        if not qdrant_events:  # Qdrant healthy
+            await self._resolve_alerts("qdrant")
+        if not redis_events:  # Redis healthy
+            await self._resolve_alerts("redis")
+        # Also resolve stale embedding/memory alerts if no new ones in this tick
+        await self._resolve_stale_alerts(hours=4)
 
         # 2. Check for unresolved alerts
         events += await self._check_unresolved_alerts()
@@ -139,6 +149,47 @@ class CopilotHeartbeatService:
                 await self._deliver(self._channel, self._chat_id, f"Alert:\n{summary}")
             except Exception as e:
                 logger.warning(f"Heartbeat delivery failed: {e}")
+
+    # --- Alert resolution ---
+
+    async def _resolve_alerts(self, subsystem: str) -> None:
+        """Resolve all unresolved alerts for a subsystem that is now healthy."""
+        if not self._db_path:
+            return
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """UPDATE alerts SET resolved_at = CURRENT_TIMESTAMP
+                       WHERE subsystem = ? AND resolved_at IS NULL
+                       RETURNING id""",
+                    (subsystem,),
+                )
+                resolved = await cur.fetchall()
+                if resolved:
+                    await db.commit()
+                    logger.info(f"Heartbeat: auto-resolved {len(resolved)} alert(s) for {subsystem}")
+        except Exception as e:
+            logger.debug(f"Alert resolution failed for {subsystem}: {e}")
+
+    async def _resolve_stale_alerts(self, hours: int = 4) -> None:
+        """Resolve alerts that haven't recurred in N hours."""
+        if not self._db_path:
+            return
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """UPDATE alerts SET resolved_at = CURRENT_TIMESTAMP
+                       WHERE resolved_at IS NULL
+                         AND timestamp < datetime('now', ? || ' hours')
+                       RETURNING id""",
+                    (f"-{hours}",),
+                )
+                resolved = await cur.fetchall()
+                if resolved:
+                    await db.commit()
+                    logger.info(f"Heartbeat: auto-resolved {len(resolved)} stale alert(s) (>{hours}h)")
+        except Exception as e:
+            logger.debug(f"Stale alert resolution failed: {e}")
 
     # --- Programmatic health checks ---
 

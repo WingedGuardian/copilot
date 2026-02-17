@@ -12,6 +12,29 @@ import aiosqlite
 from loguru import logger
 
 
+def _format_ago(timestamp_str: str) -> str:
+    """Format a DB timestamp as a human-readable 'Xh Ym ago' string."""
+    try:
+        ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=None)  # treat as naive UTC
+        delta = datetime.now(tz=None) - ts.replace(tzinfo=None)
+        total_seconds = int(delta.total_seconds())
+        if total_seconds < 120:
+            return f"{total_seconds}s ago"
+        minutes = total_seconds // 60
+        if minutes < 120:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        remaining_m = minutes % 60
+        if hours < 48:
+            return f"{hours}h {remaining_m}m ago" if remaining_m else f"{hours}h ago"
+        days = hours // 24
+        return f"{days}d ago"
+    except Exception:
+        return timestamp_str
+
+
 @dataclass
 class SubsystemStatus:
     """Health status of a single subsystem."""
@@ -65,6 +88,7 @@ class DashboardReport:
     context_window: int = 0
     active_sessions: int = 0
     total_sessions: int = 0
+    ops_summary: dict = field(default_factory=dict)  # last dream/heartbeat/alert counts
 
     def to_text(self) -> str:
         """Format as WhatsApp-friendly text."""
@@ -131,9 +155,9 @@ class DashboardReport:
         lines.append(f"  Episodes: {self.episode_count}")
         lines.append(f"  Structured items: {self.structured_items}")
 
-        # Recent Alerts
+        # Active Alerts (unresolved only)
         lines.append("")
-        lines.append("Alerts (24h):")
+        lines.append("Active Alerts:")
         if self.recent_alerts:
             for a in self.recent_alerts:
                 ts = a.get("timestamp", "?")
@@ -142,9 +166,31 @@ class DashboardReport:
                 msg = a.get("message", "")
                 count = a.get("occurrences", 1)
                 suffix = f" (x{count})" if count > 1 else ""
-                lines.append(f"  [{ts}] {sev} {sub}: {msg}{suffix}")
+                lines.append(f"  [{sev}] {sub}: {msg}{suffix}")
         else:
-            lines.append("  No errors or warnings")
+            lines.append("  All clear")
+
+        # Last Operations
+        if self.ops_summary:
+            lines.append("")
+            lines.append("Last Operations:")
+            ops = self.ops_summary
+            if ops.get("dream_ago") is not None:
+                errors = ops.get("dream_errors", 0)
+                err_str = f", {errors} error(s)" if errors else ""
+                lines.append(f"  Dream cycle: {ops['dream_ago']}{err_str}")
+            else:
+                lines.append("  Dream cycle: never run")
+            if ops.get("heartbeat_ago") is not None:
+                lines.append(f"  Heartbeat: {ops['heartbeat_ago']}")
+            else:
+                lines.append("  Heartbeat: never run")
+            alert_h = ops.get("alerts_high_24h", 0)
+            alert_m = ops.get("alerts_med_24h", 0)
+            if alert_h or alert_m:
+                lines.append(f"  Alerts (24h): {alert_h} high, {alert_m} medium")
+            else:
+                lines.append("  Alerts (24h): none")
 
         # SLM Queue
         lines.append("")
@@ -266,6 +312,9 @@ class StatusAggregator:
             except Exception:
                 pass
 
+        # Operational history
+        report.ops_summary = await self._get_ops_summary()
+
         # SLM queue stats
         slm_queue = getattr(self, "_slm_queue", None)
         if slm_queue:
@@ -370,7 +419,7 @@ class StatusAggregator:
             return {}
 
     async def _get_recent_alerts(self) -> list[dict]:
-        """Query alerts table for active warnings/errors in last 24h, deduped."""
+        """Query alerts table for unresolved (active) warnings/errors, deduped."""
         if not self._db_path:
             return []
         try:
@@ -380,7 +429,7 @@ class StatusAggregator:
                     """SELECT subsystem, severity, message,
                               MAX(timestamp) as timestamp, COUNT(*) as occurrences
                        FROM alerts
-                       WHERE timestamp >= datetime('now', '-24 hours')
+                       WHERE resolved_at IS NULL
                          AND severity IN ('high', 'medium')
                        GROUP BY error_key
                        ORDER BY timestamp DESC
@@ -468,6 +517,46 @@ class StatusAggregator:
             ))
 
         return results
+
+    async def _get_ops_summary(self) -> dict:
+        """Query last dream cycle, last heartbeat, and recent alert counts."""
+        if not self._db_path:
+            return {}
+        result: dict = {}
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                # Last dream cycle
+                cur = await db.execute(
+                    "SELECT run_at, errors FROM dream_cycle_log ORDER BY run_at DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row:
+                    result["dream_ago"] = _format_ago(row[0])
+                    result["dream_errors"] = len(row[1].split(";")) if row[1] else 0
+
+                # Last heartbeat
+                cur = await db.execute(
+                    "SELECT run_at FROM heartbeat_log ORDER BY run_at DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row:
+                    result["heartbeat_ago"] = _format_ago(row[0])
+
+                # Alert counts (24h)
+                cur = await db.execute(
+                    """SELECT severity, COUNT(*) FROM alerts
+                       WHERE timestamp >= datetime('now', '-24 hours')
+                         AND severity IN ('high', 'medium')
+                       GROUP BY severity"""
+                )
+                for sev, cnt in await cur.fetchall():
+                    if sev == "high":
+                        result["alerts_high_24h"] = cnt
+                    elif sev == "medium":
+                        result["alerts_med_24h"] = cnt
+        except Exception as e:
+            logger.debug(f"Ops summary query failed: {e}")
+        return result
 
     def _build_routing_state(self, session_metadata: dict | None) -> RoutingState:
         """Determine current routing mode from session metadata and router."""

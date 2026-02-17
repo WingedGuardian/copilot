@@ -577,16 +577,13 @@ class AgentLoop:
             use_status = self.provider.check_use_override_timeout(session.metadata, timeout_s)
             if use_status == "expired":
                 old_provider = session.metadata.get("force_provider", "")
-                old_tier = session.metadata.get("force_tier", "big")
-                old_model = session.metadata.get("force_model")
                 session.deactivate_use_override()
+                # Clear stale routing preferences so they don't re-activate the override
+                session.metadata.pop("_routing_pref_cleared", None)
                 self.sessions.save(session)
-                # Store routing preference for conversation continuity
                 self._track_task(
-                    self._store_routing_preference(
-                        key, old_provider, old_tier, old_model, session,
-                    ),
-                    name="store_routing_pref",
+                    self._clear_routing_preferences(key),
+                    name="clear_routing_prefs",
                 )
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
@@ -673,12 +670,21 @@ class AgentLoop:
         # Heartbeat event injection (news feed from background monitoring)
         if self._copilot_config and hasattr(self.context, '_base'):
             try:
-                from nanobot.copilot.context.events import get_unacknowledged_events
+                from nanobot.copilot.context.events import (
+                    get_unacknowledged_events,
+                    get_heartbeat_summary,
+                )
+                # Detailed events (fire-and-forget, marked as acknowledged)
                 events_ctx = await get_unacknowledged_events(
                     self._copilot_config.db_path
                 )
-                if events_ctx:
-                    build_kwargs["recent_events"] = events_ctx
+                # Always-on heartbeat status (~20 tokens)
+                hb_summary = await get_heartbeat_summary(
+                    self._copilot_config.db_path
+                )
+                parts = [p for p in (hb_summary, events_ctx) if p]
+                if parts:
+                    build_kwargs["recent_events"] = "\n".join(parts)
             except Exception as e:
                 logger.debug(f"Event injection skipped: {e}")
 
@@ -1064,6 +1070,22 @@ Respond with ONLY valid JSON, no markdown fences."""
         finally:
             if original_model is not None:
                 self.model = original_model
+
+    async def _clear_routing_preferences(self, session_key: str) -> None:
+        """Clear stored routing preferences for a session (on override expiry)."""
+        if not self._copilot_config:
+            return
+        try:
+            import aiosqlite
+            async with aiosqlite.connect(self._copilot_config.db_path) as db:
+                await db.execute(
+                    "DELETE FROM routing_preferences WHERE session_key = ?",
+                    (session_key,),
+                )
+                await db.commit()
+            logger.debug(f"Cleared routing preferences for {session_key}")
+        except Exception as e:
+            logger.warning(f"Clear routing preferences failed: {e}")
 
     async def _store_routing_preference(
         self, session_key: str, provider: str, tier: str, model: str | None, session,

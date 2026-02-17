@@ -416,25 +416,67 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
 
-    # Prevent multiple instances (causes duplicate responses)
-    # Use fcntl.flock for atomic locking — no race window between check and write
-    import fcntl
+    # Singleton: kill any existing gateway before starting (prevents duplicate responses)
+    # Uses both port-based detection (most reliable) and PID file (backup).
+    # Port check catches orphans even when PID file is missing or stale.
+    import fcntl, subprocess, time as _time
     pid_file = _Path("/tmp/nanobot-gateway.pid")
-    _pid_fd = open(pid_file, "a+")
-    try:
-        fcntl.flock(_pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        _pid_fd.seek(0)
-        old_pid = _pid_fd.read().strip()
-        console.print(f"[red]Gateway already running (pid {old_pid}). Kill it first or remove {pid_file}[/red]")
-        raise typer.Exit(1)
-    _pid_fd.seek(0)
-    _pid_fd.truncate()
+
+    def _kill_existing_gateway():
+        my_pid = os.getpid()
+        killed = []
+
+        # Port-based detection: find anything on our gateway port
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for pid_str in result.stdout.strip().split("\n"):
+                pid_str = pid_str.strip()
+                if pid_str and int(pid_str) != my_pid:
+                    try:
+                        os.kill(int(pid_str), signal.SIGTERM)
+                        killed.append(pid_str)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass  # lsof not available or timed out
+
+        # PID file: catch processes that haven't bound the port yet
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                if old_pid != my_pid and str(old_pid) not in killed:
+                    try:
+                        os.kill(old_pid, signal.SIGTERM)
+                        killed.append(str(old_pid))
+                    except (ProcessLookupError, PermissionError):
+                        pass
+            except (ValueError, OSError):
+                pass
+
+        if killed:
+            console.print(f"[yellow]Stopped previous gateway (pid {', '.join(killed)})[/yellow]")
+            _time.sleep(2)  # Let old process clean up
+
+    _kill_existing_gateway()
+
+    # Acquire flock with retry (old process may need a moment to release)
+    _pid_fd = open(pid_file, "w")
     _pid_fd.write(str(os.getpid()))
     _pid_fd.flush()
-    # Keep _pid_fd open — lock is held for process lifetime
-    import atexit
-    atexit.register(lambda: pid_file.unlink(missing_ok=True))
+    for _attempt in range(3):
+        try:
+            fcntl.flock(_pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if _attempt < 2:
+                _time.sleep(2)
+            else:
+                console.print(f"[red]Cannot acquire gateway lock after 3 attempts. Check for orphan processes.[/red]")
+                raise typer.Exit(1)
+    # Keep _pid_fd open — lock held for process lifetime. Don't delete file on exit.
 
     # Persistent log file (rotated, 7-day retention)
     from loguru import logger as _loguru
@@ -457,7 +499,7 @@ def gateway(
     cost_logger = None
     if config.copilot.enabled:
         import asyncio as _aio
-        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts, migrate_routing_preferences, migrate_heartbeat_events
+        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts, migrate_routing_preferences, migrate_heartbeat_events, migrate_alert_resolution
         from nanobot.copilot.cost.logger import CostLogger
         from pathlib import Path
 
@@ -466,8 +508,13 @@ def gateway(
         _aio.run(migrate_alerts(db_path))
         _aio.run(migrate_routing_preferences(db_path))
         _aio.run(migrate_heartbeat_events(db_path))
+        _aio.run(migrate_alert_resolution(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
+        # Normalize monitor_chat_id for WhatsApp (must be JID format)
+        if config.copilot.monitor_chat_id and config.copilot.monitor_channel == "whatsapp":
+            if "@" not in config.copilot.monitor_chat_id:
+                config.copilot.monitor_chat_id += "@s.whatsapp.net"
         # Auto-derive monitor_chat_id from whatsapp.allow_from if not set
         if not config.copilot.monitor_chat_id and config.copilot.monitor_channel == "whatsapp":
             if config.whatsapp.allow_from:
@@ -679,8 +726,10 @@ def gateway(
         slm_queue = SlmWorkQueue(_slm_pool, size_limit=config.copilot.slm_queue_size_limit)
         _aio_q.run(slm_queue.initialize())
 
-        # Wire queue into extractor
+        # Wire queue into extractor and memory manager
         extractor._slm_queue = slm_queue
+        if memory_manager:
+            memory_manager._slm_queue = slm_queue
 
         # LM Studio base URL for health probes
         _lm_url = (config.providers.vllm.api_base or "http://192.168.50.100:1234").rstrip("/v1").rstrip("/")
@@ -787,6 +836,10 @@ def gateway(
             )
             agent.tools.register(StatusTool(status_aggregator))
             console.print("[green]v[/green] Status dashboard enabled")
+
+            from nanobot.copilot.tools.ops_log import OpsLogTool
+            agent.tools.register(OpsLogTool(db_path=str(db_path)))
+            console.print("[green]v[/green] Ops log tool enabled")
         except Exception as e:
             console.print(f"[yellow]Warning: Status init failed: {e}[/yellow]")
 
@@ -800,19 +853,50 @@ def gateway(
             from nanobot.copilot.tasks.manager import TaskManager
             from nanobot.copilot.tasks.tool import TaskTool
             from nanobot.copilot.tasks.worker import TaskWorker
+            from nanobot.copilot.tasks.prompts import build_decomposition_prompt
 
             task_manager = TaskManager(db_path)
             agent.tools.register(TaskTool(task_manager))
+            agent._task_manager = task_manager
 
             _task_model = config.copilot.resolved_task_model or None
+            _decomp_model = config.copilot.resolved_decomposition_model
+            _monitor_ch = config.copilot.monitor_channel
+            _monitor_cid = config.copilot.monitor_chat_id
+
+            async def _decompose_task(description: str) -> str:
+                pool_path = Path(config.copilot.copilot_docs_dir) / "models.md"
+                model_pool = pool_path.read_text() if pool_path.exists() else None
+                prompt = build_decomposition_prompt(description, model_pool=model_pool)
+                return await agent.process_direct(
+                    prompt, session_key="task:decompose", model=_decomp_model,
+                )
+
+            async def _notify_task_progress(message: str) -> None:
+                if _monitor_cid:
+                    from nanobot.bus.events import OutboundMessage
+                    await bus.publish_outbound(OutboundMessage(
+                        channel=_monitor_ch, chat_id=_monitor_cid, content=message,
+                    ))
+
+            async def _execute_step(desc: str, sk: str, ch: str, tool_type: str, recommended_model: str = "") -> str:
+                model = recommended_model or _task_model
+                return await agent.process_direct(
+                    desc, session_key=sk, channel=ch, model=model,
+                )
+
             task_worker = TaskWorker(
                 task_manager=task_manager,
-                execute_fn=lambda desc, sk, ch: agent.process_direct(
-                    desc, session_key=sk, channel=ch, model=_task_model,
-                ),
+                execute_fn=_execute_step,
+                decompose_fn=_decompose_task,
+                notify_fn=_notify_task_progress,
                 interval_s=config.copilot.task_worker_interval,
             )
-            console.print("[green]v[/green] Task queue enabled")
+
+            # Increase subagent iteration limit for task execution
+            agent.subagents.max_iterations = 50
+
+            console.print("[green]v[/green] Task queue enabled (with decomposition)")
         except Exception as e:
             console.print(f"[yellow]Warning: Task queue init failed: {e}[/yellow]")
 
@@ -881,6 +965,7 @@ def gateway(
                 deliver_fn=_deliver_msg,
                 delivery_channel=config.copilot.monitor_channel,
                 delivery_chat_id=config.copilot.monitor_chat_id,
+                docs_dir=config.copilot.copilot_docs_dir,
             )
 
             if slm_queue:
@@ -894,6 +979,7 @@ def gateway(
                 delivery_channel=config.copilot.monitor_channel,
                 delivery_chat_id=config.copilot.monitor_chat_id,
                 interval_s=config.copilot.monitor_interval,
+                silent_subsystems={"LM Studio"},
             )
 
             _hb_model = config.copilot.resolved_heartbeat_model or None
@@ -994,6 +1080,36 @@ def gateway(
                     def _reschedule_dream(val):
                         _dream_cancel_event.set()  # Wake scheduler to re-read cron
                     pref_tool._reschedule["dream_cron_expr"] = _reschedule_dream
+
+            # Weekly review scheduler
+            weekly_task = None
+            _weekly_cancel_event = asyncio.Event()
+            if dream_cycle:
+                async def _weekly_scheduler():
+                    from loguru import logger as _weekly_log
+                    while True:
+                        cron_it = _croniter(config.copilot.weekly_review_cron_expr, _time.time())
+                        delay = cron_it.get_next() - _time.time()
+                        if delay > 0:
+                            try:
+                                await asyncio.wait_for(_weekly_cancel_event.wait(), timeout=delay)
+                                _weekly_cancel_event.clear()
+                                continue
+                            except asyncio.TimeoutError:
+                                pass
+                        try:
+                            result = await dream_cycle.run_weekly()
+                            _weekly_log.info("Weekly review complete")
+                        except Exception as exc:
+                            _weekly_log.error(f"Weekly review failed: {exc}")
+
+                weekly_task = asyncio.create_task(_weekly_scheduler(), name="weekly_review")
+                _log.info(f"Weekly review scheduled: {config.copilot.weekly_review_cron_expr}")
+
+                if config.copilot.enabled and pref_tool is not None:
+                    def _reschedule_weekly(val):
+                        _weekly_cancel_event.set()
+                    pref_tool._reschedule["weekly_review_cron_expr"] = _reschedule_weekly
 
             # Signal handling: SIGTERM/SIGINT trigger graceful shutdown
             shutdown_event = asyncio.Event()

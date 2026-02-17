@@ -225,6 +225,7 @@ async def migrate_phase7(db_path: str | Path) -> None:
             ("session_key TEXT", "''"),
             ("step_count INTEGER", "0"),
             ("steps_completed INTEGER", "0"),
+            ("pending_questions TEXT", "NULL"),
         ]:
             try:
                 await db.execute(
@@ -232,6 +233,23 @@ async def migrate_phase7(db_path: str | Path) -> None:
                 )
             except Exception:
                 pass
+
+        # V2.1: Add tool_type to task_steps (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE task_steps ADD COLUMN tool_type TEXT DEFAULT 'general'"
+            )
+        except Exception:
+            pass
+
+        # V2.2: Add recommended_model to task_steps (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE task_steps ADD COLUMN recommended_model TEXT DEFAULT ''"
+            )
+        except Exception:
+            pass
+
         await db.commit()
     logger.info(f"Phase 7 migration complete in {db_path}")
 
@@ -377,3 +395,24 @@ async def migrate_heartbeat_events(db_path: str | Path) -> None:
         """)
         await db.commit()
     logger.info(f"Heartbeat events migration complete in {db_path}")
+
+
+async def migrate_alert_resolution(db_path: str | Path) -> None:
+    """Add resolved_at column to alerts for active/resolved tracking.
+
+    Safe to call repeatedly.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        # Check if column already exists
+        cur = await db.execute("PRAGMA table_info(alerts)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "resolved_at" not in columns:
+            await db.execute(
+                "ALTER TABLE alerts ADD COLUMN resolved_at TIMESTAMP DEFAULT NULL"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alerts_resolved ON alerts(resolved_at)"
+            )
+            await db.commit()
+    logger.info(f"Alert resolution migration complete in {db_path}")
