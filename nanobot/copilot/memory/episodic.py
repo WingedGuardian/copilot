@@ -102,6 +102,40 @@ class EpisodicStore:
             await get_alert_bus().alert("memory", "high", f"Qdrant store failed: {e}", "qdrant_store")
         return point_id
 
+    async def store_with_vector(
+        self,
+        text: str,
+        vector: list[float],
+        session_key: str,
+        role: str = "exchange",
+        metadata: dict[str, Any] | None = None,
+        importance: float = 0.5,
+        conversation_ts: float | None = None,
+    ) -> str:
+        """Store a pre-embedded memory point (vector already computed)."""
+        await self._ensure_client()
+        from qdrant_client.models import PointStruct
+
+        point_id = str(uuid.uuid4())
+        payload = {
+            "text": text,
+            "session_key": session_key,
+            "role": role,
+            "timestamp": conversation_ts or time.time(),
+            "access_count": 0,
+            "importance": importance,
+            **(metadata or {}),
+        }
+
+        try:
+            await self._client.upsert(
+                collection_name=self.COLLECTION,
+                points=[PointStruct(id=point_id, vector=vector, payload=payload)],
+            )
+        except Exception as e:
+            logger.warning(f"Qdrant store failed: {e}")
+        return point_id
+
     async def store_extractions(
         self, extractions: dict[str, Any], session_key: str,
         conversation_ts: float | None = None,

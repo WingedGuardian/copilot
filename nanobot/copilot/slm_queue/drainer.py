@@ -1,8 +1,13 @@
-"""Background worker that drains the SLM queue when local SLM is available."""
+"""Background worker that drains the SLM queue.
+
+Tries local SLM first. If local is offline and items are older than
+CLOUD_STALENESS_HOURS, falls back to cloud to prevent memory gaps.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -12,9 +17,11 @@ if TYPE_CHECKING:
     from nanobot.copilot.memory.manager import MemoryManager
     from nanobot.copilot.slm_queue.manager import SlmWorkQueue, WorkItem
 
+CLOUD_STALENESS_HOURS = 4
+
 
 class SlmQueueDrainer:
-    """Processes deferred SLM work when the local model comes back online."""
+    """Processes deferred SLM work: local when online, cloud after staleness."""
 
     def __init__(
         self,
@@ -60,20 +67,28 @@ class SlmQueueDrainer:
                 await self._queue.reset_stuck()
                 await self._queue.prune_completed()
 
-                if not await self._slm_is_online():
-                    await asyncio.sleep(self._probe_interval)
-                    continue
-
                 size = await self._queue.size()
                 if size == 0:
                     await asyncio.sleep(self._probe_interval)
                     continue
 
-                logger.info(f"SLM online — draining queue ({size} pending)")
-                processed = await self._drain_batch()
+                local_online = await self._slm_is_online()
+
+                if local_online:
+                    logger.info(f"SLM online — draining queue ({size} pending)")
+                    processed = await self._drain_batch(use_cloud=False)
+                elif await self._oldest_age_hours() >= CLOUD_STALENESS_HOURS:
+                    logger.info(
+                        f"SLM offline >{CLOUD_STALENESS_HOURS}h — "
+                        f"cloud draining queue ({size} pending)"
+                    )
+                    processed = await self._drain_batch(use_cloud=True)
+                else:
+                    await asyncio.sleep(self._probe_interval)
+                    continue
+
                 if processed > 0:
                     await self._queue.update_drain_ts()
-                    # Rate limit: spread work over time
                     await asyncio.sleep((60.0 / self._rate_per_min) * processed)
                 else:
                     await asyncio.sleep(self._probe_interval)
@@ -96,9 +111,19 @@ class SlmQueueDrainer:
         except Exception:
             return False
 
+    async def _oldest_age_hours(self) -> float:
+        """How old is the oldest pending item in the queue?"""
+        row = await self._queue._pool.fetchone(
+            "SELECT MIN(queued_at) FROM slm_work_queue "
+            "WHERE status IN ('pending', 'failed') AND attempts < max_attempts"
+        )
+        if not row or row[0] is None:
+            return 0.0
+        return (time.time() - row[0]) / 3600.0
+
     # ── Batch processing ─────────────────────────────────────────────
 
-    async def _drain_batch(self) -> int:
+    async def _drain_batch(self, use_cloud: bool = False) -> int:
         items = await self._queue.dequeue_batch(self._batch_size)
         if not items:
             return 0
@@ -107,9 +132,9 @@ class SlmQueueDrainer:
         for item in items:
             try:
                 if item.work_type == "extraction":
-                    await self._process_extraction(item)
+                    await self._process_extraction(item, use_cloud)
                 elif item.work_type == "embedding":
-                    await self._process_embedding(item)
+                    await self._process_embedding(item, use_cloud)
                 await self._queue.mark_completed(item.id)
                 processed += 1
             except Exception as e:
@@ -117,33 +142,49 @@ class SlmQueueDrainer:
                 await self._queue.mark_failed(item.id, str(e))
         return processed
 
-    async def _process_extraction(self, item: WorkItem) -> None:
-        """Run local-only extraction, store directly to memory (skip on_result chain)."""
+    async def _process_extraction(self, item: WorkItem, use_cloud: bool) -> None:
+        """Run extraction via local or cloud, store to memory."""
         payload = item.payload
-        result = await self._extractor.extract_local_only(
-            payload["user_message"], payload["assistant_response"],
-        )
-        # Store SLM-quality extraction to Qdrant + FTS5 + SQLite items
-        # (session metadata + satisfaction detector already ran with the
-        # immediate heuristic/Haiku result — no need to re-run)
+        if use_cloud:
+            result = await self._extractor.extract_cloud(
+                payload["user_message"], payload["assistant_response"],
+            )
+            logger.debug(f"Cloud-drained extraction #{item.id}")
+        else:
+            result = await self._extractor.extract_local_only(
+                payload["user_message"], payload["assistant_response"],
+            )
+            logger.debug(
+                f"Drained extraction #{item.id}: "
+                f"{len(result.facts)}F {len(result.decisions)}D"
+            )
         data = result.model_dump()
         await self._memory.remember_extractions(
             data, item.session_key, conversation_ts=item.conversation_ts,
         )
-        logger.debug(
-            f"Drained extraction #{item.id}: "
-            f"{len(result.facts)}F {len(result.decisions)}D"
-        )
 
-    async def _process_embedding(self, item: WorkItem) -> None:
-        """Re-embed text with local model, store to Qdrant."""
+    async def _process_embedding(self, item: WorkItem, use_cloud: bool) -> None:
+        """Embed text via local or cloud, store to Qdrant."""
         payload = item.payload
-        await self._memory._episodic.store(
-            text=payload["text"],
-            session_key=item.session_key,
-            role=payload.get("role", "exchange"),
-            metadata=payload.get("metadata"),
-            importance=payload.get("importance", 0.5),
-            conversation_ts=item.conversation_ts,
-        )
-        logger.debug(f"Drained embedding #{item.id}")
+        if use_cloud:
+            vec = await self._memory._embedder.embed_cloud(payload["text"])
+            await self._memory._episodic.store_with_vector(
+                text=payload["text"],
+                vector=vec,
+                session_key=item.session_key,
+                role=payload.get("role", "exchange"),
+                metadata=payload.get("metadata"),
+                importance=payload.get("importance", 0.5),
+                conversation_ts=item.conversation_ts,
+            )
+            logger.debug(f"Cloud-drained embedding #{item.id}")
+        else:
+            await self._memory._episodic.store(
+                text=payload["text"],
+                session_key=item.session_key,
+                role=payload.get("role", "exchange"),
+                metadata=payload.get("metadata"),
+                importance=payload.get("importance", 0.5),
+                conversation_ts=item.conversation_ts,
+            )
+            logger.debug(f"Drained embedding #{item.id}")

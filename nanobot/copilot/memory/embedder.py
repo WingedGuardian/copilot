@@ -57,10 +57,12 @@ class Embedder:
             self._cloud_client = AsyncOpenAI(**kwargs)
 
     async def embed(self, text: str) -> list[float]:
-        """Embed a single text. Tries local, falls back to cloud, then zero-vector."""
+        """Embed a single text. Tries local, then zero-vector (queued for re-embed).
+
+        Cloud fallback is handled by the SLM queue drainer after 4h staleness.
+        """
         text = text[:8000]
 
-        # Try local first (if it hasn't been failing)
         if self._local_available:
             try:
                 self._ensure_local()
@@ -71,35 +73,14 @@ class Embedder:
                 vec = response.data[0].embedding
                 return self._pad_or_trim(vec)
             except Exception as e:
-                logger.info(f"Local embedding unavailable, trying cloud: {e}")
+                logger.info(f"Local embedding unavailable (queued for re-embed): {e}")
                 self._local_available = False
 
-        # Cloud fallback
-        result = await self._embed_cloud(text)
-        if result is not None:
-            return result
-
-        # Both failed — retry local once (it may have recovered)
-        try:
-            self._ensure_local()
-            response = await self._local_client.embeddings.create(
-                input=text, model=self._model,
-            )
-            self._local_available = True
-            vec = response.data[0].embedding
-            return self._pad_or_trim(vec)
-        except Exception:
-            try:
-                from nanobot.copilot.alerting.bus import get_alert_bus
-                await get_alert_bus().alert("memory", "medium", "Embedding API unavailable — using zero-vector (queued for re-embed)", "embedding_failed")
-            except Exception:
-                pass
-
-        logger.warning("Embedding failed: both local and cloud unavailable — returning zero-vector")
+        logger.debug("Local embedding down — returning zero-vector (queued for re-embed)")
         return [0.0] * self._dimensions
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Batch embedding with same local-then-cloud fallback."""
+        """Batch embedding. Tries local, then zero-vectors."""
         truncated = [t[:8000] for t in texts]
 
         if self._local_available:
@@ -111,15 +92,17 @@ class Embedder:
                 self._local_available = True
                 return [self._pad_or_trim(d.embedding) for d in response.data]
             except Exception as e:
-                logger.info(f"Local batch embedding unavailable, trying cloud: {e}")
+                logger.info(f"Local batch embedding unavailable: {e}")
                 self._local_available = False
 
-        # Cloud fallback (one by one — cloud batch limits vary)
-        results = []
-        for text in truncated:
-            vec = await self._embed_cloud(text)
-            results.append(vec if vec is not None else [0.0] * self._dimensions)
-        return results
+        return [[0.0] * self._dimensions for _ in truncated]
+
+    async def embed_cloud(self, text: str) -> list[float]:
+        """Embed via cloud. Used by queue drainer after staleness timeout."""
+        result = await self._embed_cloud(text)
+        if result is not None:
+            return result
+        raise RuntimeError("Cloud embedding failed")
 
     async def _embed_cloud(self, text: str) -> list[float] | None:
         """Embed via cloud endpoint. Returns None on failure."""

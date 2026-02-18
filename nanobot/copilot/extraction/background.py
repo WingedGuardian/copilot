@@ -113,7 +113,8 @@ class BackgroundExtractor:
     ) -> ExtractionResult:
         """Extract structured information from an exchange.
 
-        Tries local SLM → cloud fallback (Haiku) → queue for deferred → heuristic.
+        Tries local SLM → queue for deferred → heuristic (immediate).
+        Cloud fallback is handled by the queue drainer after 4h staleness.
         """
         prompt = _EXTRACTION_PROMPT.format(
             user_message=user_message[:2000],
@@ -143,42 +144,7 @@ class BackgroundExtractor:
             except (asyncio.TimeoutError, Exception) as e:
                 logger.debug(f"Local extraction failed: {e}")
 
-        # Cloud fallback (cheap model like Haiku — ~$0.001/call)
-        if self._fallback:
-            try:
-                response = await asyncio.wait_for(
-                    self._fallback.chat(
-                        messages=messages,
-                        model=self._fallback_model,
-                        max_tokens=512,
-                        temperature=0.1,
-                    ),
-                    timeout=15.0,
-                )
-                result = self._parse_json(response.content)
-                if result:
-                    result.token_count_estimate = (
-                        len(user_message) + len(assistant_response)
-                    ) // 4
-                    # Log cost
-                    if self._cost_logger:
-                        tokens_in = response.usage.get("prompt_tokens", 0)
-                        tokens_out = response.usage.get("completion_tokens", 0)
-                        cost = self._cost_logger.calculate_cost(
-                            self._fallback_model, tokens_in, tokens_out,
-                        )
-                        await self._cost_logger.log_call(
-                            self._fallback_model, tokens_in, tokens_out, cost,
-                        )
-                    self._last_source = "cloud"
-                    logger.debug(f"Cloud extraction succeeded for {session_key}")
-                    return result
-                else:
-                    logger.debug(f"Cloud extraction returned unparseable JSON")
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.debug(f"Cloud extraction failed: {e}")
-
-        # Queue for deferred SLM processing when local comes back
+        # Queue for deferred processing (local when it comes back, cloud after 4h)
         if self._slm_queue and session_key:
             try:
                 await self._slm_queue.enqueue_extraction(
@@ -192,6 +158,45 @@ class BackgroundExtractor:
         # Heuristic fallback (immediate low-quality results)
         self._last_source = "heuristic"
         return self._heuristic_extract(user_message, assistant_response)
+
+    async def extract_cloud(
+        self,
+        user_message: str,
+        assistant_response: str,
+    ) -> ExtractionResult:
+        """Extract using cloud provider only. Used by queue drainer after staleness timeout."""
+        if not self._fallback:
+            raise RuntimeError("No cloud extraction provider configured")
+        prompt = _EXTRACTION_PROMPT.format(
+            user_message=user_message[:2000],
+            assistant_response=assistant_response[:2000],
+        )
+        response = await asyncio.wait_for(
+            self._fallback.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model=self._fallback_model,
+                max_tokens=512,
+                temperature=0.1,
+            ),
+            timeout=15.0,
+        )
+        result = self._parse_json(response.content)
+        if not result:
+            raise ValueError("Cloud extraction returned unparseable JSON")
+        result.token_count_estimate = (
+            len(user_message) + len(assistant_response)
+        ) // 4
+        # Log cost
+        if self._cost_logger:
+            tokens_in = response.usage.get("prompt_tokens", 0)
+            tokens_out = response.usage.get("completion_tokens", 0)
+            cost = self._cost_logger.calculate_cost(
+                self._fallback_model, tokens_in, tokens_out,
+            )
+            await self._cost_logger.log_call(
+                self._fallback_model, tokens_in, tokens_out, cost,
+            )
+        return result
 
     async def extract_local_only(
         self,
