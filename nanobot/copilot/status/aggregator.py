@@ -189,6 +189,10 @@ class DashboardReport:
                 lines.append(f"  Heartbeat: {ops['heartbeat_ago']}")
             else:
                 lines.append("  Heartbeat: never run")
+            if ops.get("weekly_ago") is not None:
+                lines.append(f"  Weekly review: {ops['weekly_ago']}")
+            else:
+                lines.append("  Weekly review: never run")
             alert_h = ops.get("alerts_high_24h", 0)
             alert_m = ops.get("alerts_med_24h", 0)
             if alert_h or alert_m:
@@ -545,6 +549,15 @@ class StatusAggregator:
                 row = await cur.fetchone()
                 if row:
                     result["heartbeat_ago"] = _format_ago(row[0])
+
+                # Last weekly review
+                cur = await db.execute(
+                    "SELECT created_at FROM heartbeat_events "
+                    "WHERE event_type = 'weekly_review' ORDER BY created_at DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row:
+                    result["weekly_ago"] = _format_ago(row[0])
 
                 # Alert counts (24h)
                 cur = await db.execute(

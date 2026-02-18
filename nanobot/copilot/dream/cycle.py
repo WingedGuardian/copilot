@@ -620,6 +620,18 @@ Provide a concise weekly report (goes to WhatsApp — keep it brief):
             except Exception as e:
                 logger.warning(f"Weekly review delivery failed: {e}")
 
+        # Log to heartbeat_events so /status can show "Weekly review: Xh ago"
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    "INSERT INTO heartbeat_events (event_type, severity, message, source) "
+                    "VALUES ('weekly_review', 'info', ?, 'weekly')",
+                    ((result or "")[:500],),
+                )
+                await db.commit()
+        except Exception:
+            pass
+
         logger.info("Weekly review complete")
         return result or ""
 
