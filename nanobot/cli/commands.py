@@ -987,6 +987,8 @@ def gateway(
                 dream_cycle._slm_queue = slm_queue
             if slm_queue and status_aggregator:
                 status_aggregator._slm_queue = slm_queue
+            if status_aggregator:
+                status_aggregator._heartbeat = heartbeat
 
             monitor_service = MonitorService(
                 status_aggregator=status_aggregator,

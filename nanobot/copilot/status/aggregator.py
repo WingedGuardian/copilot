@@ -188,7 +188,7 @@ class DashboardReport:
             if ops.get("heartbeat_ago") is not None:
                 lines.append(f"  Heartbeat: {ops['heartbeat_ago']}")
             else:
-                lines.append("  Heartbeat: never run")
+                lines.append("  Heartbeat: not yet")
             if ops.get("weekly_ago") is not None:
                 lines.append(f"  Weekly review: {ops['weekly_ago']}")
             else:
@@ -250,6 +250,7 @@ class StatusAggregator:
         self._channel_manager = channel_manager
         self._session_manager = session_manager
         self._router = router
+        self._heartbeat = None  # Set externally: HeartbeatService instance
 
     async def collect(self, session_metadata: dict | None = None, session=None, session_manager=None) -> DashboardReport:
         """Run all checks in parallel and assemble report."""
@@ -542,13 +543,18 @@ class StatusAggregator:
                     result["dream_ago"] = _format_ago(row[0])
                     result["dream_errors"] = len(row[1].split(";")) if row[1] else 0
 
-                # Last heartbeat
-                cur = await db.execute(
-                    "SELECT run_at FROM heartbeat_log ORDER BY run_at DESC LIMIT 1"
-                )
-                row = await cur.fetchone()
-                if row:
-                    result["heartbeat_ago"] = _format_ago(row[0])
+                # Heartbeat: prefer nanobot heartbeat (agent check-in) over copilot (health)
+                if self._heartbeat and self._heartbeat.last_tick_at:
+                    result["heartbeat_ago"] = _format_ago(
+                        self._heartbeat.last_tick_at.strftime("%Y-%m-%d %H:%M:%S")
+                    )
+                else:
+                    cur = await db.execute(
+                        "SELECT run_at FROM heartbeat_log ORDER BY run_at DESC LIMIT 1"
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        result["heartbeat_ago"] = _format_ago(row[0])
 
                 # Last weekly review
                 cur = await db.execute(

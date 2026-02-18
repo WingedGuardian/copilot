@@ -1,6 +1,7 @@
 """Heartbeat service - periodic agent wake-up to check for tasks."""
 
 import asyncio
+import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -56,6 +57,7 @@ class HeartbeatService:
         self.enabled = enabled
         self._running = False
         self._task: asyncio.Task | None = None
+        self.last_tick_at: datetime.datetime | None = None  # For /status display
     
     @property
     def heartbeat_file(self) -> Path:
@@ -101,8 +103,9 @@ class HeartbeatService:
     
     async def _tick(self) -> None:
         """Execute a single heartbeat tick."""
+        self.last_tick_at = datetime.datetime.utcnow()
         content = self._read_heartbeat_file()
-        
+
         # Skip if HEARTBEAT.md is empty or doesn't exist
         if _is_heartbeat_empty(content):
             logger.debug("Heartbeat: no tasks (HEARTBEAT.md empty)")
