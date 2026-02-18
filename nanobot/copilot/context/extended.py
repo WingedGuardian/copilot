@@ -225,7 +225,9 @@ class ExtendedContextBuilder:
             return self._identity_cache
 
         parts: list[str] = []
-        for fname in ("soul.md", "user.md", "agents.md", "policy.md", "capabilities.md"):
+        # soul.md, user.md, agents.md live in workspace (Data-editable).
+        # Only load structural/system docs from data/copilot/.
+        for fname in ("policy.md", "capabilities.md"):
             fpath = self._docs_dir / fname
             if fpath.exists():
                 try:

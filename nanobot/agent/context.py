@@ -80,14 +80,11 @@ Skills with available="false" need dependencies installed first - you can try in
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
         
-        return f"""# nanobot 🐈
+        return f"""# System Context
 
-You are nanobot, a helpful AI assistant. You have access to tools that allow you to:
-- Read, write, and edit files
-- Execute shell commands
-- Search the web and fetch web pages
-- Send messages to users on chat channels
-- Spawn subagents for complex background tasks
+See SOUL.md for your identity and behavioral principles.
+See USER.md for user profile and preferences.
+See AGENTS.md for operational rules and tools.
 
 ## Current Time
 {now} ({tz})
@@ -97,17 +94,15 @@ You are nanobot, a helpful AI assistant. You have access to tools that allow you
 
 ## Workspace
 Your workspace is at: {workspace_path}
-- Long-term memory: {workspace_path}/memory/MEMORY.md
+- Identity files: SOUL.md, USER.md, AGENTS.md (you can edit these)
+- Memory system manual: MEMORY.md
+- Consolidation memory: {workspace_path}/memory/MEMORY.md
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
 Only use the 'message' tool when you need to send a message to a specific chat channel (like WhatsApp).
-For normal conversation, just respond with text - do not call the message tool.
-
-Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
-When remembering something important, write to {workspace_path}/memory/MEMORY.md
-To recall past events, grep {workspace_path}/memory/HISTORY.md"""
+For normal conversation, just respond with text - do not call the message tool."""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -144,7 +139,7 @@ You are conducting a getting-to-know-you interview with your user. This is your 
 
 **When you finish ALL sections:**
 1. Write a LEAN profile to {workspace}/USER.md — ONLY: name, timezone, language, communication style, key autonomy rules (~10 lines max, this is loaded into every message so keep it tight)
-2. Write detailed context to {workspace}/memory/MEMORY.md — goals, projects, life context, detailed preferences, PLUS your action plan for how you intend to help based on what you learned
+2. Write detailed context to {workspace}/memory/MEMORY.md — goals, projects, life context, detailed preferences, action plan for how you intend to help
 3. Summarize what you learned and present your action plan to the user
 4. Tell the user the interview is complete and they can start chatting normally
 

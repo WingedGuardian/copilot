@@ -37,7 +37,9 @@ Each skill has a SKILL.md describing its purpose and usage.
 - Weekly Review: Sunday 9 AM EST — model pool audit, cost trends, strategic reflection
 - Heartbeat: Every 2h (7 AM-10 PM) — updates, task review, event logging
 - Background extraction: Tier 0 SLM extracts facts/decisions/entities after each exchange
-- Extraction resilience: SLM work queue (SQLite) buffers extraction/embedding when LM Studio is offline; drains automatically on reconnect. Falls back to heuristic extraction — no cloud fallback.
+- Failover (extraction): local SLM → queue + heuristic (immediate) → cloud after 4h staleness
+- Failover (embedding): local (nomic-embed-text-v1.5) → queue + zero-vector → cloud after 4h staleness
+- SLM work queue (SQLite, 500 item limit) buffers extraction/embedding when LM Studio is offline; drainer checks every 60s, processes via cloud after 4h
 
 ## NOT Configured (Do Not Attempt)
 - Email (no IMAP/SMTP) — do not ask for provider info
