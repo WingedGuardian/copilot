@@ -62,6 +62,7 @@ class RouterProvider(LLMProvider):
         self._private_mode_timeout = 1800  # 30 min default
         self._use_override_timeout = 1800  # 30 min default
         self._last_decision: RouteDecision | None = None
+        self._last_winning_provider: str = ""  # Actual provider name that succeeded
 
     def get_default_model(self) -> str:
         return self._local_model
@@ -124,6 +125,7 @@ class RouterProvider(LLMProvider):
                 latency_ms=latency_ms,
                 cost_usd=cost,
             )
+            self._last_winning_provider = tier.name
             if tokens_in or tokens_out:
                 await self._cost_logger.log_call(
                     model=tier.model,
@@ -271,6 +273,9 @@ class RouterProvider(LLMProvider):
                 logger.error(f"Escalation retry failed: {e}")
                 # Fall through — return the original local response minus marker
                 response.content = reason_text or response.content
+
+        # Record the actual winning provider (may differ from decision if emergency fired)
+        self._last_winning_provider = tier.name
 
         # Log routing decision
         tokens_in = response.usage.get("prompt_tokens", 0)
