@@ -145,13 +145,14 @@ class EpisodicStore:
                     FieldCondition(key="session_key", match=MatchValue(value=session_key))
                 ])
 
-            results = await self._client.search(
+            response = await self._client.query_points(
                 collection_name=self.COLLECTION,
-                query_vector=vector,
+                query=vector,
                 limit=fetch_limit,
                 score_threshold=min_score * 0.5,  # Lower threshold for pre-filter
                 query_filter=search_filter,
             )
+            results = response.points
         except Exception as e:
             logger.warning(f"Qdrant recall failed: {e}")
             from nanobot.copilot.alerting.bus import get_alert_bus

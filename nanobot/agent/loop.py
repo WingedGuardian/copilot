@@ -488,7 +488,7 @@ class AgentLoop:
                         return OutboundMessage(
                             channel=msg.channel, chat_id=msg.chat_id,
                             content=f"Unknown model '{raw}'. Short names: {valid}\n"
-                                    f"Or use full ID like 'anthropic/claude-haiku-4.5'.",
+                                    f"Or use full ID like 'anthropic/claude-haiku-4-5'.",
                         )
             session.activate_use_override(provider, tier, model)
             self.sessions.save(session)

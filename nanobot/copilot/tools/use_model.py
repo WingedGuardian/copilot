@@ -44,7 +44,7 @@ class UseModelTool(Tool):
             "Pass 'auto' to revert to automatic routing. "
             f"Override expires after {self._timeout_min}min of inactivity. "
             f"Short names: {', '.join(sorted(_ALIASES.keys()))}. "
-            "Or use full model ID like 'anthropic/claude-sonnet-4-20250514'."
+            "Or use full model ID like 'anthropic/claude-sonnet-4-6'."
         )
 
     @property
