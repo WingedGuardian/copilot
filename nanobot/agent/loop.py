@@ -27,19 +27,19 @@ from nanobot.session.manager import SessionManager
 
 # Short model names → full litellm identifiers
 MODEL_ALIASES: dict[str, str] = {
-    "haiku": "anthropic/claude-haiku-4.5",
-    "sonnet": "anthropic/claude-sonnet-4-20250514",
-    "opus": "anthropic/claude-opus-4-20250514",
-    "claude": "anthropic/claude-sonnet-4-20250514",
+    "haiku": "anthropic/claude-haiku-4-5",
+    "sonnet": "anthropic/claude-sonnet-4-6",
+    "opus": "anthropic/claude-opus-4-6",
+    "claude": "anthropic/claude-sonnet-4-6",
     "gpt4": "openai/gpt-4o",
     "gpt4o": "openai/gpt-4o",
     "gpt4mini": "openai/gpt-4o-mini",
     "o1": "openai/o1",
     "o3": "openai/o3-mini",
-    "gemini": "google/gemini-2.0-flash",
-    "flash": "google/gemini-2.0-flash",
+    "gemini": "google/gemini-2.5-flash",
+    "flash": "google/gemini-2.5-flash",
     "deepseek": "deepseek/deepseek-chat",
-    "r1": "deepseek/deepseek-reasoner",
+    "r1": "deepseek/deepseek-r1",
 }
 
 # Error response prefixes (used for is_error tagging)

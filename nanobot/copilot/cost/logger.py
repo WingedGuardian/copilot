@@ -21,10 +21,13 @@ _PRICING: dict[str, tuple[float, float]] = {
     "anthropic/claude-3-haiku-20240307": (0.25, 1.25),
     "anthropic/claude-3-5-haiku-20241022": (0.80, 4.00),
     "anthropic/claude-haiku-4.5": (0.80, 4.00),
+    "anthropic/claude-haiku-4-5": (0.80, 4.00),
     "anthropic/claude-sonnet-4-20250514": (3.00, 15.00),
     "anthropic/claude-sonnet-4.5": (3.00, 15.00),
+    "anthropic/claude-sonnet-4-6": (3.00, 15.00),
     "anthropic/claude-opus-4-20250514": (15.00, 75.00),
     "anthropic/claude-opus-4.6": (15.00, 75.00),
+    "anthropic/claude-opus-4-6": (15.00, 75.00),
 
     # Groq whisper (per-minute pricing mapped to approximate per-1M-token)
     "whisper-large-v3": (0.0, 0.0),

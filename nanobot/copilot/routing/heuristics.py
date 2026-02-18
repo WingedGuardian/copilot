@@ -74,8 +74,8 @@ def classify(
     lessons: list[dict] | None = None,
     *,
     local_model: str = "huihui-qwen3-30b-a3b-instruct-2507-abliterated-i1@q4_k_m",
-    fast_model: str = "anthropic/claude-3-haiku-20240307",
-    big_model: str = "anthropic/claude-sonnet-4-20250514",
+    fast_model: str = "anthropic/claude-haiku-4-5",
+    big_model: str = "anthropic/claude-sonnet-4-6",
     has_tool_calls: bool = False,
     tool_names: list[str] | None = None,
 ) -> RouteDecision:

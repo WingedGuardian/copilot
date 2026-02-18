@@ -8,16 +8,16 @@ from nanobot.agent.tools.base import Tool
 
 # Short model names → full litellm identifiers (mirrors loop.py MODEL_ALIASES)
 _ALIASES: dict[str, str] = {
-    "haiku": "anthropic/claude-haiku-4.5",
-    "sonnet": "anthropic/claude-sonnet-4-20250514",
-    "opus": "anthropic/claude-opus-4-20250514",
+    "haiku": "anthropic/claude-haiku-4-5",
+    "sonnet": "anthropic/claude-sonnet-4-6",
+    "opus": "anthropic/claude-opus-4-6",
     "gpt4": "openai/gpt-4o",
     "gpt4o": "openai/gpt-4o",
     "gpt4mini": "openai/gpt-4o-mini",
-    "gemini": "google/gemini-2.0-flash",
-    "flash": "google/gemini-2.0-flash",
+    "gemini": "google/gemini-2.5-flash",
+    "flash": "google/gemini-2.5-flash",
     "deepseek": "deepseek/deepseek-chat",
-    "r1": "deepseek/deepseek-reasoner",
+    "r1": "deepseek/deepseek-r1",
 }
 
 
