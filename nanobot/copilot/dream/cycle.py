@@ -68,6 +68,7 @@ class DreamCycle:
         delivery_channel: str = "whatsapp",
         delivery_chat_id: str = "",
         docs_dir: str = "data/copilot",
+        emergency_cloud_model: str = "openai/gpt-4o-mini",
     ):
         self._db_path = db_path
         self._memory = memory_manager
@@ -78,6 +79,7 @@ class DreamCycle:
         self._channel = delivery_channel
         self._chat_id = delivery_chat_id
         self._docs_dir = docs_dir
+        self._emergency_cloud_model = emergency_cloud_model
 
     async def run(self) -> DreamReport:
         """Run all 5 maintenance jobs and return report."""
@@ -555,21 +557,56 @@ Do NOT use headers or formatting. Just plain sentences. Be specific, not generic
 ## This Week's Stats
 {weekly_stats}
 
+## EMERGENCY FALLBACK (DO NOT MODIFY)
+`{self._emergency_cloud_model}` is the hardcoded emergency fallback model. It is intentionally
+excluded from your review. Never recommend changing or removing it. It exists precisely because
+all other models may fail — it must remain stable and unconditionally available.
+
 ## Review Checklist
-1. **Model Pool Audit**: Are any models in the pool obsolete? Are there newer/better alternatives? Flag any that underperformed this week.
-2. **Cost Trends**: Compare this week's cost to last week. Are we overspending on any tier?
-3. **Routing Effectiveness**: Were tasks routed to appropriate models?
-4. **Free Tier Usage**: Are we maximizing free tier allocations? Could any paid calls shift to free options?
-5. **New Developments**: Research whether any new models have been released or existing models updated that should be added to or replace entries in the pool.
+
+### 1. Routing Configuration Verification (REQUIRED — do this first)
+The routing configuration lives in three places. Verify and update ALL of them:
+
+a) **`~/.nanobot/config.json`** — `fast_model` and `big_model` fields under `copilot`.
+   Read the file, check whether the model IDs are still current and valid.
+   Use `set_preference` tool to update `fast_model` or `big_model` if stale.
+
+b) **`nanobot/agent/loop.py`** — the `MODEL_ALIASES` dict near the top of the file.
+   Read the file, verify each alias points to a current, valid model ID.
+   Use `edit_file` to update any stale aliases directly.
+
+c) **`nanobot/copilot/tools/use_model.py`** — the `_ALIASES` dict.
+   Read the file, verify it mirrors loop.py aliases.
+   Use `edit_file` to update if out of sync.
+
+To verify model IDs: use `web_search` to check current Anthropic, OpenAI, Google, and
+OpenRouter model listings. A model ID is stale if it has been renamed, versioned, or
+deprecated by the provider. When in doubt, prefer the model ID format currently shown
+in official API documentation.
+
+After any update, log what changed ("Updated fast_model from X to Y").
+
+### 2. Model Pool Audit
+Are any models in `data/copilot/models.md` obsolete? Newer/better alternatives?
+Flag any that underperformed this week. Do NOT change the emergency fallback.
+
+### 3. Cost Trends
+Compare this week's cost to last week. Are we overspending on any tier?
+
+### 4. Free Tier Usage
+Are we maximizing free tier allocations? Could any paid calls shift to free options?
+
+### 5. New Developments
+Use web_search to check for new model releases that should be added to the pool or
+replace existing entries. Update `data/copilot/models.md` with findings.
 
 ## Response Format
-Provide a concise weekly report with:
-- Model pool changes recommended (add/remove/replace) with reasoning
-- Cost trend analysis (1-2 sentences)
+Provide a concise weekly report (goes to WhatsApp — keep it brief):
+- Routing config changes made (or "no changes needed")
+- Model pool changes recommended
+- Cost trend (1-2 sentences)
 - Top 3 actionable suggestions for next week
-- Note the current date as "Last Reviewed" for the model pool
-
-Keep it brief — this goes to WhatsApp."""
+- Note current date as "Last Reviewed" in the model pool"""
 
         try:
             result = await self._execute_fn(prompt)

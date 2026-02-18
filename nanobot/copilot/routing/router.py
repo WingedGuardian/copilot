@@ -41,6 +41,7 @@ class RouterProvider(LLMProvider):
         local_model: str = "huihui-qwen3-30b-a3b-instruct-2507-abliterated-i1@q4_k_m",
         fast_model: str = "anthropic/claude-haiku-4-5",
         big_model: str = "anthropic/claude-sonnet-4-6",
+        emergency_cloud_model: str = "openai/gpt-4o-mini",
         escalation_enabled: bool = True,
         escalation_marker: str = "[ESCALATE]",
     ):
@@ -55,6 +56,7 @@ class RouterProvider(LLMProvider):
         self._local_model = local_model
         self._fast_model = fast_model
         self._big_model = big_model
+        self._emergency_cloud_model = emergency_cloud_model
         self._escalation_enabled = escalation_enabled
         self._escalation_marker = escalation_marker
         self._private_mode_timeout = 1800  # 30 min default
@@ -330,6 +332,25 @@ class RouterProvider(LLMProvider):
         # Big tier — always available as final fallback
         for name, provider in self._cloud.items():
             chain.append(ProviderTier(name, provider, self._big_model))
+
+        # ── Emergency fallbacks ────────────────────────────────────────────
+        # Only added when emergency model differs from configured ones.
+        # Use "emergency:<name>" keys so they get independent circuit breaker
+        # state — normal route failures don't block emergency routes.
+        configured = {self._fast_model, self._big_model, self._local_model}
+        if self._emergency_cloud_model and self._emergency_cloud_model not in configured:
+            for name, provider in self._cloud.items():
+                chain.append(ProviderTier(
+                    f"emergency:{name}", provider, self._emergency_cloud_model
+                ))
+            logger.debug(f"Emergency cloud fallback added: {self._emergency_cloud_model}")
+
+        # LM Studio — absolute last resort, regardless of primary decision
+        if decision.target != "local":
+            chain.append(ProviderTier(
+                "emergency:lm_studio", self._local, self._local_model, is_local=True
+            ))
+            logger.debug("Emergency local fallback added: LM Studio")
 
         return chain
 

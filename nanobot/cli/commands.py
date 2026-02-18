@@ -339,6 +339,7 @@ def _make_provider(config, cost_logger=None):
         local_model=copilot.local_model,
         fast_model=copilot.fast_model,
         big_model=copilot.big_model,
+        emergency_cloud_model=copilot.emergency_cloud_model,
         escalation_enabled=copilot.escalation_enabled,
         escalation_marker=copilot.escalation_marker,
     )
@@ -971,6 +972,7 @@ def gateway(
                 delivery_channel=config.copilot.monitor_channel,
                 delivery_chat_id=config.copilot.monitor_chat_id,
                 docs_dir=config.copilot.copilot_docs_dir,
+                emergency_cloud_model=config.copilot.emergency_cloud_model,
             )
 
             if slm_queue:

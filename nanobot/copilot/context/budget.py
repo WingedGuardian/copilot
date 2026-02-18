@@ -8,14 +8,19 @@ _MODEL_WINDOWS: dict[str, int] = {
     "llama-3.2-3b-instruct": 8_192,
     "microsoft/phi-4-mini-reasoning": 16_384,
     "mistral-small-3.2-24b-instruct": 32_768,
-    # Cloud
+    # Cloud — Anthropic
+    # Sonnet 4.6 and Opus 4.6 support 1M tokens in beta
+    # (requires anthropic-beta: context-1m-2025-08-07 header).
+    # Default without the header is 200K. Use 200K here until we add that header.
     "anthropic/claude-3-haiku-20240307": 200_000,
     "anthropic/claude-3-5-haiku-20241022": 200_000,
+    "anthropic/claude-haiku-4.5": 200_000,
+    "anthropic/claude-haiku-4-5": 200_000,
     "anthropic/claude-sonnet-4-20250514": 200_000,
     "anthropic/claude-sonnet-4-6": 200_000,
     "anthropic/claude-opus-4-20250514": 200_000,
+    "anthropic/claude-opus-4.6": 200_000,
     "anthropic/claude-opus-4-6": 200_000,
-    "anthropic/claude-haiku-4-5": 200_000,
 }
 
 # Conservative default for unknown models.

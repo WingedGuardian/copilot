@@ -148,6 +148,16 @@ class CopilotConfig(BaseModel):
     task_model: str = ""               # empty = use router (local → fast → big)
     decomposition_model: str = ""      # empty = use big_model (frontier for decomposition)
 
+    # ── Emergency Fallbacks ──────────────────────────────────────────────
+    # Last-resort models appended to EVERY failover chain.  Used when all
+    # configured models fail (e.g. stale model IDs, provider outage).
+    # Priority: emergency_cloud_model → LM Studio (local).
+    #
+    # IMPORTANT: These are intentionally excluded from the weekly review
+    # auto-update process.  They must be extremely stable model IDs that
+    # are unlikely to be deprecated.  Change only manually.
+    emergency_cloud_model: str = "openai/gpt-4o-mini"  # stable, widely available
+
     # ── Self-Escalation ─────────────────────────────────────────────────
     # When the local model determines a task is beyond its capabilities,
     # it can begin its response with [ESCALATE] and the router will retry
