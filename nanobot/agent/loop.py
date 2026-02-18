@@ -463,12 +463,25 @@ class AgentLoop:
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"Task {task_id} not found.")
             await self._task_manager.update_status(task_id, "failed")
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"Task [{task_id}] cancelled.")
-        elif cmd.startswith("/use ") or cmd.startswith("/model "):
+        elif cmd == "/use" or cmd == "/model" or cmd.startswith("/use ") or cmd.startswith("/model "):
             parts = cmd.split(None, 2)  # /use provider [tier_or_model]
             args = parts[1:] if len(parts) > 1 else []
             if not args:
+                router = self.provider
+                cloud = getattr(router, '_cloud', {})
+                provider_models = getattr(router, '_provider_models', {})
+                lines = ["Usage: /use <provider> [model] or /use auto", ""]
+                current = session.metadata.get("force_provider")
+                if current:
+                    lines.append(f"Current: {current}")
+                lines.append("Available providers:")
+                for name in cloud:
+                    m = provider_models.get(name, "")
+                    tag = f" → {m}" if m else ""
+                    marker = " (active)" if name == current else ""
+                    lines.append(f"  {name}{tag}{marker}")
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                      content="Usage: /use <provider> [fast|<model>] or /use auto")
+                                      content="\n".join(lines))
             provider = args[0]
             if provider == "auto":
                 session.deactivate_use_override()
