@@ -89,6 +89,8 @@ class DashboardReport:
     active_sessions: int = 0
     total_sessions: int = 0
     ops_summary: dict = field(default_factory=dict)  # last dream/heartbeat/alert counts
+    extraction_stats: dict = field(default_factory=dict)  # last extraction info
+    queue_breakdown: dict = field(default_factory=dict)  # by work_type
 
     def to_text(self) -> str:
         """Format as WhatsApp-friendly text."""
@@ -159,6 +161,20 @@ class DashboardReport:
         lines.append(f"  Episodes: {self.episode_count}")
         lines.append(f"  Structured items: {self.structured_items}")
 
+        # Extraction & Embedding
+        ext = self.extraction_stats
+        if ext:
+            lines.append("")
+            lines.append("Background Processing:")
+            src = ext.get("last_source", "none")
+            lines.append(f"  Extraction: {src}")
+            if ext.get("extractions_today"):
+                lines.append(f"  Extractions today: {ext['extractions_today']}")
+            if ext.get("last_extraction_ago"):
+                lines.append(f"  Last extraction: {ext['last_extraction_ago']}")
+            embed_src = "local" if ext.get("embedding_local") else "cloud" if ext.get("embedding_cloud") else "down"
+            lines.append(f"  Embedding: {embed_src}")
+
         # Active Alerts (unresolved only)
         lines.append("")
         lines.append("Active Alerts:")
@@ -210,7 +226,16 @@ class DashboardReport:
             total = q.get("total_queued", 0)
             processed = q.get("total_processed", 0)
             rate = f"{processed}/{total}" if total else "0/0"
-            lines.append(f"  Pending: {q.get('current_size', 0)}")
+            pending = q.get('current_size', 0)
+            lines.append(f"  Pending: {pending}")
+            qb = self.queue_breakdown
+            if qb and pending > 0:
+                parts = []
+                for wt, cnt in sorted(qb.items()):
+                    if cnt > 0:
+                        parts.append(f"{cnt} {wt}")
+                if parts:
+                    lines.append(f"    ({', '.join(parts)})")
             lines.append(f"  Processed: {rate}")
             ts = q.get("last_drain_ts", 0)
             if ts:
@@ -324,7 +349,7 @@ class StatusAggregator:
         # Operational history
         report.ops_summary = await self._get_ops_summary()
 
-        # SLM queue stats
+        # SLM queue stats + breakdown
         slm_queue = getattr(self, "_slm_queue", None)
         if slm_queue:
             report.slm_queue_connected = True
@@ -332,6 +357,13 @@ class StatusAggregator:
                 report.slm_queue = await slm_queue.stats()
             except Exception:
                 pass
+            try:
+                report.queue_breakdown = await slm_queue.breakdown()
+            except Exception:
+                pass
+
+        # Extraction & embedding stats
+        report.extraction_stats = await self._get_extraction_stats()
 
         return report
 
@@ -426,6 +458,39 @@ class StatusAggregator:
         except Exception as e:
             logger.warning(f"Cost data query failed: {e}")
             return {}
+
+    async def _get_extraction_stats(self) -> dict:
+        """Get extraction health indicators."""
+        result: dict = {}
+        # Check extractor state
+        extractor = getattr(self, "_extractor", None)
+        if extractor:
+            # Last extraction source from the extractor's internal state
+            result["last_source"] = getattr(extractor, "_last_source", "unknown")
+
+        # Check embedder state
+        memory = self._memory_manager
+        if memory and hasattr(memory, "_embedder"):
+            embedder = memory._embedder
+            result["embedding_local"] = getattr(embedder, "_local_available", False)
+            result["embedding_cloud"] = bool(getattr(embedder, "_cloud_api_key", None))
+
+        # Count extractions today from cost_log (haiku calls for extraction)
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute(
+                        "SELECT COUNT(*) FROM cost_log "
+                        "WHERE date(timestamp) = date('now') "
+                        "AND model LIKE '%haiku%'"
+                    )
+                    row = await cur.fetchone()
+                    if row and row[0]:
+                        result["extractions_today"] = row[0]
+            except Exception:
+                pass
+
+        return result
 
     async def _get_recent_alerts(self) -> list[dict]:
         """Query alerts table for unresolved (active) warnings/errors, deduped."""

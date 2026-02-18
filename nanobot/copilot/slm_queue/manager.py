@@ -268,6 +268,14 @@ class SlmWorkQueue:
             "current_size": await self.size(),
         }
 
+    async def breakdown(self) -> dict[str, int]:
+        """Count pending items by work_type."""
+        rows = await self._pool.fetchall(
+            "SELECT work_type, COUNT(*) FROM slm_work_queue "
+            "WHERE status IN ('pending', 'processing') GROUP BY work_type"
+        )
+        return {r[0]: r[1] for r in rows} if rows else {}
+
     async def update_drain_ts(self) -> None:
         await self._pool.execute(
             "UPDATE slm_queue_stats SET last_drain_ts = ? WHERE id = 1",

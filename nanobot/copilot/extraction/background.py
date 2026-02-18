@@ -59,6 +59,7 @@ class BackgroundExtractor:
         self._fallback_model = fallback_model
         self._current_task: asyncio.Task | None = None
         self._slm_queue: SlmWorkQueue | None = None
+        self._last_source: str = "none"  # "local", "cloud", "heuristic", "none"
 
         # Callback set by the agent loop to persist results
         self.on_result: Any = None  # async def on_result(session_key, result)
@@ -137,6 +138,7 @@ class BackgroundExtractor:
                     result.token_count_estimate = (
                         len(user_message) + len(assistant_response)
                     ) // 4
+                    self._last_source = "local"
                     return result
             except (asyncio.TimeoutError, Exception) as e:
                 logger.debug(f"Local extraction failed: {e}")
@@ -168,6 +170,7 @@ class BackgroundExtractor:
                         await self._cost_logger.log_call(
                             self._fallback_model, tokens_in, tokens_out, cost,
                         )
+                    self._last_source = "cloud"
                     logger.debug(f"Cloud extraction succeeded for {session_key}")
                     return result
                 else:
@@ -187,6 +190,7 @@ class BackgroundExtractor:
                 logger.debug(f"Queue enqueue failed: {qe}")
 
         # Heuristic fallback (immediate low-quality results)
+        self._last_source = "heuristic"
         return self._heuristic_extract(user_message, assistant_response)
 
     async def extract_local_only(

@@ -1005,6 +1005,7 @@ def gateway(
                 status_aggregator._slm_queue = slm_queue
             if status_aggregator:
                 status_aggregator._heartbeat = heartbeat
+                status_aggregator._extractor = extractor
 
             monitor_service = MonitorService(
                 status_aggregator=status_aggregator,
