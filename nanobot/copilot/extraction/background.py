@@ -21,7 +21,7 @@ _EXTRACTION_PROMPT = """\
 Extract structured information from this user↔assistant exchange.
 Return ONLY valid JSON matching this schema — no markdown, no explanation:
 
-{
+{{
   "facts": ["specific factual statements"],
   "decisions": ["decisions made or agreed to"],
   "constraints": ["limitations, deadlines, requirements mentioned"],
@@ -29,7 +29,7 @@ Return ONLY valid JSON matching this schema — no markdown, no explanation:
   "sentiment": "positive|negative|neutral|frustrated",
   "topic_shift": true or false,
   "suggested_topic": "new topic name if shifted, else null"
-}
+}}
 
 USER: {user_message}
 

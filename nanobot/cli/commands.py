@@ -1637,5 +1637,104 @@ def status():
                 console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
 
 
+@app.command()
+def backfill_extractions(
+    session_file: str = typer.Argument(..., help="Path to session JSONL file"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be extracted without running"),
+):
+    """Run cloud extraction on missed chat history from a session JSONL file."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    fpath = _Path(session_file)
+    if not fpath.exists():
+        console.print(f"[red]File not found:[/red] {session_file}")
+        raise typer.Exit(1)
+
+    # Parse user/assistant pairs
+    pairs: list[tuple[str, str, str]] = []  # (user_msg, assistant_msg, timestamp)
+    lines = fpath.read_text().strip().splitlines()
+    session_key = fpath.stem  # e.g. whatsapp_17049069731@s.whatsapp.net
+    pending_user = None
+    for line in lines:
+        try:
+            entry = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if entry.get("_type") == "metadata":
+            continue
+        role = entry.get("role")
+        if role == "user":
+            pending_user = entry.get("content", "")
+        elif role == "assistant" and pending_user:
+            pairs.append((pending_user, entry.get("content", ""), entry.get("timestamp", "")))
+            pending_user = None
+
+    console.print(f"Found [bold]{len(pairs)}[/bold] user↔assistant exchanges in {fpath.name}")
+
+    if dry_run:
+        for i, (u, a, ts) in enumerate(pairs, 1):
+            console.print(f"  {i}. [{ts}] user: {u[:80]}...")
+        raise typer.Exit(0)
+
+    # Build cloud extraction provider
+    _ext_key = config.copilot.cloud_extraction_api_key
+    _ext_base = config.copilot.cloud_extraction_api_base or None
+    _ext_model = config.copilot.cloud_extraction_model
+    if not _ext_key:
+        cloud_p = config.get_provider()
+        if cloud_p and cloud_p.api_key:
+            _ext_key = cloud_p.api_key
+            _ext_base = config.get_api_base()
+    if not _ext_key:
+        console.print("[red]No cloud extraction API key configured[/red]")
+        raise typer.Exit(1)
+
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.copilot.extraction.background import BackgroundExtractor
+
+    provider = LiteLLMProvider(
+        api_key=_ext_key, api_base=_ext_base,
+        default_model=_ext_model, provider_name="extraction-backfill",
+    )
+    extractor = BackgroundExtractor(
+        fallback_provider=provider, fallback_model=_ext_model,
+    )
+
+    # Run extractions
+    import asyncio
+
+    async def _run():
+        from nanobot.session.manager import SessionManager
+        sm = SessionManager(config.workspace_path)
+        session = sm.get_or_create(session_key)
+        existing = session.metadata.get("extractions", [])
+        console.print(f"Existing extractions: {len(existing)}")
+
+        for i, (user_msg, asst_msg, ts) in enumerate(pairs, 1):
+            try:
+                result = await extractor.extract(
+                    user_msg, asst_msg, session_key=session_key,
+                )
+                existing.append(result.model_dump())
+                n = len(result.facts) + len(result.decisions) + len(result.entities)
+                console.print(
+                    f"  [green]✓[/green] {i}/{len(pairs)}: "
+                    f"{len(result.facts)}F {len(result.decisions)}D "
+                    f"{len(result.entities)}E ({extractor._last_source})"
+                )
+            except Exception as e:
+                console.print(f"  [red]✗[/red] {i}/{len(pairs)}: {type(e).__name__}: {e}")
+
+        session.metadata["extractions"] = existing[-1000:]
+        sm.save(session)
+        console.print(f"\n[bold green]Done.[/bold green] Total extractions: {len(existing)}")
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()
