@@ -584,17 +584,25 @@ def gateway(
                 provider_name="vllm",
             )
 
-        # Cloud fallback for extraction: reuse the main cloud provider
+        # Cloud fallback for extraction: dedicated API key if configured,
+        # otherwise fall back to main cloud provider.
         cloud_extractor_provider = None
-        cloud_p = config.get_provider()
-        if cloud_p and cloud_p.api_key:
+        _ext_key = config.copilot.cloud_extraction_api_key
+        _ext_base = config.copilot.cloud_extraction_api_base or None
+        _ext_model = config.copilot.cloud_extraction_model
+        if not _ext_key:
+            # Fall back to main cloud provider
+            cloud_p = config.get_provider()
+            if cloud_p and cloud_p.api_key:
+                _ext_key = cloud_p.api_key
+                _ext_base = config.get_api_base()
+        if _ext_key:
             from nanobot.providers.litellm_provider import LiteLLMProvider as _LEP
             cloud_extractor_provider = _LEP(
-                api_key=cloud_p.api_key,
-                api_base=config.get_api_base(),
-                default_model=config.copilot.resolved_extraction_cloud_model,
-                extra_headers=cloud_p.extra_headers,
-                provider_name=config.get_provider_name(),
+                api_key=_ext_key,
+                api_base=_ext_base,
+                default_model=_ext_model,
+                provider_name="extraction",
             )
 
         extractor = BackgroundExtractor(
@@ -602,7 +610,7 @@ def gateway(
             fallback_provider=cloud_extractor_provider,
             cost_logger=cost_logger,
             local_model=config.copilot.resolved_extraction_local_model,
-            fallback_model=config.copilot.resolved_extraction_cloud_model,
+            fallback_model=_ext_model,
         )
 
         # Persist extraction results into session metadata

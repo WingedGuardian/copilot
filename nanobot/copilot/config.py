@@ -118,6 +118,14 @@ class CopilotConfig(BaseModel):
     cloud_embedding_model: str = "text-embedding-3-small"
     cloud_embedding_dimensions: int | None = None  # None = match local dims
 
+    # ── Cloud Extraction Fallback ──────────────────────────────────────
+    # When local SLM is down, extraction falls back to a cheap cloud model.
+    # Uses its own API key (separate from main provider) so extraction
+    # costs are isolated and trackable.
+    cloud_extraction_api_key: str = ""
+    cloud_extraction_api_base: str = ""  # empty = use main provider's base
+    cloud_extraction_model: str = "anthropic/claude-haiku-4-5"  # cheap, fast, good at JSON
+
     # ── Dream Cycle ─────────────────────────────────────────────────────
     # Memory consolidation (nightly at 3 AM).  Runs through the router by
     # default: tries local model first, heuristic decides if too complex,

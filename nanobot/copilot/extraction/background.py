@@ -40,7 +40,7 @@ ASSISTANT: {assistant_response}
 class BackgroundExtractor:
     """Extracts structured facts/decisions/constraints after each exchange.
 
-    Uses a local SLM when available (free), Haiku as fallback (~$0.001).
+    Uses a local SLM when available (free), cloud as fallback (~$0.001).
     If both fail, falls back to regex-based heuristic extraction.
     """
 
@@ -101,7 +101,7 @@ class BackgroundExtractor:
         except asyncio.CancelledError:
             logger.debug(f"Extraction cancelled for {session_key}")
         except Exception as e:
-            logger.warning(f"Extraction failed for {session_key}: {e}")
+            logger.warning(f"Extraction failed for {session_key}: {type(e).__name__}: {e}")
 
     async def extract(
         self,
@@ -112,9 +112,7 @@ class BackgroundExtractor:
     ) -> ExtractionResult:
         """Extract structured information from an exchange.
 
-        Tries local SLM → queue for deferred processing → heuristic fallback.
-        Cloud fallback (Haiku) is intentionally skipped — extraction is non-urgent
-        background work that the local SLM queue drainer handles when available.
+        Tries local SLM → cloud fallback (Haiku) → queue for deferred → heuristic.
         """
         prompt = _EXTRACTION_PROMPT.format(
             user_message=user_message[:2000],
@@ -143,7 +141,41 @@ class BackgroundExtractor:
             except (asyncio.TimeoutError, Exception) as e:
                 logger.debug(f"Local extraction failed: {e}")
 
-        # Queue for deferred SLM processing when local is unavailable
+        # Cloud fallback (cheap model like Haiku — ~$0.001/call)
+        if self._fallback:
+            try:
+                response = await asyncio.wait_for(
+                    self._fallback.chat(
+                        messages=messages,
+                        model=self._fallback_model,
+                        max_tokens=512,
+                        temperature=0.1,
+                    ),
+                    timeout=15.0,
+                )
+                result = self._parse_json(response.content)
+                if result:
+                    result.token_count_estimate = (
+                        len(user_message) + len(assistant_response)
+                    ) // 4
+                    # Log cost
+                    if self._cost_logger:
+                        tokens_in = response.usage.get("prompt_tokens", 0)
+                        tokens_out = response.usage.get("completion_tokens", 0)
+                        cost = self._cost_logger.calculate_cost(
+                            self._fallback_model, tokens_in, tokens_out,
+                        )
+                        await self._cost_logger.log_call(
+                            self._fallback_model, tokens_in, tokens_out, cost,
+                        )
+                    logger.debug(f"Cloud extraction succeeded for {session_key}")
+                    return result
+                else:
+                    logger.debug(f"Cloud extraction returned unparseable JSON")
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug(f"Cloud extraction failed: {e}")
+
+        # Queue for deferred SLM processing when local comes back
         if self._slm_queue and session_key:
             try:
                 await self._slm_queue.enqueue_extraction(
