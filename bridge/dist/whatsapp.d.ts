@@ -2,6 +2,11 @@
  * WhatsApp client wrapper using Baileys.
  * Based on OpenClaw's working implementation.
  */
+export interface RejectedFile {
+    filename: string;
+    size: number;
+    reason: string;
+}
 export interface InboundMessage {
     id: string;
     sender: string;
@@ -12,6 +17,7 @@ export interface InboundMessage {
     audioPath?: string;
     documentPath?: string;
     imagePath?: string;
+    rejectedFiles?: RejectedFile[];
 }
 export interface WhatsAppClientOptions {
     authDir: string;

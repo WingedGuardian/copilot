@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 from collections import OrderedDict
 from typing import Any
 
@@ -230,6 +229,13 @@ class WhatsAppChannel(BaseChannel):
                 await self._send_read_receipt(reply_jid, message_id)
             self._start_composing(reply_jid)
 
+            # Append rejected file info so the LLM can respond naturally
+            for rejected in data.get("rejectedFiles", []):
+                size_mb = rejected.get("size", 0) / (1024 * 1024)
+                name = rejected.get("filename", "file")
+                reason = rejected.get("reason", "unknown")
+                content += f"\n[File rejected: {name} ({size_mb:.1f}MB) — {reason}]"
+
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=reply_jid,
@@ -241,18 +247,8 @@ class WhatsAppChannel(BaseChannel):
                     "is_group": data.get("isGroup", False)
                 }
             )
-
-            # Clean up temp media files
-            for fpath in media:
-                try:
-                    os.unlink(fpath)
-                except OSError:
-                    pass
-            if audio_path:
-                try:
-                    os.unlink(audio_path)
-                except OSError:
-                    pass
+            # Media files persist in ~/.nanobot/media/ (same as Telegram/Discord).
+            # Periodic cleanup deferred to heartbeat or cron.
         
         elif msg_type == "status":
             # Connection status update

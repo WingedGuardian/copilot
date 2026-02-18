@@ -200,22 +200,89 @@ Start by introducing yourself warmly and asking the first question.
         return messages
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+        """Build user message content with optional media (images + documents)."""
         if not media:
             return text
-        
+
         images = []
-        for path in media:
-            p = Path(path)
-            mime, _ = mimetypes.guess_type(path)
-            if not p.is_file() or not mime or not mime.startswith("image/"):
+        for file_path in media:
+            p = Path(file_path)
+            if not p.is_file():
                 continue
-            b64 = base64.b64encode(p.read_bytes()).decode()
-            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-        
+
+            mime, _ = mimetypes.guess_type(file_path)
+            ext = p.suffix.lower()
+
+            # Images: base64-encode for LLM vision
+            if mime and mime.startswith("image/"):
+                b64 = base64.b64encode(p.read_bytes()).decode()
+                images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+                continue
+
+            # Non-image files: extract text and append to message
+            extracted = self._extract_document_text(p, ext)
+            if extracted:
+                text += f"\n\n{extracted}"
+
         if not images:
             return text
         return images + [{"type": "text", "text": text}]
+
+    @staticmethod
+    def _extract_document_text(p: Path, ext: str) -> str:
+        """Extract text from a document file for inline context injection."""
+        max_chars = 10000
+
+        try:
+            if ext == ".pdf":
+                import fitz
+                doc = fitz.open(str(p))
+                parts = [f"--- Page {i+1} ---\n{doc[i].get_text()}" for i in range(len(doc))]
+                doc.close()
+                result = "\n".join(parts)
+                if len(result) > max_chars:
+                    result = result[:max_chars] + "\n... (truncated)"
+                return f"[Document: {p.name}]\n{result}"
+
+            if ext in (".xlsx", ".xls"):
+                import openpyxl
+                wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+                parts = []
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    rows = list(ws.iter_rows(values_only=True))
+                    if not rows:
+                        continue
+                    parts.append(f"--- Sheet: {sheet_name} ({len(rows)} rows) ---")
+                    for row in rows[:201]:
+                        parts.append(" | ".join(str(c) if c is not None else "" for c in row))
+                    if len(rows) > 201:
+                        parts.append(f"... ({len(rows) - 201} more rows)")
+                wb.close()
+                result = "\n".join(parts)
+                if len(result) > max_chars:
+                    result = result[:max_chars] + "\n... (truncated)"
+                return f"[Document: {p.name}]\n{result}"
+
+            # Text-like files
+            if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html", ".log", ".yaml", ".yml"):
+                content = p.read_text(encoding="utf-8", errors="replace")
+                if len(content) > max_chars:
+                    content = content[:max_chars] + "\n... (truncated)"
+                return f"[Document: {p.name}]\n{content}"
+
+            # Unknown extension: try reading as text
+            content = p.read_text(encoding="utf-8", errors="strict")
+            if len(content) > max_chars:
+                content = content[:max_chars] + "\n... (truncated)"
+            return f"[Document: {p.name}]\n{content}"
+
+        except ImportError:
+            return f"[Document: {p.name} — required library not installed]"
+        except UnicodeDecodeError:
+            return f"[Unsupported file: {p.name}]"
+        except Exception as e:
+            return f"[Document: {p.name} — extraction failed: {e}]"
     
     def add_tool_result(
         self,

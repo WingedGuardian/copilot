@@ -13,6 +13,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { Boom } from '@hapi/boom';
@@ -21,7 +22,16 @@ import pino from 'pino';
 
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024; // 25 MB
 
+/** Persistent media directory matching Telegram/Discord channels. */
+const MEDIA_DIR = path.join(os.homedir(), '.nanobot', 'media');
+
 const VERSION = '0.1.0';
+
+export interface RejectedFile {
+  filename: string;
+  size: number;
+  reason: string;
+}
 
 export interface InboundMessage {
   id: string;
@@ -33,6 +43,7 @@ export interface InboundMessage {
   audioPath?: string;
   documentPath?: string;
   imagePath?: string;
+  rejectedFiles?: RejectedFile[];
 }
 
 export interface WhatsAppClientOptions {
@@ -114,6 +125,9 @@ export class WhatsAppClient {
     // Save credentials on update
     this.sock.ev.on('creds.update', saveCreds);
 
+    // Ensure persistent media directory exists
+    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+
     // Handle incoming messages
     this.sock.ev.on('messages.upsert', async ({ messages, type }: { messages: any[]; type: string }) => {
       if (type !== 'notify') return;
@@ -129,6 +143,7 @@ export class WhatsAppClient {
         if (!content) continue;
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
+        const rejectedFiles: RejectedFile[] = [];
 
         // Download voice note audio if present
         let audioPath: string | undefined;
@@ -136,11 +151,10 @@ export class WhatsAppClient {
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
             if ((buffer as Buffer).length > MAX_MEDIA_BYTES) {
-              console.warn(`Audio too large (${(buffer as Buffer).length} bytes), skipping`);
+              rejectedFiles.push({ filename: 'voice_note.ogg', size: (buffer as Buffer).length, reason: 'exceeds 25MB limit' });
             } else {
-              const tmpDir = '/tmp';
               const filename = `nanobot_audio_${msg.key.id || Date.now()}.ogg`;
-              audioPath = path.join(tmpDir, filename);
+              audioPath = path.join(MEDIA_DIR, filename);
               fs.writeFileSync(audioPath, buffer as Buffer);
               console.log(`Voice note saved to ${audioPath}`);
             }
@@ -152,15 +166,14 @@ export class WhatsAppClient {
         // Download document if present
         let documentPath: string | undefined;
         if (msg.message?.documentMessage) {
+          const origName = msg.message.documentMessage.fileName || `doc_${msg.key.id || Date.now()}`;
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
             if ((buffer as Buffer).length > MAX_MEDIA_BYTES) {
-              console.warn(`Document too large (${(buffer as Buffer).length} bytes), skipping`);
+              rejectedFiles.push({ filename: origName, size: (buffer as Buffer).length, reason: 'exceeds 25MB limit' });
             } else {
-              const tmpDir = '/tmp';
-              const origName = msg.message.documentMessage.fileName || `doc_${msg.key.id || Date.now()}`;
-              const filename = `nanobot_${origName}`;
-              documentPath = path.join(tmpDir, filename);
+              const filename = `nanobot_${msg.key.id || Date.now()}_${origName}`;
+              documentPath = path.join(MEDIA_DIR, filename);
               fs.writeFileSync(documentPath, buffer as Buffer);
               console.log(`Document saved to ${documentPath}`);
             }
@@ -175,11 +188,10 @@ export class WhatsAppClient {
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
             if ((buffer as Buffer).length > MAX_MEDIA_BYTES) {
-              console.warn(`Image too large (${(buffer as Buffer).length} bytes), skipping`);
+              rejectedFiles.push({ filename: `image_${msg.key.id}.jpg`, size: (buffer as Buffer).length, reason: 'exceeds 25MB limit' });
             } else {
-              const tmpDir = '/tmp';
               const filename = `nanobot_image_${msg.key.id || Date.now()}.jpg`;
-              imagePath = path.join(tmpDir, filename);
+              imagePath = path.join(MEDIA_DIR, filename);
               fs.writeFileSync(imagePath, buffer as Buffer);
               console.log(`Image saved to ${imagePath}`);
             }
@@ -198,6 +210,7 @@ export class WhatsAppClient {
           audioPath,
           documentPath,
           imagePath,
+          ...(rejectedFiles.length > 0 ? { rejectedFiles } : {}),
         });
       }
     });
@@ -235,6 +248,17 @@ export class WhatsAppClient {
     // Voice/Audio message
     if (message.audioMessage) {
       return `[Voice Message]`;
+    }
+
+    // Captionless media fallbacks (ensures message reaches Python even without text)
+    if (message.documentMessage) {
+      return `[Document: ${message.documentMessage.fileName || 'document'}]`;
+    }
+    if (message.imageMessage) {
+      return `[Image]`;
+    }
+    if (message.videoMessage) {
+      return `[Video]`;
     }
 
     return null;
