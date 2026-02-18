@@ -498,9 +498,26 @@ class AgentLoop:
                             content=f"Unknown model '{raw}'. Short names: {valid}\n"
                                     f"Or use full ID like 'anthropic/claude-haiku-4-5'.",
                         )
+            # Resolve the actual model that will be used
+            router = self.provider
+            provider_models = getattr(router, '_provider_models', {})
+            cloud = getattr(router, '_cloud', {})
+            if provider not in cloud:
+                known = ", ".join(sorted(cloud.keys())) or "none"
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                      content=f"Unknown provider '{provider}'. Available: {known}")
+            if not model and provider in provider_models:
+                model = provider_models[provider]
             session.activate_use_override(provider, tier, model)
             self.sessions.save(session)
-            desc = model or (f"{tier} model" if tier != "big" else "big model")
+            # Show what model will actually be used
+            if model:
+                desc = model
+            elif provider in provider_models:
+                desc = provider_models[provider]
+            else:
+                fallback = getattr(router, '_fast_model', '?') if tier == "fast" else getattr(router, '_big_model', '?')
+                desc = f"{fallback} (no default_model set for {provider})"
             timeout_min = self._copilot_config.use_override_timeout // 60 if self._copilot_config else 30
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content=f"🐈 Routing to {provider} ({desc}). Auto-expires after {timeout_min}min idle. /use auto to revert.")

@@ -44,6 +44,7 @@ class RouterProvider(LLMProvider):
         emergency_cloud_model: str = "openai/gpt-4o-mini",
         escalation_enabled: bool = True,
         escalation_marker: str = "[ESCALATE]",
+        provider_models: dict[str, str] | None = None,
     ):
         # RouterProvider doesn't need its own api_key/api_base
         super().__init__(api_key=None, api_base=None)
@@ -52,6 +53,7 @@ class RouterProvider(LLMProvider):
         self._cloud = cloud_providers  # keyed by name e.g. "openrouter", "venice"
         self._cost_logger = cost_logger
         self._failover = FailoverChain()
+        self._provider_models = provider_models or {}  # per-provider default models
 
         self._local_model = local_model
         self._fast_model = fast_model
@@ -176,6 +178,8 @@ class RouterProvider(LLMProvider):
             force_model = meta.get("force_model")
             if force_model:
                 model_used = force_model
+            elif force_provider in self._provider_models:
+                model_used = self._provider_models[force_provider]
             else:
                 force_tier = meta.get("force_tier", "big")
                 model_used = self._fast_model if force_tier == "fast" else self._big_model

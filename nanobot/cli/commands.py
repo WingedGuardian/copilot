@@ -326,6 +326,13 @@ def _make_provider(config, cost_logger=None):
             _directs[name] = provider
     cloud_providers: dict[str, LiteLLMProvider] = {**_gateways, **_directs}
 
+    # Build per-provider default models from config
+    _provider_models: dict[str, str] = {}
+    for name in type(config.providers).model_fields:
+        pcfg = getattr(config.providers, name)
+        if pcfg.default_model:
+            _provider_models[name] = pcfg.default_model
+
     # Local provider — always LM Studio via vllm config
     vllm_cfg = config.providers.vllm
     if vllm_cfg.api_key or vllm_cfg.api_base:
@@ -350,6 +357,7 @@ def _make_provider(config, cost_logger=None):
         emergency_cloud_model=copilot.emergency_cloud_model,
         escalation_enabled=copilot.escalation_enabled,
         escalation_marker=copilot.escalation_marker,
+        provider_models=_provider_models,
     )
 
 

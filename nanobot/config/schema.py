@@ -177,6 +177,7 @@ class ProviderConfig(BaseModel):
     """LLM provider configuration."""
     api_key: str = ""
     api_base: str | None = None
+    default_model: str = ""  # Model to use with /use <provider> (e.g. "MiniMax-M1", "gpt-4o")
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
 
 
