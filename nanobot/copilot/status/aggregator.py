@@ -543,18 +543,11 @@ class StatusAggregator:
                     result["dream_ago"] = _format_ago(row[0])
                     result["dream_errors"] = len(row[1].split(";")) if row[1] else 0
 
-                # Heartbeat: prefer nanobot heartbeat (agent check-in) over copilot (health)
+                # Nanobot heartbeat (HEARTBEAT.md agent check-in, 2h interval)
                 if self._heartbeat and self._heartbeat.last_tick_at:
                     result["heartbeat_ago"] = _format_ago(
                         self._heartbeat.last_tick_at.strftime("%Y-%m-%d %H:%M:%S")
                     )
-                else:
-                    cur = await db.execute(
-                        "SELECT run_at FROM heartbeat_log ORDER BY run_at DESC LIMIT 1"
-                    )
-                    row = await cur.fetchone()
-                    if row:
-                        result["heartbeat_ago"] = _format_ago(row[0])
 
                 # Last weekly review
                 cur = await db.execute(
