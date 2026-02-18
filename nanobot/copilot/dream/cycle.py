@@ -42,7 +42,9 @@ class DreamReport:
         if self.backup_status:
             lines.append(f"Backup: {self.backup_status}")
         if self.alerts:
-            lines.append(f"Alerts: {len(self.alerts)}")
+            lines.append(f"Alerts ({len(self.alerts)}):")
+            for a in self.alerts[:5]:
+                lines.append(f"  - {a}")
         if self.reflection:
             lines.append(f"Reflection: {self.reflection}")
         if self.errors:
@@ -178,6 +180,16 @@ class DreamCycle:
         if not self._memory or not self._execute_fn:
             return {"processed": 0, "created": 0}
 
+        # Count episodes before consolidation
+        before_count = 0
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute("SELECT COUNT(*) FROM episodes_content")
+                    before_count = (await cur.fetchone())[0]
+            except Exception:
+                pass  # Table may not exist yet
+
         # Ask the agent to consolidate
         prompt = (
             "Review the most recent memories and extract any patterns, preferences, "
@@ -189,7 +201,18 @@ class DreamCycle:
         except Exception as e:
             logger.warning(f"Memory consolidation agent call failed: {e}")
 
-        return {"processed": 1, "created": 0}
+        # Count episodes after to determine actual items created
+        after_count = before_count
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute("SELECT COUNT(*) FROM episodes_content")
+                    after_count = (await cur.fetchone())[0]
+            except Exception:
+                pass
+
+        created = max(0, after_count - before_count)
+        return {"processed": 1, "created": created}
 
     async def _generate_cost_report(self) -> str:
         """Query yesterday's costs and generate summary."""
@@ -389,23 +412,88 @@ class DreamCycle:
         if not self._execute_fn:
             return ""
 
-        prompt = (
-            "You are performing a nightly self-reflection. Based on today's activity, "
-            f"consider: {report.cost_summary or 'no cost data'}. "
-            f"Lessons reviewed: {report.lessons_reviewed}, deactivated: {report.lessons_deactivated}. "
-            f"Alerts: {len(report.alerts)}. Errors: {len(report.errors)}. "
-            "In 1-2 sentences, what could I do better? What am I not currently capable of "
-            "that the user might want? Store any actionable insight as a lesson using the "
-            "memory tool if appropriate. Keep the reflection brief and actionable."
-        )
+        # Gather context for a meaningful reflection
+        recent_context = await self._gather_reflection_context(report)
+
+        prompt = f"""You are performing a nightly self-reflection. Here is today's operational data:
+
+{recent_context}
+
+Based on this, answer in 2-3 concise sentences:
+1. What went well or poorly today?
+2. What capability gap came up that I should address (a skill I could build, a tool I'm missing)?
+3. One specific thing to do better tomorrow.
+
+Do NOT use headers or formatting. Just plain sentences. Be specific, not generic."""
+
         try:
             result = await self._execute_fn(prompt)
-            # Extract first line as summary for report
-            summary = (result or "").strip().split("\n")[0][:200]
-            return summary
+            # Take the substantive content, strip formatting artifacts
+            text = (result or "").strip()
+            # Remove common LLM formatting wrappers
+            for prefix in ("*Reflection Complete:*", "*Reflection:*", "Reflection:", "**Reflection:**"):
+                if text.startswith(prefix):
+                    text = text[len(prefix):].strip()
+            # Truncate to ~200 chars for WhatsApp
+            if len(text) > 200:
+                text = text[:197] + "..."
+            return text
         except Exception as e:
             logger.warning(f"Self-reflection failed: {e}")
             return ""
+
+    async def _gather_reflection_context(self, report: DreamReport) -> str:
+        """Collect recent activity data for the reflection prompt."""
+        sections = []
+
+        # Cost data
+        if report.cost_summary:
+            sections.append(f"Cost: {report.cost_summary}")
+
+        # Lessons
+        if report.lessons_reviewed:
+            sections.append(f"Lessons: {report.lessons_reviewed} reviewed, {report.lessons_deactivated} deactivated")
+
+        # Alerts
+        if report.alerts:
+            sections.append("Alerts:\n" + "\n".join(f"  - {a}" for a in report.alerts[:5]))
+
+        # Errors from this dream cycle
+        if report.errors:
+            sections.append("Dream cycle errors: " + "; ".join(report.errors[:3]))
+
+        # Recent conversations (last 24h from episodes)
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute(
+                        """SELECT text FROM episodes_content
+                           WHERE timestamp > unixepoch('now', '-1 day')
+                           ORDER BY timestamp DESC LIMIT 10"""
+                    )
+                    rows = await cur.fetchall()
+                    if rows:
+                        # Truncate each episode to keep context manageable
+                        snippets = [r[0][:150] for r in rows]
+                        sections.append("Recent conversations (excerpts):\n" + "\n".join(f"  - {s}" for s in snippets))
+                    else:
+                        sections.append("No conversations in the last 24 hours.")
+
+                    # Recent alerts from DB (not just dream cycle alerts)
+                    cur = await db.execute(
+                        """SELECT severity, subsystem, message FROM alerts
+                           WHERE timestamp > datetime('now', '-1 day')
+                           ORDER BY timestamp DESC LIMIT 5"""
+                    )
+                    alert_rows = await cur.fetchall()
+                    if alert_rows:
+                        sections.append("Recent system alerts:\n" + "\n".join(
+                            f"  - [{r[0]}] {r[1]}: {r[2][:100]}" for r in alert_rows
+                        ))
+            except Exception as e:
+                logger.warning(f"Reflection context query failed: {e}")
+
+        return "\n\n".join(sections) if sections else "No activity data available."
 
     async def _check_memory_budget(self) -> None:
         """Warn if MEMORY.md exceeds ~400 token budget (~300 words)."""
