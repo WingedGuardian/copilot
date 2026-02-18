@@ -21,10 +21,23 @@ _MODEL_WINDOWS: dict[str, int] = {
     "anthropic/claude-opus-4-20250514": 200_000,
     "anthropic/claude-opus-4.6": 200_000,
     "anthropic/claude-opus-4-6": 200_000,
+    # Cloud — OpenAI
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    # Cloud — DeepSeek
+    "deepseek-chat": 128_000,
+    "deepseek-reasoner": 128_000,
+    # Cloud — Google
+    "gemini-2.5-flash": 1_000_000,
+    "gemini-2.5-pro": 1_000_000,
+    # Cloud — MiniMax
+    "MiniMax-M1": 1_000_000,
+    "MiniMax-M2.5": 200_000,
+    "MiniMax-M2.5-highspeed": 200_000,
 }
 
-# Conservative default for unknown models.
-_DEFAULT_WINDOW = 8_192
+# Default for unknown models — 128K is a safe modern assumption.
+_DEFAULT_WINDOW = 128_000
 
 
 def _try_tiktoken(text: str) -> int | None:

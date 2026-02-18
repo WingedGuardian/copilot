@@ -29,6 +29,22 @@ _PRICING: dict[str, tuple[float, float]] = {
     "anthropic/claude-opus-4.6": (15.00, 75.00),
     "anthropic/claude-opus-4-6": (15.00, 75.00),
 
+    # OpenAI
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+
+    # DeepSeek
+    "deepseek-chat": (0.27, 1.10),
+
+    # Google Gemini
+    "gemini-2.5-flash": (0.15, 0.60),
+    "gemini-2.5-pro": (1.25, 10.00),
+
+    # MiniMax
+    "MiniMax-M1": (0.15, 0.60),
+    "MiniMax-M2.5": (0.30, 1.20),
+    "MiniMax-M2.5-highspeed": (0.60, 2.40),
+
     # Groq whisper (per-minute pricing mapped to approximate per-1M-token)
     "whisper-large-v3": (0.0, 0.0),
 }
@@ -46,7 +62,7 @@ class CostLogger:
         """Calculate cost in USD for a given call."""
         # Strip common prefixes for lookup
         clean = model
-        for prefix in ("openrouter/", "openai/"):
+        for prefix in ("openrouter/", "openai/", "minimax/", "deepseek/", "gemini/"):
             if clean.startswith(prefix):
                 clean = clean[len(prefix):]
 
