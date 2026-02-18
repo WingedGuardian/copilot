@@ -605,4 +605,22 @@ class StatusAggregator:
                 active_provider=provider, active_model=last.model,
             )
 
+        # No in-memory decision (e.g. after restart) — check route_log DB
+        if self._db_path:
+            try:
+                import sqlite3 as _sqlite3
+                with _sqlite3.connect(self._db_path) as db:
+                    row = db.execute(
+                        "SELECT routed_to, provider, model_used FROM route_log "
+                        "ORDER BY timestamp DESC LIMIT 1"
+                    ).fetchone()
+                    if row:
+                        return RoutingState(
+                            mode="auto", active_tier=row[0] or "",
+                            active_provider=row[1] or first_cloud,
+                            active_model=row[2] or "",
+                        )
+            except Exception:
+                pass
+
         return RoutingState(mode="auto")
