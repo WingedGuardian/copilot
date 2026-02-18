@@ -617,13 +617,13 @@ class StatusAggregator:
                 active_provider=provider, active_model=last.model,
             )
 
-        # No in-memory decision (e.g. after restart) — check route_log DB
+        # No in-memory decision (e.g. after restart) — check routing_log DB
         if self._db_path:
             try:
                 import sqlite3 as _sqlite3
                 with _sqlite3.connect(self._db_path) as db:
                     row = db.execute(
-                        "SELECT routed_to, provider, model_used FROM route_log "
+                        "SELECT routed_to, provider, model_used FROM routing_log "
                         "ORDER BY timestamp DESC LIMIT 1"
                     ).fetchone()
                     if row:
