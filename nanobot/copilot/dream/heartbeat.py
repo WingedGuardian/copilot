@@ -53,6 +53,8 @@ class CopilotHeartbeatService:
 
         self._running = False
         self._task: asyncio.Task | None = None
+        self._changelog_path = Path.home() / ".nanobot" / "CHANGELOG.local"
+        self._last_changelog_size: int = 0  # Track file size to detect new entries
 
     async def start(self) -> None:
         """Start the heartbeat loop."""
@@ -102,10 +104,14 @@ class CopilotHeartbeatService:
         # Also resolve stale embedding/memory alerts if no new ones in this tick
         await self._resolve_stale_alerts(hours=4)
 
-        # 2. Check for unresolved alerts
+        # 2. Check local changelog for external changes
+        changelog_events = self._check_changelog()
+        events += changelog_events
+
+        # 3. Check for unresolved alerts
         events += await self._check_unresolved_alerts()
 
-        # 3. Check stuck subagents/tasks (existing logic, no LLM)
+        # 4. Check stuck subagents/tasks (existing logic, no LLM)
         stuck = await self._check_stuck_jobs()
         if stuck:
             events.append({
@@ -114,7 +120,7 @@ class CopilotHeartbeatService:
                 "message": stuck,
             })
 
-        # 4. LLM call for task review — ONLY if pending tasks exist
+        # 5. LLM call for task review — ONLY if pending tasks exist
         if self._task_manager and self._execute_fn:
             try:
                 pending = await self._task_manager.list_pending()
@@ -133,7 +139,7 @@ class CopilotHeartbeatService:
             except Exception as e:
                 logger.warning(f"Heartbeat task review failed: {e}")
 
-        # 5. Write noteworthy events to DB
+        # 6. Write noteworthy events to DB
         noteworthy = [e for e in events if e]
         if noteworthy:
             await self._write_events(noteworthy)
@@ -141,7 +147,7 @@ class CopilotHeartbeatService:
         duration_ms = int((time.time() - start) * 1000)
         await self._log(len(noteworthy), duration_ms)
 
-        # 6. Deliver to user ONLY if high-severity events exist
+        # 7. Deliver to user ONLY if high-severity events exist
         high = [e for e in noteworthy if e.get("severity") == "high"]
         if high and self._deliver and self._chat_id:
             summary = "\n".join(f"- {e['message'][:200]}" for e in high)
@@ -149,6 +155,36 @@ class CopilotHeartbeatService:
                 await self._deliver(self._channel, self._chat_id, f"Alert:\n{summary}")
             except Exception as e:
                 logger.warning(f"Heartbeat delivery failed: {e}")
+
+    # --- Local changelog detection ---
+
+    def _check_changelog(self) -> list[dict]:
+        """Read new entries from CHANGELOG.local since last check."""
+        if not self._changelog_path.exists():
+            return []
+        try:
+            size = self._changelog_path.stat().st_size
+            if size <= self._last_changelog_size:
+                return []  # No new content
+            with open(self._changelog_path, "r") as f:
+                f.seek(self._last_changelog_size)
+                new_content = f.read().strip()
+            self._last_changelog_size = size
+            if not new_content:
+                return []
+            # Filter to actual entries (skip comments)
+            lines = [l for l in new_content.splitlines() if l.startswith("[")]
+            if not lines:
+                return []
+            summary = "; ".join(l[:200] for l in lines[:5])
+            return [{
+                "type": "external_change",
+                "severity": "info",
+                "message": f"Codebase changes detected: {summary}",
+            }]
+        except Exception as e:
+            logger.debug(f"Changelog check failed: {e}")
+            return []
 
     # --- Alert resolution ---
 

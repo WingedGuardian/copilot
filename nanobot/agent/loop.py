@@ -1027,19 +1027,9 @@ class AgentLoop:
         conversation = "\n".join(lines)
         current_memory = memory.read_long_term()
 
-        prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
+        prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly one key:
 
-1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later. This is append-only — all detail goes here.
-
-2. "memory_update": The updated long-term memory. This file is injected into EVERY prompt, so it MUST stay under 400 tokens (~300 words). Rules:
-   - ONLY keep: active goals, current project status, unresolved blockers, persistent user preferences not already in USER.md
-   - REMOVE: resolved issues, stale status, completed tasks, anything already captured in SOUL.md/USER.md/AGENTS.md
-   - Move removed detail into the history_entry so nothing is lost
-   - If nothing changed, return the existing content unchanged
-   - This is NOT a long-term store — it's a lean working-memory snapshot
-
-## Current Long-term Memory
-{current_memory or "(empty)"}
+"history_entry": A paragraph (2-5 sentences) summarizing the key events, decisions, and topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later. Capture: what was discussed, what was decided, what changed, any action items.
 
 ## Conversation to Process
 {conversation}
@@ -1064,9 +1054,8 @@ Respond with ONLY valid JSON, no markdown fences."""
 
             if entry := result.get("history_entry"):
                 memory.append_history(entry)
-            if update := result.get("memory_update"):
-                if update != current_memory:
-                    memory.write_long_term(update)
+            # memory/MEMORY.md is now Data-curated only.
+            # Consolidation writes to HISTORY.md; Data manages MEMORY.md manually.
 
             session.messages = session.messages[-keep_count:] if keep_count else []
             self.sessions.save(session)
