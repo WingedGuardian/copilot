@@ -274,6 +274,7 @@ class CopilotHeartbeatService:
                     """SELECT severity, message FROM alerts
                        WHERE timestamp > datetime('now', '-4 hours')
                          AND severity IN ('high', 'medium')
+                         AND resolved_at IS NULL
                        ORDER BY timestamp DESC LIMIT 5""",
                 )
                 rows = await cur.fetchall()
