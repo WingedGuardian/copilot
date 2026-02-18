@@ -1,7 +1,7 @@
 """ExtendedContextBuilder — wraps nanobot's ContextBuilder with tiered assembly."""
 
-import time
-from pathlib import Path
+
+
 from typing import Any
 
 from loguru import logger
@@ -28,20 +28,13 @@ class ExtendedContextBuilder:
         budget: TokenBudget | None = None,
         context_budget: int = 1500,
         continuation_threshold: float = 0.70,
-        copilot_docs_dir: str | None = None,
         memory_manager: Any = None,
     ):
         self._base = base
         self._budget = budget or TokenBudget()
         self._context_budget = context_budget
         self._continuation_threshold = continuation_threshold
-        self._docs_dir = Path(copilot_docs_dir) if copilot_docs_dir else None
         self._memory_manager = memory_manager
-
-        # Identity doc cache
-        self._identity_cache: str = ""
-        self._identity_cache_ts: float = 0.0
-        self._identity_cache_ttl: float = 60.0  # 60s
 
         # Expose attributes that external code may access
         self.workspace = base.workspace
@@ -103,10 +96,8 @@ class ExtendedContextBuilder:
             session_metadata=session_metadata,
         )
 
-        # Inject identity docs (soul.md, user.md, agents.md, capabilities.md)
-        identity_docs = self._load_identity_docs()
-        if identity_docs:
-            self._inject_into_system(messages, identity_docs)
+        # Identity docs (SOUL, USER, AGENTS, POLICY, CAPABILITIES) are loaded
+        # by ContextBuilder via BOOTSTRAP_FILES — no separate injection needed.
 
         # Inject heartbeat events (news feed from background monitoring)
         if recent_events:
@@ -211,35 +202,6 @@ class ExtendedContextBuilder:
 
         parts.reverse()  # Chronological order
         return "## Conversation Context (extracted)\n\n" + "\n".join(parts)
-
-    def _load_identity_docs(self) -> str:
-        """Read soul.md, user.md, agents.md from the configured directory.
-
-        Results are cached for 60s to avoid re-reading on every message.
-        """
-        if self._docs_dir is None or not self._docs_dir.exists():
-            return ""
-
-        now = time.time()
-        if self._identity_cache and (now - self._identity_cache_ts) < self._identity_cache_ttl:
-            return self._identity_cache
-
-        parts: list[str] = []
-        # soul.md, user.md, agents.md live in workspace (Data-editable).
-        # Only load structural/system docs from data/copilot/.
-        for fname in ("policy.md", "capabilities.md"):
-            fpath = self._docs_dir / fname
-            if fpath.exists():
-                try:
-                    content = fpath.read_text(encoding="utf-8").strip()
-                    if content:
-                        parts.append(content)
-                except Exception as e:
-                    logger.warning(f"Failed to read {fpath}: {e}")
-
-        self._identity_cache = "\n\n---\n\n".join(parts) if parts else ""
-        self._identity_cache_ts = now
-        return self._identity_cache
 
     @staticmethod
     def _inject_into_system(

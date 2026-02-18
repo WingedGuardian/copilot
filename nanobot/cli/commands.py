@@ -768,9 +768,8 @@ def gateway(
         )
         console.print("[green]✓[/green] SLM work queue enabled")
 
-    # --- Copilot: extended context with identity docs + memory ---
+    # --- Copilot: wire memory manager into extended context ---
     if extended_context and config.copilot.enabled:
-        extended_context._docs_dir = Path(config.copilot.copilot_docs_dir)
         if memory_manager:
             extended_context._memory_manager = memory_manager
 
