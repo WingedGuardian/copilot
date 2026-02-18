@@ -300,9 +300,12 @@ def _make_provider(config, cost_logger=None):
     from nanobot.copilot.routing.router import RouterProvider
 
     # Build cloud providers from ALL configured providers with API keys.
+    # Gateways (OpenRouter, AiHubMix) go first — they can route any model.
+    # Direct providers (OpenAI, Anthropic) follow as fallbacks.
     from nanobot.providers.registry import find_by_name as _find_by_name
-    cloud_providers: dict[str, LiteLLMProvider] = {}
-    for name in config.providers.model_fields:
+    _gateways: dict[str, LiteLLMProvider] = {}
+    _directs: dict[str, LiteLLMProvider] = {}
+    for name in type(config.providers).model_fields:
         if name in ("vllm", "custom"):
             continue  # local / special
         pcfg = getattr(config.providers, name)
@@ -310,13 +313,18 @@ def _make_provider(config, cost_logger=None):
             continue
         spec = _find_by_name(name)
         api_base = pcfg.api_base or (spec.default_api_base if spec else None) or None
-        cloud_providers[name] = LiteLLMProvider(
+        provider = LiteLLMProvider(
             api_key=pcfg.api_key,
             api_base=api_base,
             default_model=model,
             extra_headers=pcfg.extra_headers,
             provider_name=name,
         )
+        if spec and spec.is_gateway:
+            _gateways[name] = provider
+        else:
+            _directs[name] = provider
+    cloud_providers: dict[str, LiteLLMProvider] = {**_gateways, **_directs}
 
     # Local provider — always LM Studio via vllm config
     vllm_cfg = config.providers.vllm

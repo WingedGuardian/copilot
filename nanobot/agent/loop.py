@@ -473,8 +473,16 @@ class AgentLoop:
             if provider == "auto":
                 session.deactivate_use_override()
                 self.sessions.save(session)
+                router = self.provider
+                fast = getattr(router, '_fast_model', '?')
+                big = getattr(router, '_big_model', '?')
+                local = getattr(router, '_local_model', '?')
+                primary = next(iter(getattr(router, '_cloud', {})), 'cloud')
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                      content="🐈 Switched to auto-routing.")
+                                      content=f"🐈 Switched to auto-routing.\n"
+                                              f"  fast: {primary}/{fast}\n"
+                                              f"  big: {primary}/{big}\n"
+                                              f"  local: {local}")
             tier = "big"
             model = None
             if len(args) > 1:
