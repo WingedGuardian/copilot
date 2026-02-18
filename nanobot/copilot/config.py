@@ -232,7 +232,7 @@ class CopilotConfig(BaseModel):
     weekly_review_cron_expr: str = "0 14 * * 0"  # Sunday 9 AM EST (UTC-5)
     backup_dir: str = "/home/ubuntu/executive-copilot/backups"
     monitor_interval: int = 300
-    heartbeat_interval: int = 7200  # 2 hours (daytime only)
+    heartbeat_interval: int = 1800  # 30 minutes (daytime only, health + task review)
     monitor_channel: str = "whatsapp"
     monitor_chat_id: str = ""
 

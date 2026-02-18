@@ -941,7 +941,7 @@ def gateway(
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
         on_heartbeat=on_heartbeat,
-        interval_s=30 * 60,  # 30 minutes
+        interval_s=2 * 60 * 60,  # 2 hours — injection prompt for v2 LLM calls
         enabled=True
     )
 
@@ -1038,7 +1038,8 @@ def gateway(
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
-    console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    hb_interval = config.copilot.heartbeat_interval // 60 if config.copilot.enabled else 0
+    console.print(f"[green]✓[/green] Heartbeat: health every {hb_interval}m, HEARTBEAT.md every 2h")
 
     # --- Process Supervisor ---
     from nanobot.copilot.dream.supervisor import ProcessSupervisor
