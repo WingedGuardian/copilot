@@ -1,4 +1,4 @@
-"""Copilot heartbeat service: event-driven health monitor + task reviewer."""
+"""Health monitor service: programmatic health checks, alert management, task review."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import aiosqlite
 from loguru import logger
 
 
-class CopilotHeartbeatService:
+class HealthMonitorService:
     """Programmatic health monitor with event-driven news feed.
 
     Runs during active hours only (default 7am-10pm).
@@ -61,7 +61,7 @@ class CopilotHeartbeatService:
         self._running = True
         self._task = asyncio.create_task(self._loop())
         logger.info(
-            f"Copilot heartbeat started (interval={self._interval}s, "
+            f"Health monitor started (interval={self._interval}s, "
             f"active={self._active_hours[0]}-{self._active_hours[1]})"
         )
 
@@ -311,6 +311,8 @@ class CopilotHeartbeatService:
                        WHERE timestamp > datetime('now', '-4 hours')
                          AND severity IN ('high', 'medium')
                          AND resolved_at IS NULL
+                         AND message NOT LIKE '%lm_studio%'
+                         AND message NOT LIKE '%LM Studio%'
                        ORDER BY timestamp DESC LIMIT 5""",
                 )
                 rows = await cur.fetchall()

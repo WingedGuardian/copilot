@@ -64,11 +64,11 @@ class CopilotConfig(BaseModel):
     # a task is beyond its capabilities.
     #
     # Suggestions (OpenRouter model IDs):
-    #   "anthropic/claude-sonnet-4.5"        — best balance of cost/quality
-    #   "anthropic/claude-opus-4.6"          — most capable
-    #   "openai/gpt-4o"                      — strong all-rounder
-    #   "google/gemini-2.0-pro"              — large context window
-    big_model: str = "anthropic/claude-opus-4.6"
+    #   "anthropic/claude-sonnet-4-6"         — strong reasoning, cost-effective (DEFAULT)
+    #   "anthropic/claude-opus-4-6"           — most capable (use via weekly_model or /use)
+    #   "openai/gpt-4o"                       — strong all-rounder
+    #   "google/gemini-2.0-pro"               — large context window
+    big_model: str = "anthropic/claude-sonnet-4-6"
 
     # ── Background Extraction ───────────────────────────────────────────
     # Runs after every exchange to extract facts/decisions/entities/sentiment.

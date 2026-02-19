@@ -87,7 +87,9 @@ class CircuitBreaker:
             s["state"] = "open"
             s["opened_at"] = now
             logger.warning(f"CircuitBreaker: {name} -> open (probe failed)")
-            _fire_alert(f"LLM provider '{name}' circuit opened")
+            # LM Studio is optional local infra — don't alert when it's down
+            if "lm_studio" not in name:
+                _fire_alert(f"LLM provider '{name}' circuit opened")
         elif len(s["failures"]) >= self._failure_threshold:
             s["state"] = "open"
             s["opened_at"] = now

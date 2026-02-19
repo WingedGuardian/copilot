@@ -326,7 +326,8 @@ class DreamCycle:
         remediations = 0
 
         for sub in report.subsystems:
-            if not sub.healthy:
+            # LM Studio is optional local infra — not alertworthy when down
+            if not sub.healthy and sub.name != "LM Studio":
                 alerts.append(f"{sub.name}: {sub.details}")
 
         return {"alerts": alerts, "remediations": remediations}
@@ -447,9 +448,9 @@ Do NOT suggest new features, capability gaps, or strategic changes — that's th
             for prefix in ("*Reflection Complete:*", "*Reflection:*", "Reflection:", "**Reflection:**"):
                 if text.startswith(prefix):
                     text = text[len(prefix):].strip()
-            # Truncate to ~200 chars for WhatsApp
-            if len(text) > 200:
-                text = text[:197] + "..."
+            # Truncate to 1000 chars (fits comfortably in WhatsApp's ~4096 limit)
+            if len(text) > 1000:
+                text = text[:997] + "..."
             return text
         except Exception as e:
             logger.warning(f"Self-reflection failed: {e}")
@@ -515,6 +516,8 @@ Do NOT suggest new features, capability gaps, or strategic changes — that's th
                     cur = await db.execute(
                         """SELECT severity, subsystem, message FROM alerts
                            WHERE timestamp > datetime('now', '-1 day')
+                             AND message NOT LIKE '%lm_studio%'
+                             AND message NOT LIKE '%LM Studio%'
                            ORDER BY timestamp DESC LIMIT 5"""
                     )
                     alert_rows = await cur.fetchall()
