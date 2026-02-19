@@ -17,7 +17,7 @@ def test_get_window_unknown_model():
     """Unknown models return conservative default."""
     budget = TokenBudget()
 
-    assert budget.get_window("unknown-model") == 8_192
+    assert budget.get_window("unknown-model") == 128_000
 
 
 def test_get_budget_with_fill_percent():

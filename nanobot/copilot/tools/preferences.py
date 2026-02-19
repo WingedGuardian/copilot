@@ -13,7 +13,8 @@ from nanobot.agent.tools.base import Tool
 # Fields the LLM is allowed to change (no secrets, no security settings)
 _ALLOWED_KEYS = {
     "fast_model", "big_model", "local_model",
-    "dream_cron_expr", "weekly_review_cron_expr", "heartbeat_interval",
+    "dream_model", "heartbeat_model", "weekly_model", "monthly_model",
+    "dream_cron_expr", "weekly_review_cron_expr", "monthly_review_cron_expr", "heartbeat_interval",
     "use_override_timeout", "daily_cost_alert", "per_call_cost_alert",
     "context_budget", "continuation_threshold",
     "lesson_injection_count", "lesson_min_confidence",

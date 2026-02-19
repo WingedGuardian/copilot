@@ -18,7 +18,7 @@ class ContextBuilder:
     into a coherent prompt for the LLM.
     """
     
-    BOOTSTRAP_FILES = ["SOUL.md", "USER.md", "AGENTS.md", "POLICY.md", "CAPABILITIES.md"]
+    BOOTSTRAP_FILES = ["SOUL.md", "USER.md", "AGENTS.md", "POLICY.md"]
     
     def __init__(self, workspace: Path):
         self.workspace = workspace

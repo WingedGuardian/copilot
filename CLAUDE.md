@@ -8,6 +8,7 @@ Always be trying to "one up" the user's ideas when there's a good opportunity th
 
 - **LLM-first solutions**: Nanobot is always piloted by an LLM. When fixing a gap or adding a feature, prefer an LLM-driven solution (better prompt, soul file guidance, identity file update) over a programmatic one (code guardrail, regex, heuristic). Code should handle structural concerns (timeouts, data validation, event wiring); judgment calls belong to the LLM. This is the same principle that killed the approval system — don't build code that overrides LLM judgment.
 - **Verify against actual code**: Before claiming a gap, bug, or missing feature exists, read the actual source files — not just design docs. The codebase has more infrastructure than the docs suggest (e.g., AlertBus, ProcessSupervisor, heartbeat_events, SqlitePool with WAL+retry). Design docs describe intent; code describes reality. When the two conflict, trust the code.
+- **API keys live in `~/.nanobot/secrets.json`** — NEVER check environment variables to determine if an API key is set. The `api_key: str = ""` defaults in Pydantic schemas are structural defaults that get populated from `secrets.json` at runtime. Empty string in the schema does NOT mean the key is missing. If you need to verify a key exists, read `secrets.json` directly (path: `providers.<name>.apiKey`).
 
 # Coding Guidelines
 
@@ -34,3 +35,11 @@ When making code changes, update relevant project documentation in the projects 
 - What changed and why
 - What was affected
 - Any new behaviors or edge cases addressed
+
+# Local Changelog
+
+After committing code changes, append a one/two-line entry to `~/.nanobot/CHANGELOG.local`:
+```
+[YYYY-MM-DD HH:MM] claude-code: brief description of everything changed
+```
+This file is read by nanobot's heartbeat to stay aware of external codebase changes. Keep entries concise but with specific keywords needed to understand what was affected (one/two line per commit MAX).

@@ -63,6 +63,8 @@ class DreamCycle:
         memory_manager: Any = None,
         status_aggregator: Any = None,
         execute_fn: Callable[[str], Awaitable[str]] | None = None,
+        weekly_execute_fn: Callable[[str], Awaitable[str]] | None = None,
+        monthly_execute_fn: Callable[[str], Awaitable[str]] | None = None,
         backup_dir: str = "/home/ubuntu/executive-copilot/backups",
         deliver_fn: Callable | None = None,
         delivery_channel: str = "whatsapp",
@@ -74,6 +76,8 @@ class DreamCycle:
         self._memory = memory_manager
         self._status = status_aggregator
         self._execute_fn = execute_fn
+        self._weekly_execute_fn = weekly_execute_fn or execute_fn
+        self._monthly_execute_fn = monthly_execute_fn or execute_fn
         self._backup_dir = Path(backup_dir)
         self._deliver = deliver_fn
         self._channel = delivery_channel
@@ -82,7 +86,7 @@ class DreamCycle:
         self._emergency_cloud_model = emergency_cloud_model
 
     async def run(self) -> DreamReport:
-        """Run all 5 maintenance jobs and return report."""
+        """Run all maintenance jobs and return report."""
         start = time.time()
         report = DreamReport()
 
@@ -152,7 +156,13 @@ class DreamCycle:
         except Exception as e:
             report.errors.append(f"memory_budget: {e}")
 
-        # Job 10: Metacognitive self-reflection
+        # Job 10: Prune HISTORY.md (keep last 30 days)
+        try:
+            await self._prune_history()
+        except Exception as e:
+            report.errors.append(f"history_prune: {e}")
+
+        # Job 11: Metacognitive self-reflection
         try:
             report.reflection = await self._self_reflect(report)
         except Exception as e:
@@ -417,16 +427,17 @@ class DreamCycle:
         # Gather context for a meaningful reflection
         recent_context = await self._gather_reflection_context(report)
 
-        prompt = f"""You are performing a nightly self-reflection. Here is today's operational data:
+        prompt = f"""You are performing a nightly operational self-reflection. Here is today's data:
 
 {recent_context}
 
-Based on this, answer in 2-3 concise sentences:
-1. What went well or poorly today?
-2. What capability gap came up that I should address (a skill I could build, a tool I'm missing)?
-3. One specific thing to do better tomorrow.
+Answer in 2-3 concise sentences (operational only, not strategic):
+1. What broke or failed today? Any errors, timeouts, or degraded services?
+2. What needs immediate attention tomorrow? (e.g., a service to restart, a file over budget, a queue backing up)
+3. Any data quality issues? (extraction failures, memory health, stale content)
 
-Do NOT use headers or formatting. Just plain sentences. Be specific, not generic."""
+Do NOT use headers or formatting. Just plain sentences. Be specific, not generic.
+Do NOT suggest new features, capability gaps, or strategic changes — that's the weekly review's job."""
 
         try:
             result = await self._execute_fn(prompt)
@@ -464,6 +475,25 @@ Do NOT use headers or formatting. Just plain sentences. Be specific, not generic
         if report.errors:
             sections.append("Dream cycle errors: " + "; ".join(report.errors[:3]))
 
+        # Memory health: file budget status
+        import json as _json
+        workspace = Path("/home/ubuntu/.nanobot/workspace")
+        budgets_path = workspace / "budgets.json"
+        try:
+            budgets = _json.loads(budgets_path.read_text()) if budgets_path.exists() else {}
+            over = []
+            for fname in ["SOUL.md", "USER.md", "AGENTS.md", "POLICY.md", "memory/MEMORY.md"]:
+                fp = workspace / fname
+                if fp.exists():
+                    est = int(len(fp.read_text().split()) * 1.3)
+                    limit = budgets.get(fname)
+                    if isinstance(limit, int) and est > limit:
+                        over.append(f"{fname}: ~{est} tok (budget: {limit})")
+            if over:
+                sections.append("Files over budget: " + "; ".join(over))
+        except Exception:
+            pass
+
         # Recent conversations (last 24h from episodes)
         if self._db_path:
             try:
@@ -498,33 +528,125 @@ Do NOT use headers or formatting. Just plain sentences. Be specific, not generic
         return "\n\n".join(sections) if sections else "No activity data available."
 
     async def _check_memory_budget(self) -> None:
-        """Warn if MEMORY.md exceeds ~400 token budget (~300 words)."""
-        memory_path = Path("/home/ubuntu/.nanobot/workspace/memory/MEMORY.md")
-        if not memory_path.exists():
+        """Warn if any identity file exceeds its token budget.
+
+        Reads budgets from ``~/.nanobot/workspace/budgets.json``.
+        Does NOT truncate — only logs warnings as heartbeat events so the
+        LLM (or a review cycle) can decide what to trim.
+        """
+        import json
+
+        workspace = Path("/home/ubuntu/.nanobot/workspace")
+        budgets_path = workspace / "budgets.json"
+
+        # Default budgets if config file missing
+        defaults = {
+            "SOUL.md": 250, "USER.md": 250, "AGENTS.md": 600,
+            "POLICY.md": 200, "memory/MEMORY.md": 400,
+        }
+
+        try:
+            if budgets_path.exists():
+                raw = json.loads(budgets_path.read_text())
+                budgets = {k: v for k, v in raw.items() if not k.startswith("_") and isinstance(v, int)}
+            else:
+                budgets = defaults
+        except Exception:
+            budgets = defaults
+
+        over_budget: list[str] = []
+        for filename, limit in budgets.items():
+            file_path = workspace / filename
+            if not file_path.exists():
+                continue
+            text = file_path.read_text(encoding="utf-8")
+            word_count = len(text.split())
+            estimated_tokens = int(word_count * 1.3)
+            if estimated_tokens > limit:
+                over_budget.append(
+                    f"{filename}: ~{estimated_tokens} tokens (budget: {limit})"
+                )
+
+        if not over_budget:
             return
-        text = memory_path.read_text()
-        word_count = len(text.split())
-        estimated_tokens = int(word_count * 1.3)
-        if estimated_tokens > 400:
-            msg = (
-                f"MEMORY.md has grown to ~{estimated_tokens} tokens "
-                f"({word_count} words, budget: 400 tokens). "
-                "Move non-behavioral content to Qdrant via recall_messages."
-            )
-            logger.warning(msg)
-            # Write as heartbeat event so the LLM sees it next session
-            if self._db_path:
+
+        msg = "File budget exceeded (warn only): " + "; ".join(over_budget)
+        logger.warning(msg)
+
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute(
+                        """INSERT INTO heartbeat_events
+                           (event_type, severity, message, source)
+                           VALUES (?, ?, ?, ?)""",
+                        ("file_budget", "medium", msg, "dream_cycle"),
+                    )
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to write budget event: {e}")
+
+    async def _prune_history(self, max_kb: int = 50, keep_days: int = 30) -> None:
+        """Prune HISTORY.md when it exceeds *max_kb*.
+
+        Keeps entries from the last *keep_days*. Older entries are moved to
+        HISTORY.archive.md so nothing is lost but the active file stays lean.
+        """
+        import re
+        from datetime import datetime, timedelta
+
+        history_path = Path("/home/ubuntu/.nanobot/workspace/memory/HISTORY.md")
+        if not history_path.exists():
+            return
+
+        size_kb = history_path.stat().st_size / 1024
+        if size_kb <= max_kb:
+            return
+
+        text = history_path.read_text(encoding="utf-8")
+        # Split into entries by timestamp pattern at start of line
+        entries = re.split(r'(?=^\[20\d{2}-\d{2}-\d{2})', text, flags=re.MULTILINE)
+        entries = [e for e in entries if e.strip()]
+
+        if not entries:
+            return
+
+        cutoff = datetime.now() - timedelta(days=keep_days)
+        keep: list[str] = []
+        archive: list[str] = []
+
+        for entry in entries:
+            # Parse date from entry start: [YYYY-MM-DD ...
+            match = re.match(r'\[(\d{4}-\d{2}-\d{2})', entry)
+            if match:
                 try:
-                    async with aiosqlite.connect(self._db_path) as db:
-                        await db.execute(
-                            """INSERT INTO heartbeat_events
-                               (event_type, severity, message, source)
-                               VALUES (?, ?, ?, ?)""",
-                            ("memory_budget", "medium", msg, "dream_cycle"),
-                        )
-                        await db.commit()
-                except Exception as e:
-                    logger.warning(f"Failed to write memory budget event: {e}")
+                    entry_date = datetime.strptime(match.group(1), "%Y-%m-%d")
+                    if entry_date >= cutoff:
+                        keep.append(entry)
+                    else:
+                        archive.append(entry)
+                    continue
+                except ValueError:
+                    pass
+            # If can't parse date, keep it (safety)
+            keep.append(entry)
+
+        if not archive:
+            return
+
+        # Append old entries to archive file
+        archive_path = history_path.parent / "HISTORY.archive.md"
+        with open(archive_path, "a", encoding="utf-8") as f:
+            for entry in archive:
+                f.write(entry.rstrip() + "\n\n")
+
+        # Rewrite HISTORY.md with only recent entries
+        history_path.write_text("".join(keep), encoding="utf-8")
+
+        logger.info(
+            f"Dream: pruned HISTORY.md — archived {len(archive)} old entries, "
+            f"kept {len(keep)} ({size_kb:.0f}KB → {len(''.join(keep)) / 1024:.0f}KB)"
+        )
 
     async def _cleanup_routing_preferences(self) -> None:
         """Remove routing preferences older than 7 days."""
@@ -540,76 +662,107 @@ Do NOT use headers or formatting. Just plain sentences. Be specific, not generic
             logger.warning(f"Routing preference cleanup failed: {e}")
 
     async def run_weekly(self) -> str:
-        """Weekly strategic review — audits model pool, cost trends, proposes changes."""
-        if not self._execute_fn:
+        """Weekly strategic review (Manager role).
+
+        Oversees dream cycle, manages architecture/code quality, audits models,
+        trims over-budget files, implements monthly findings.
+        """
+        if not self._weekly_execute_fn:
             return "No execute function configured"
 
         pool_path = Path(self._docs_dir) / "models.md"
         pool_content = pool_path.read_text() if pool_path.exists() else "(no model pool file found)"
 
         weekly_stats = await self._get_weekly_stats()
+        dream_health = await self._get_dream_errors()
 
-        prompt = f"""You are performing a weekly strategic review. This runs every Sunday.
+        # Read monthly findings if they exist
+        import json as _json
+        findings_path = Path("/home/ubuntu/.nanobot/workspace/monthly_review_findings.json")
+        monthly_findings = ""
+        if findings_path.exists():
+            try:
+                data = _json.loads(findings_path.read_text())
+                items = data.get("findings", [])
+                if items:
+                    monthly_findings = "The monthly review left these findings for you to implement:\n"
+                    for f in items:
+                        monthly_findings += f"  - [{f.get('priority', '?')}] {f.get('category', '?')}: {f.get('finding', '')}\n"
+            except Exception:
+                pass
 
-## Current Model Pool
-{pool_content}
+        prompt = f"""You are performing a weekly strategic review (MANAGER role). This runs every Sunday.
+Your job: oversee the daily dream cycle, manage architecture and code quality, audit models,
+optimize costs, and implement any findings from the monthly audit.
+
+## Dream Cycle Health (last 7 days)
+{dream_health}
+
+{"## Monthly Review Findings (ACTION REQUIRED)" + chr(10) + monthly_findings + chr(10) + "Address each finding below. After processing, delete the file ~/.nanobot/workspace/monthly_review_findings.json." if monthly_findings else "## Monthly Review Findings" + chr(10) + "No pending findings from the monthly review."}
 
 ## This Week's Stats
 {weekly_stats}
 
+## Current Model Pool
+{pool_content}
+
 ## EMERGENCY FALLBACK (DO NOT MODIFY)
-`{self._emergency_cloud_model}` is the hardcoded emergency fallback model. It is intentionally
-excluded from your review. Never recommend changing or removing it. It exists precisely because
-all other models may fail — it must remain stable and unconditionally available.
+`{self._emergency_cloud_model}` is the hardcoded emergency fallback model. Never change it.
 
 ## Review Checklist
 
-### 1. Routing Configuration Verification (REQUIRED — do this first)
-The routing configuration lives in three places. Verify and update ALL of them:
+### 1. Dream Cycle Oversight
+Review the dream cycle health data above.
+- Are any jobs consistently failing? Investigate and fix the root cause.
+- Is the dream cycle running daily? If it missed days, investigate why.
+- Are cleanup decisions appropriate? (pruning too much or too little?)
 
-a) **`~/.nanobot/config.json`** — `fast_model` and `big_model` fields under `copilot`.
-   Read the file, check whether the model IDs are still current and valid.
-   Use `set_preference` tool to update `fast_model` or `big_model` if stale.
+### 2. Architecture & Code Quality
+- Read `~/.nanobot/CHANGELOG.local` for this week's changes. Look for patterns or instability.
+- Check workspace identity files (SOUL.md, USER.md, AGENTS.md, POLICY.md) for drift:
+  stale info, contradictions, information in the wrong file.
+- Review recent alerts: `ops_log(category="alerts", hours=168)`
+- If changes are needed, make them. For significant code changes, suggest to the user first via `message` tool.
 
-b) **`nanobot/agent/loop.py`** — the `MODEL_ALIASES` dict near the top of the file.
-   Read the file, verify each alias points to a current, valid model ID.
-   Use `edit_file` to update any stale aliases directly.
+### 3. Memory Health
+- Check each identity file's token count vs budget in `~/.nanobot/workspace/budgets.json`.
+- If any file is over budget, trim it (use LLM judgment about what to cut).
+- Do NOT adjust the budgets themselves — that's the monthly review's job.
+- Check MEMORY.md specifically — is it a lean scratchpad or bloated with resolved items?
 
-c) **`nanobot/copilot/tools/use_model.py`** — the `_ALIASES` dict.
-   Read the file, verify it mirrors loop.py aliases.
-   Use `edit_file` to update if out of sync.
+### 4. Model Pool & Routing
+a) Verify routing config in `~/.nanobot/config.json` (fast_model, big_model), `nanobot/agent/loop.py` (MODEL_ALIASES), and `nanobot/copilot/tools/use_model.py` (_ALIASES).
+b) Use `web_search` to check for deprecated or renamed model IDs.
+c) Audit `data/copilot/models.md` for obsolete models or better alternatives.
+d) Check free tier usage — can any paid calls shift to free options?
 
-To verify model IDs: use `web_search` to check current Anthropic, OpenAI, Google, and
-OpenRouter model listings. A model ID is stale if it has been renamed, versioned, or
-deprecated by the provider. When in doubt, prefer the model ID format currently shown
-in official API documentation.
+### 5. Cost Trends
+Compare this week vs. last week. Flag overspending by tier or model.
 
-After any update, log what changed ("Updated fast_model from X to Y").
+### 6. Strategic Direction
+- What should nanobot focus on this week? Any priorities that need shifting?
+- Are there patterns in errors or user requests that suggest a capability gap?
+- Set direction for the coming week's dream cycles.
 
-### 2. Model Pool Audit
-Are any models in `data/copilot/models.md` obsolete? Newer/better alternatives?
-Flag any that underperformed this week. Do NOT change the emergency fallback.
-
-### 3. Cost Trends
-Compare this week's cost to last week. Are we overspending on any tier?
-
-### 4. Free Tier Usage
-Are we maximizing free tier allocations? Could any paid calls shift to free options?
-
-### 5. New Developments
-Use web_search to check for new model releases that should be added to the pool or
-replace existing entries. Update `data/copilot/models.md` with findings.
+## After Making Changes
+- Commit all file changes to git with a descriptive message.
+- Append to `~/.nanobot/CHANGELOG.local`:
+  `[YYYY-MM-DD HH:MM] nanobot-weekly: brief description`
+- If you edited code, suggest significant changes to the user first via message tool.
 
 ## Response Format
 Provide a concise weekly report (goes to WhatsApp — keep it brief):
-- Routing config changes made (or "no changes needed")
-- Model pool changes recommended
+- Dream cycle health (clean / N errors)
+- Monthly findings addressed (or "none pending")
+- Architecture/code changes made
+- Memory health (all within budget / trimmed X)
+- Model/routing changes (or "no changes needed")
 - Cost trend (1-2 sentences)
-- Top 3 actionable suggestions for next week
+- Top 3 priorities for next week
 - Note current date as "Last Reviewed" in the model pool"""
 
         try:
-            result = await self._execute_fn(prompt)
+            result = await self._weekly_execute_fn(prompt)
         except Exception as e:
             logger.error(f"Weekly review agent call failed: {e}")
             return f"Weekly review failed: {e}"
@@ -663,6 +816,251 @@ Provide a concise weekly report (goes to WhatsApp — keep it brief):
             return "\n".join(lines)
         except Exception as e:
             return f"Stats query failed: {e}"
+
+    async def _get_dream_errors(self) -> str:
+        """Summarize dream cycle health for weekly oversight."""
+        if not self._db_path:
+            return "No dream cycle data available"
+
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute("""
+                    SELECT run_at, duration_ms, errors
+                    FROM dream_cycle_log
+                    WHERE run_at >= datetime('now', '-7 days')
+                    ORDER BY run_at DESC
+                """)
+                rows = await cur.fetchall()
+
+            if not rows:
+                return "No dream cycles ran in the past 7 days."
+
+            error_runs = [(r[0], r[2]) for r in rows if r[2]]
+            lines = [f"Dream cycles (last 7 days): {len(rows)} runs"]
+            if error_runs:
+                lines.append(f"  Runs with errors: {len(error_runs)}")
+                for run_at, errors in error_runs[:5]:
+                    lines.append(f"  {run_at}: {errors[:200]}")
+            else:
+                lines.append("  All runs clean — no errors.")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Dream log query failed: {e}"
+
+    async def _get_monthly_stats(self) -> str:
+        """Collect cost and usage stats for the past 30 days with weekly breakdown."""
+        if not self._db_path:
+            return "No cost data available"
+
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                # Total this month
+                cur = await db.execute("""
+                    SELECT model, COUNT(*) as calls, SUM(cost_usd) as total
+                    FROM cost_log WHERE timestamp >= datetime('now', '-30 days')
+                    GROUP BY model ORDER BY total DESC
+                """)
+                rows = await cur.fetchall()
+
+                # Prior 30 days for comparison
+                cur2 = await db.execute("""
+                    SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log
+                    WHERE timestamp >= datetime('now', '-60 days')
+                      AND timestamp < datetime('now', '-30 days')
+                """)
+                prior = (await cur2.fetchone())[0]
+                this_month = sum(r[2] or 0 for r in rows)
+
+                # Week-by-week breakdown
+                cur3 = await db.execute("""
+                    SELECT strftime('%Y-W%W', timestamp) as week,
+                           COUNT(*) as calls, SUM(cost_usd) as total
+                    FROM cost_log
+                    WHERE timestamp >= datetime('now', '-30 days')
+                    GROUP BY week ORDER BY week
+                """)
+                weekly_rows = await cur3.fetchall()
+
+            lines = [f"This month: ${this_month:.2f} (prior month: ${prior:.2f})"]
+            if rows:
+                lines.append("By model:")
+                for model, calls, cost in rows:
+                    lines.append(f"  {model}: ${cost:.2f} ({calls} calls)")
+            if weekly_rows:
+                lines.append("By week:")
+                for week, calls, cost in weekly_rows:
+                    lines.append(f"  {week}: ${cost:.2f} ({calls} calls)")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Monthly stats query failed: {e}"
+
+    async def run_monthly(self) -> str:
+        """Monthly comprehensive audit (Director role).
+
+        Reviews weekly reports, adjusts budget policy, audits architecture
+        (but doesn't fix — writes findings for weekly), analyzes cost structure.
+        """
+        if not self._monthly_execute_fn:
+            return "No execute function configured"
+
+        import json
+        workspace = Path("/home/ubuntu/.nanobot/workspace")
+
+        # Gather file sizes
+        file_report: list[str] = []
+        budgets_path = workspace / "budgets.json"
+        budgets = {}
+        if budgets_path.exists():
+            try:
+                budgets = json.loads(budgets_path.read_text())
+            except Exception:
+                pass
+
+        for filename in ["SOUL.md", "USER.md", "AGENTS.md", "POLICY.md", "memory/MEMORY.md"]:
+            fp = workspace / filename
+            if fp.exists():
+                words = len(fp.read_text().split())
+                tokens = int(words * 1.3)
+                limit = budgets.get(filename, "?")
+                status = "OVER" if isinstance(limit, int) and tokens > limit else "ok"
+                file_report.append(f"  {filename}: ~{tokens} tok (budget: {limit}) [{status}]")
+
+        history_path = workspace / "memory" / "HISTORY.md"
+        history_kb = f"{history_path.stat().st_size / 1024:.0f}KB" if history_path.exists() else "N/A"
+
+        monthly_stats = await self._get_monthly_stats()
+
+        # Gather weekly review summaries from the past 30 days
+        weekly_summaries = ""
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute(
+                        """SELECT created_at, message FROM heartbeat_events
+                           WHERE event_type = 'weekly_review'
+                             AND created_at >= datetime('now', '-30 days')
+                           ORDER BY created_at DESC LIMIT 5"""
+                    )
+                    rows = await cur.fetchall()
+                    if rows:
+                        weekly_summaries = "\n".join(
+                            f"  [{r[0]}] {r[1]}" for r in rows
+                        )
+            except Exception:
+                pass
+
+        prompt = f"""You are performing a MONTHLY comprehensive audit (DIRECTOR role). This runs on the 1st of each month.
+You are NOT the implementer — you are the auditor. You review the weekly review's work, assess
+long-term health, adjust policies, and write findings for the weekly review to implement.
+
+## Weekly Review Summaries (last 30 days)
+{weekly_summaries or "No weekly reviews found in the past 30 days."}
+
+## File Budget Report
+{chr(10).join(file_report)}
+HISTORY.md: {history_kb}
+Current budgets.json: {json.dumps(budgets, indent=2) if budgets else "(missing)"}
+
+## Cost Data (30 days)
+{monthly_stats}
+
+## Audit Checklist
+
+### 1. Review Weekly Reports
+Look at the weekly review summaries above. Assess:
+- Is weekly making good strategic decisions?
+- Are the model/routing changes appropriate?
+- Is weekly catching and fixing issues effectively?
+- Any patterns in what weekly is missing?
+
+### 2. File Budget Policy (YOU are the ONLY cycle that adjusts budgets)
+For each identity file, assess whether the current budget is right:
+- Too tight? Weekly keeps having to trim content that should stay.
+- Too loose? Files have persistent stale content.
+- Adjust `~/.nanobot/workspace/budgets.json` if needed.
+- This is a POLICY decision — you set the limits, weekly enforces them.
+
+### 3. Architecture Audit (DO NOT FIX — write findings for weekly)
+Read the key workspace files (SOUL.md, USER.md, AGENTS.md, POLICY.md).
+Look for:
+- Stale information (resolved issues, outdated references)
+- Contradictions between files
+- Information in the wrong file (user prefs in AGENTS.md, ops rules in SOUL.md)
+- Duplication across files
+**Do NOT fix these yourself.** Write findings to the findings file (see below).
+
+### 4. Codebase Patterns
+Read `~/.nanobot/CHANGELOG.local` for the past month's changes.
+Look for patterns: recurring fixes, areas of instability, features that keep changing.
+Flag anything that suggests a deeper architectural issue.
+Check episodic memory health: `ops_log(category="heartbeat", hours=720)`
+
+### 5. Cost Structure
+This is NOT about trends (weekly handles that). Assess:
+- Are we spending on the right tiers? Is the tier structure itself correct?
+- Should any workloads move between tiers?
+- Are the dream/weekly/monthly model assignments cost-effective?
+
+### 6. Self-Reflection
+- What needs rethinking long-term?
+- Is the weekly review moving nanobot in the right direction?
+- Are the automated cycles (dream/weekly/heartbeat) serving the user well?
+- What would you change about how this system operates?
+
+## Writing Findings for Weekly
+After your audit, write actionable findings to `~/.nanobot/workspace/monthly_review_findings.json`:
+```json
+{{
+  "generated": "YYYY-MM-DD",
+  "findings": [
+    {{"category": "budget|architecture|code|cost|strategic", "finding": "description", "priority": "high|medium|low"}}
+  ]
+}}
+```
+Weekly will read this file, implement the findings, and clear it.
+Only include findings that need ACTION — not observations.
+
+## After Making Changes
+- Commit budgets.json changes to git if you modified budgets.
+- Append to `~/.nanobot/CHANGELOG.local`:
+  `[YYYY-MM-DD HH:MM] nanobot-monthly: brief description`
+- Do NOT commit architecture fixes — weekly handles implementation.
+
+## Response Format
+Provide a comprehensive monthly audit report (goes to WhatsApp):
+- Weekly review assessment (doing well / needs attention)
+- Budget policy changes (with reasoning, or "no changes")
+- Architecture findings written for weekly (count + summary)
+- Codebase health patterns
+- Cost structure assessment
+- Self-reflection (2-3 sentences)
+- Top 3 long-term recommendations"""
+
+        try:
+            result = await self._monthly_execute_fn(prompt)
+        except Exception as e:
+            logger.error(f"Monthly review agent call failed: {e}")
+            return f"Monthly review failed: {e}"
+
+        if self._deliver and self._chat_id:
+            try:
+                await self._deliver(self._channel, self._chat_id, f"Monthly Review\n\n{result}")
+            except Exception as e:
+                logger.warning(f"Monthly review delivery failed: {e}")
+
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    "INSERT INTO heartbeat_events (event_type, severity, message, source) "
+                    "VALUES ('monthly_review', 'info', ?, 'monthly')",
+                    ((result or "")[:500],),
+                )
+                await db.commit()
+        except Exception:
+            pass
+
+        logger.info("Monthly review complete")
+        return result or ""
 
     async def _log_report(self, report: DreamReport) -> None:
         """Log dream cycle to database."""

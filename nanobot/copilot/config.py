@@ -135,16 +135,17 @@ class CopilotConfig(BaseModel):
     #   ""                                     — use router (local → fast fallback)
     #   "anthropic/claude-3.5-haiku"            — force cloud cheap for overnight
     #   "openai/gpt-4o-mini"                  — force cloud cheap
-    dream_model: str = "google/gemini-3-thinking"  # reasoning model, free tier
+    dream_model: str = "gemini-3-flash-preview"  # Gemini 3 Flash via Google AI (free tier)
 
     # ── Heartbeat ───────────────────────────────────────────────────────
-    # Proactive tasks from heartbeat.md (every 2h during daytime).
-    # Runs through the router by default.
-    #
-    # Suggestions:
-    #   ""                                     — use router (local → fast fallback)
-    #   "anthropic/claude-3.5-haiku"            — force cloud cheap
-    heartbeat_model: str = ""          # empty = use router (local → fast → big)
+    # LLM heartbeat (every 2h) — reads HEARTBEAT.md, reviews pending tasks.
+    # Defaults to dream_model if empty. Only nanobot chat uses the router.
+    heartbeat_model: str = ""          # empty = use dream_model
+
+    # ── Weekly / Monthly Reviews ──────────────────────────────────────
+    # Strategic reviews run by the dream cycle. Default to dream_model.
+    weekly_model: str = ""             # empty = use dream_model
+    monthly_model: str = ""            # empty = use dream_model
 
     # ── Task Decomposition & Execution ──────────────────────────────────
     # Background task queue.  Decomposes tasks into steps, then executes
@@ -172,6 +173,10 @@ class CopilotConfig(BaseModel):
     # with the big model.  Disable to always accept local responses as-is.
     escalation_enabled: bool = True
     escalation_marker: str = "[ESCALATE]"
+
+    # ── Timezone ───────────────────────────────────────────────────────
+    # Used for status display, cron schedule rendering, and active-hours logic.
+    timezone: str = "America/New_York"
 
     # ── Non-Model Settings ──────────────────────────────────────────────
 
@@ -238,6 +243,7 @@ class CopilotConfig(BaseModel):
     # Dream + Monitoring + Heartbeat
     dream_cron_expr: str = "0 12 * * *"  # 7 AM EST (UTC-5)
     weekly_review_cron_expr: str = "0 14 * * 0"  # Sunday 9 AM EST (UTC-5)
+    monthly_review_cron_expr: str = "0 15 1 * *"  # 1st of month 10 AM EST (UTC-5)
     backup_dir: str = "/home/ubuntu/executive-copilot/backups"
     monitor_interval: int = 300
     heartbeat_interval: int = 1800  # 30 minutes (daytime only, health + task review)
@@ -262,7 +268,15 @@ class CopilotConfig(BaseModel):
 
     @property
     def resolved_heartbeat_model(self) -> str:
-        return self.heartbeat_model or ""
+        return self.heartbeat_model or self.dream_model or ""
+
+    @property
+    def resolved_weekly_model(self) -> str:
+        return self.weekly_model or self.dream_model or ""
+
+    @property
+    def resolved_monthly_model(self) -> str:
+        return self.monthly_model or self.dream_model or ""
 
     @property
     def resolved_task_model(self) -> str:

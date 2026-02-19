@@ -683,6 +683,9 @@ def gateway(
             config.copilot.monitor_channel,
             config.copilot.monitor_chat_id,
         )
+        # Wire into router for per-call alerts
+        if hasattr(provider, '_cost_alerter'):
+            provider._cost_alerter = cost_alerter
 
     # --- Copilot: Phase 4 — Memory ---
     memory_manager = None
@@ -828,10 +831,10 @@ def gateway(
 
         reschedule_cbs: dict = {}
         # Heartbeat reschedule uses a late-binding closure so it works
-        # even though copilot_heartbeat is created later in this function.
+        # even though health_monitor is created later in this function.
         def _restart_heartbeat(val):
-            if copilot_heartbeat is not None:
-                copilot_heartbeat._interval_s = int(val)
+            if health_monitor is not None:
+                health_monitor._interval_s = int(val)
         reschedule_cbs["heartbeat_interval"] = _restart_heartbeat
 
         pref_tool = SetPreferenceTool(
@@ -857,6 +860,8 @@ def gateway(
                 redis_url=config.copilot.redis_url,
                 memory_manager=memory_manager,
                 router=provider if hasattr(provider, '_fast_model') else None,
+                timezone_name=config.copilot.timezone,
+                copilot_config=config.copilot,
             )
             agent.tools.register(StatusTool(status_aggregator))
             console.print("[green]v[/green] Status dashboard enabled")
@@ -948,22 +953,29 @@ def gateway(
         return response
     cron.on_job = on_cron_job
     
-    # Create heartbeat service
-    async def on_heartbeat(prompt: str) -> str:
-        """Execute heartbeat through the agent."""
-        return await agent.process_direct(prompt, session_key="heartbeat")
+    # Create heartbeat service (LLM-powered, every 2h)
+    _hb_model = config.copilot.resolved_heartbeat_model if config.copilot.enabled else None
 
+    async def on_heartbeat(prompt: str) -> str:
+        """Execute heartbeat through the agent with explicit model."""
+        return await agent.process_direct(
+            prompt, session_key="heartbeat", model=_hb_model or None,
+        )
+
+    _hb_db = str(Path(config.copilot.db_path)) if config.copilot.enabled else ""
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
         on_heartbeat=on_heartbeat,
-        interval_s=2 * 60 * 60,  # 2 hours — injection prompt for v2 LLM calls
-        enabled=True
+        interval_s=2 * 60 * 60,  # 2 hours
+        enabled=True,
+        db_path=_hb_db,
+        task_manager=getattr(agent, '_task_manager', None),
     )
 
     # --- Copilot: Phase 8 — dream cycle + monitor + copilot heartbeat ---
     dream_cycle = None
     monitor_service = None
-    copilot_heartbeat = None
+    health_monitor = None
 
     if config.copilot.enabled:
         import asyncio as _aio
@@ -974,7 +986,7 @@ def gateway(
         try:
             from nanobot.copilot.dream.cycle import DreamCycle
             from nanobot.copilot.dream.monitor import MonitorService
-            from nanobot.copilot.dream.heartbeat import CopilotHeartbeatService
+            from nanobot.copilot.dream.heartbeat import HealthMonitorService
 
             async def _deliver_msg(channel, chat_id, content):
                 from nanobot.bus.events import OutboundMessage
@@ -983,12 +995,20 @@ def gateway(
                 ))
 
             _dream_model = config.copilot.resolved_dream_model or None
+            _weekly_model = config.copilot.resolved_weekly_model or None
+            _monthly_model = config.copilot.resolved_monthly_model or None
             dream_cycle = DreamCycle(
                 db_path=str(db_path),
                 memory_manager=memory_manager,
                 status_aggregator=status_aggregator,
                 execute_fn=lambda prompt: agent.process_direct(
                     prompt, session_key="dream", model=_dream_model,
+                ),
+                weekly_execute_fn=lambda prompt: agent.process_direct(
+                    prompt, session_key="weekly_review", model=_weekly_model,
+                ),
+                monthly_execute_fn=lambda prompt: agent.process_direct(
+                    prompt, session_key="monthly_review", model=_monthly_model,
                 ),
                 backup_dir=config.copilot.backup_dir,
                 deliver_fn=_deliver_msg,
@@ -1005,6 +1025,7 @@ def gateway(
             if status_aggregator:
                 status_aggregator._heartbeat = heartbeat
                 status_aggregator._extractor = extractor
+                # health_monitor wired below after creation
 
             monitor_service = MonitorService(
                 status_aggregator=status_aggregator,
@@ -1015,24 +1036,28 @@ def gateway(
                 silent_subsystems={"LM Studio"},
             )
 
-            _hb_model = config.copilot.resolved_heartbeat_model or None
-            copilot_heartbeat = CopilotHeartbeatService(
+            health_monitor = HealthMonitorService(
                 copilot_docs_dir=config.copilot.copilot_docs_dir,
-                execute_fn=lambda prompt: agent.process_direct(
-                    prompt, session_key="copilot_heartbeat", model=_hb_model,
-                ),
                 deliver_fn=_deliver_msg,
                 delivery_channel=config.copilot.monitor_channel,
                 delivery_chat_id=config.copilot.monitor_chat_id,
                 db_path=str(db_path),
                 interval_s=config.copilot.heartbeat_interval,
+                subagent_manager=getattr(agent, '_subagent_manager', None),
+                task_manager=getattr(agent, '_task_manager', None),
                 qdrant_url=config.copilot.qdrant_url,
                 redis_url=config.copilot.redis_url,
             )
+            if status_aggregator:
+                status_aggregator._health_monitor = health_monitor
+            # Wire cost alerter for daily threshold checks
+            if cost_alerter and health_monitor:
+                health_monitor._cost_alerter = cost_alerter
+
             console.print("[green]v[/green] Dream cycle + monitor + heartbeat enabled")
         except Exception as e:
             console.print(f"[yellow]Warning: Dream/monitor init failed: {e}[/yellow]")
-    
+
     # --- Copilot: voice transcriber ---
     voice_transcriber = None
     if config.copilot.enabled:
@@ -1072,8 +1097,8 @@ def gateway(
                 supervisor.register("task_worker", task_worker.start, lambda: task_worker._task)
             if monitor_service:
                 supervisor.register("monitor", monitor_service.start, lambda: monitor_service._task)
-            if copilot_heartbeat:
-                supervisor.register("copilot_heartbeat", copilot_heartbeat.start, lambda: copilot_heartbeat._task)
+            if health_monitor:
+                supervisor.register("health_monitor", health_monitor.start, lambda: health_monitor._task)
             if slm_drainer:
                 supervisor.register("slm_drainer", slm_drainer.start, lambda: slm_drainer._task)
             await supervisor.start()
@@ -1145,6 +1170,36 @@ def gateway(
                         _weekly_cancel_event.set()
                     pref_tool._reschedule["weekly_review_cron_expr"] = _reschedule_weekly
 
+            # Monthly review scheduler
+            monthly_task = None
+            _monthly_cancel_event = asyncio.Event()
+            if dream_cycle:
+                async def _monthly_scheduler():
+                    from loguru import logger as _monthly_log
+                    while True:
+                        cron_it = _croniter(config.copilot.monthly_review_cron_expr, _time.time())
+                        delay = cron_it.get_next() - _time.time()
+                        if delay > 0:
+                            try:
+                                await asyncio.wait_for(_monthly_cancel_event.wait(), timeout=delay)
+                                _monthly_cancel_event.clear()
+                                continue
+                            except asyncio.TimeoutError:
+                                pass
+                        try:
+                            result = await dream_cycle.run_monthly()
+                            _monthly_log.info("Monthly review complete")
+                        except Exception as exc:
+                            _monthly_log.error(f"Monthly review failed: {exc}")
+
+                monthly_task = asyncio.create_task(_monthly_scheduler(), name="monthly_review")
+                _log.info(f"Monthly review scheduled: {config.copilot.monthly_review_cron_expr}")
+
+                if config.copilot.enabled and pref_tool is not None:
+                    def _reschedule_monthly(val):
+                        _monthly_cancel_event.set()
+                    pref_tool._reschedule["monthly_review_cron_expr"] = _reschedule_monthly
+
             # Signal handling: SIGTERM/SIGINT trigger graceful shutdown
             shutdown_event = asyncio.Event()
             loop = asyncio.get_event_loop()
@@ -1168,8 +1223,8 @@ def gateway(
             await supervisor.stop()
             if slm_drainer:
                 await slm_drainer.stop()
-            if copilot_heartbeat:
-                copilot_heartbeat.stop()
+            if health_monitor:
+                health_monitor.stop()
             if monitor_service:
                 monitor_service.stop()
             if task_worker:
