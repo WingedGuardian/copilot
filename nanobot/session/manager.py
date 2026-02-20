@@ -64,27 +64,26 @@ class Session:
     )
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
-        """
-        Get message history for LLM context, filtering error noise.
-
-        Args:
-            max_messages: Maximum messages to return.
-
-        Returns:
-            List of messages in LLM format.
-        """
+        """Get recent messages in LLM format, preserving tool metadata."""
         filtered = [
             m for m in self.messages
             if not (
                 m["role"] == "assistant"
                 and (
                     m.get("is_error")
-                    or any(m["content"].startswith(p) for p in self._ERROR_PREFIXES)
+                    or any((m.get("content") or "").startswith(p) for p in self._ERROR_PREFIXES)
                 )
             )
         ]
         recent = filtered[-max_messages:] if len(filtered) > max_messages else filtered
-        return [{"role": m["role"], "content": m["content"]} for m in recent]
+        out: list[dict[str, Any]] = []
+        for m in recent:
+            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content") or ""}
+            for k in ("tool_calls", "tool_call_id", "name"):
+                if k in m:
+                    entry[k] = m[k]
+            out.append(entry)
+        return out
 
     @property
     def private_mode(self) -> bool:
