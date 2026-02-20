@@ -10,6 +10,18 @@ Always be trying to "one up" the user's ideas when there's a good opportunity th
 - **Verify against actual code**: Before claiming a gap, bug, or missing feature exists, read the actual source files — not just design docs. The codebase has more infrastructure than the docs suggest (e.g., AlertBus, ProcessSupervisor, heartbeat_events, SqlitePool with WAL+retry). Design docs describe intent; code describes reality. When the two conflict, trust the code.
 - **API keys live in `~/.nanobot/secrets.json`** — NEVER check environment variables to determine if an API key is set. The `api_key: str = ""` defaults in Pydantic schemas are structural defaults that get populated from `secrets.json` at runtime. Empty string in the schema does NOT mean the key is missing. If you need to verify a key exists, read `secrets.json` directly (path: `providers.<name>.apiKey`).
 
+# Branch Discipline
+
+- **Never commit directly to main.** All work happens on feature branches (`feat/`, `fix/`, `refactor/`, `chore/` prefixes). Main only receives code through merges/PRs.
+- **One logical change per branch.** Don't mix unrelated work. If a second concern emerges mid-branch, stash it or note it for the next branch.
+- **Commit on branch → review diff → merge.** Every merge to main is a deliberate decision, not a side effect of working.
+- **Use git worktrees for parallel independent work** when multiple tasks have no shared state or sequential dependencies.
+
+# Session Discipline
+
+- **Session wrap-up ritual**: Before ending a session, produce a structured handoff: what changed, what's pending, what decisions were made, what was learned. This goes to the Local Changelog and Lessons Learned as appropriate.
+- **Self-correction loop**: When the user corrects a mistake, extract the lesson and add it to Lessons Learned with a concrete rule. Corrections that stay in conversation context evaporate — persistent rules compound.
+
 # Process Discipline
 
 - **Pre-commit verification**: Before committing, verify the specific code path changed. Query the DB table you referenced. Hit the endpoint you modified. Trigger the feature you added. "It looks right" is not verification.
