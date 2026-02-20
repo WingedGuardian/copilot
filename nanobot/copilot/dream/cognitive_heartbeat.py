@@ -56,6 +56,7 @@ class CopilotHeartbeatService(HeartbeatService):
         observations = await self._get_unacted_observations()
         pending_tasks = await self._get_pending_tasks()
         permissions = await self._get_autonomy_permissions()
+        active_lessons = await self._get_active_lessons()
         morning_brief = await self._get_morning_brief()
 
         # Decide if there's anything to process
@@ -72,6 +73,7 @@ class CopilotHeartbeatService(HeartbeatService):
             observations=observations,
             pending_tasks=pending_tasks,
             permissions=permissions,
+            active_lessons=active_lessons,
             morning_brief=morning_brief,
         )
 
@@ -144,6 +146,28 @@ class CopilotHeartbeatService(HeartbeatService):
             logger.debug(f"Heartbeat: autonomy query failed: {e}")
             return {}
 
+    async def _get_active_lessons(self, limit: int = 5) -> list[dict]:
+        """Fetch high-confidence active lessons (read-only, no side effects)."""
+        if not self._db_path:
+            return []
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """SELECT lesson_text, confidence, category
+                       FROM lessons
+                       WHERE active = 1 AND confidence >= 0.5
+                       ORDER BY confidence DESC, applied_count DESC
+                       LIMIT ?""",
+                    (limit,),
+                )
+                return [
+                    {"text": row[0], "confidence": row[1], "category": row[2]}
+                    for row in await cur.fetchall()
+                ]
+        except Exception as e:
+            logger.debug(f"Heartbeat: lesson query failed: {e}")
+            return []
+
     async def _get_morning_brief(self) -> str | None:
         """If first tick since last dream, load reflection_full from most recent dream."""
         if not self._db_path:
@@ -195,6 +219,7 @@ class CopilotHeartbeatService(HeartbeatService):
         observations: list[dict],
         pending_tasks: list[str],
         permissions: dict[str, str],
+        active_lessons: list[dict],
         morning_brief: str | None,
     ) -> str:
         sections = [
@@ -227,6 +252,17 @@ class CopilotHeartbeatService(HeartbeatService):
             sections.append(
                 "\n## Autonomy Permissions\n" + "\n".join(perm_lines)
                 + "\n\n*notify* = flag for user. *autonomous* = act independently. *disabled* = skip."
+            )
+
+        if active_lessons:
+            lesson_lines = []
+            for lesson in active_lessons:
+                pct = int(lesson.get("confidence", 0.5) * 100)
+                cat = lesson.get("category", "general")
+                lesson_lines.append(f"- [{pct}%] ({cat}) {lesson.get('text', '')[:200]}")
+            sections.append(
+                "\n## Active Lessons (hard-won rules — factor these into your thinking)\n"
+                + "\n".join(lesson_lines)
             )
 
         if morning_brief:

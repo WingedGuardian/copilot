@@ -958,6 +958,7 @@ def gateway(
             async def _run_retrospective(prompt: str) -> str:
                 return await agent.process_direct(
                     prompt, session_key="task:retrospective", model=_dream_model,
+                    skip_enrichment=True,
                 )
 
             task_worker = TaskWorker(
@@ -993,6 +994,7 @@ def gateway(
             session_key=f"cron:{job.id}",
             channel=job.payload.channel or "cli",
             chat_id=job.payload.to or "direct",
+            skip_enrichment=True,
         )
         if job.payload.deliver and job.payload.to:
             from nanobot.bus.events import OutboundMessage
@@ -1011,6 +1013,7 @@ def gateway(
         """Execute heartbeat through the agent with explicit model."""
         return await agent.process_direct(
             prompt, session_key="heartbeat", model=_hb_model or None,
+            skip_enrichment=True,
         )
 
     _hb_db = str(Path(config.copilot.db_path)) if config.copilot.enabled else ""
@@ -1061,12 +1064,15 @@ def gateway(
                 status_aggregator=status_aggregator,
                 execute_fn=lambda prompt: agent.process_direct(
                     prompt, session_key="dream", model=_dream_model,
+                    skip_enrichment=True,
                 ),
                 weekly_execute_fn=lambda prompt: agent.process_direct(
                     prompt, session_key="weekly_review", model=_weekly_model,
+                    skip_enrichment=True,
                 ),
                 monthly_execute_fn=lambda prompt: agent.process_direct(
                     prompt, session_key="monthly_review", model=_monthly_model,
+                    skip_enrichment=True,
                 ),
                 backup_dir=config.copilot.backup_dir,
                 deliver_fn=_deliver_msg,
