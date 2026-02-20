@@ -50,6 +50,7 @@ class HeartbeatService:
         on_heartbeat: Callable[[str], Coroutine[Any, Any, str]] | None = None,
         interval_s: int = DEFAULT_HEARTBEAT_INTERVAL_S,
         enabled: bool = True,
+        **kwargs,  # Accept db_path, task_manager etc. from commands.py
     ):
         self.workspace = workspace
         self.on_heartbeat = on_heartbeat

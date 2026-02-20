@@ -4,7 +4,6 @@ Runs every 2 hours during active hours (7 AM - 10 PM).
 
 ## Programmatic Checks (no LLM)
 - Qdrant health (HTTP GET /collections)
-- Redis health (PING)
 - Unresolved alerts (query alerts table, last 4 hours)
 - Stuck subagents/tasks (idle > 10 min / in_progress > 30 min)
 

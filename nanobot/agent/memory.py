@@ -1,4 +1,4 @@
-"""Memory system for persistent agent memory."""
+"""Memory system: MEMORY.md scratchpad + HISTORY.md fallback log."""
 
 from pathlib import Path
 
@@ -6,7 +6,11 @@ from nanobot.utils.helpers import ensure_dir
 
 
 class MemoryStore:
-    """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
+    """MEMORY.md (lean scratchpad) + HISTORY.md (non-copilot fallback log).
+
+    In copilot mode, session summaries go to FTS5+Qdrant via MemoryManager.store_fact().
+    HISTORY.md is only used as fallback when MemoryManager is unavailable.
+    """
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
@@ -17,9 +21,6 @@ class MemoryStore:
         if self.memory_file.exists():
             return self.memory_file.read_text(encoding="utf-8")
         return ""
-
-    def write_long_term(self, content: str) -> None:
-        self.memory_file.write_text(content, encoding="utf-8")
 
     def append_history(self, entry: str) -> None:
         with open(self.history_file, "a", encoding="utf-8") as f:

@@ -1,4 +1,4 @@
-"""Health monitor service: programmatic health checks, alert management, task review."""
+"""Health check service: programmatic health checks, alert management."""
 
 from __future__ import annotations
 
@@ -6,18 +6,19 @@ import asyncio
 import datetime
 import time
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import Callable
 
 import aiosqlite
 from loguru import logger
 
 
-class HealthMonitorService:
-    """Programmatic health monitor with event-driven news feed.
+class HealthCheckService:
+    """Programmatic health checker with event-driven news feed.
 
     Runs during active hours only (default 7am-10pm).
-    Health checks are programmatic (HTTP pings, DB queries) — no LLM.
-    LLM is only called when pending tasks need review (judgment required).
+    All checks are purely programmatic (HTTP pings, DB queries, changelog diff).
+    No LLM calls — if intelligence is needed, escalate to HeartbeatService
+    (reads HEARTBEAT.md) or the dream cycle.
 
     Events are written to ``heartbeat_events`` table and consumed by
     the context builder at next session start.
@@ -26,20 +27,18 @@ class HealthMonitorService:
     def __init__(
         self,
         copilot_docs_dir: str = "data/copilot",
-        execute_fn: Callable[[str], Awaitable[str]] | None = None,
         deliver_fn: Callable | None = None,
         delivery_channel: str = "whatsapp",
         delivery_chat_id: str = "",
         db_path: str = "",
-        interval_s: int = 7200,
+        interval_s: int = 1800,
         active_hours: tuple[int, int] = (7, 22),
         subagent_manager: "SubagentManager | None" = None,
         task_manager: "TaskManager | None" = None,
         qdrant_url: str = "http://localhost:6333",
-        redis_url: str = "redis://localhost:6379/0",
+        **kwargs,  # Accept and ignore legacy kwargs
     ):
         self._docs_dir = Path(copilot_docs_dir)
-        self._execute_fn = execute_fn
         self._deliver = deliver_fn
         self._channel = delivery_channel
         self._chat_id = delivery_chat_id
@@ -49,7 +48,6 @@ class HealthMonitorService:
         self._subagent_manager = subagent_manager
         self._task_manager = task_manager
         self._qdrant_url = qdrant_url.rstrip("/")
-        self._redis_url = redis_url
 
         self._running = False
         self._task: asyncio.Task | None = None
@@ -57,16 +55,16 @@ class HealthMonitorService:
         self._last_changelog_size: int = 0  # Track file size to detect new entries
 
     async def start(self) -> None:
-        """Start the heartbeat loop."""
+        """Start the health check loop."""
         self._running = True
         self._task = asyncio.create_task(self._loop())
         logger.info(
-            f"Health monitor started (interval={self._interval}s, "
+            f"Health check started (interval={self._interval}s, "
             f"active={self._active_hours[0]}-{self._active_hours[1]})"
         )
 
     def stop(self) -> None:
-        """Stop the heartbeat."""
+        """Stop the health check."""
         self._running = False
         if self._task:
             self._task.cancel()
@@ -78,11 +76,11 @@ class HealthMonitorService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Heartbeat tick failed: {e}")
+                logger.error(f"Health check tick failed: {e}")
             await asyncio.sleep(self._interval)
 
     async def _tick(self) -> None:
-        """Execute one heartbeat cycle — programmatic checks + conditional LLM."""
+        """Execute one health check cycle — purely programmatic."""
         now = datetime.datetime.now()
         if not (self._active_hours[0] <= now.hour < self._active_hours[1]):
             return  # Outside active hours
@@ -92,15 +90,11 @@ class HealthMonitorService:
 
         # 1. Programmatic health checks (no LLM)
         qdrant_events = await self._check_qdrant()
-        redis_events = await self._check_redis()
         events += qdrant_events
-        events += redis_events
 
         # Auto-resolve alerts for subsystems that are now healthy
         if not qdrant_events:  # Qdrant healthy
             await self._resolve_alerts("qdrant")
-        if not redis_events:  # Redis healthy
-            await self._resolve_alerts("redis")
         # Also resolve stale embedding/memory alerts if no new ones in this tick
         await self._resolve_stale_alerts(hours=4)
 
@@ -111,7 +105,7 @@ class HealthMonitorService:
         # 3. Check for unresolved alerts
         events += await self._check_unresolved_alerts()
 
-        # 4. Check stuck subagents/tasks (existing logic, no LLM)
+        # 4. Check stuck subagents/tasks (no LLM)
         stuck = await self._check_stuck_jobs()
         if stuck:
             events.append({
@@ -120,26 +114,7 @@ class HealthMonitorService:
                 "message": stuck,
             })
 
-        # 5. LLM call for task review — ONLY if pending tasks exist
-        if self._task_manager and self._execute_fn:
-            try:
-                pending = await self._task_manager.list_pending()
-                if pending:
-                    review = await self._execute_fn(
-                        "Review these pending tasks. Note anything stuck, "
-                        "overdue, or needing attention. Be brief.\n"
-                        + "\n".join(f"- {t}" for t in pending[:10])
-                    )
-                    if review and review.strip():
-                        events.append({
-                            "type": "review_finding",
-                            "severity": "info",
-                            "message": review.strip()[:500],
-                        })
-            except Exception as e:
-                logger.warning(f"Heartbeat task review failed: {e}")
-
-        # 6. Write noteworthy events to DB
+        # 5. Write noteworthy events to DB
         noteworthy = [e for e in events if e]
         if noteworthy:
             await self._write_events(noteworthy)
@@ -147,14 +122,14 @@ class HealthMonitorService:
         duration_ms = int((time.time() - start) * 1000)
         await self._log(len(noteworthy), duration_ms)
 
-        # 7. Deliver to user ONLY if high-severity events exist
+        # 6. Deliver to user ONLY if high-severity events exist
         high = [e for e in noteworthy if e.get("severity") == "high"]
         if high and self._deliver and self._chat_id:
             summary = "\n".join(f"- {e['message'][:200]}" for e in high)
             try:
                 await self._deliver(self._channel, self._chat_id, f"Alert:\n{summary}")
             except Exception as e:
-                logger.warning(f"Heartbeat delivery failed: {e}")
+                logger.warning(f"Health check delivery failed: {e}")
 
     # --- Local changelog detection ---
 
@@ -203,7 +178,7 @@ class HealthMonitorService:
                 resolved = await cur.fetchall()
                 if resolved:
                     await db.commit()
-                    logger.info(f"Heartbeat: auto-resolved {len(resolved)} alert(s) for {subsystem}")
+                    logger.info(f"Health check: auto-resolved {len(resolved)} alert(s) for {subsystem}")
         except Exception as e:
             logger.debug(f"Alert resolution failed for {subsystem}: {e}")
 
@@ -223,7 +198,7 @@ class HealthMonitorService:
                 resolved = await cur.fetchall()
                 if resolved:
                     await db.commit()
-                    logger.info(f"Heartbeat: auto-resolved {len(resolved)} stale alert(s) (>{hours}h)")
+                    logger.info(f"Health check: auto-resolved {len(resolved)} stale alert(s) (>{hours}h)")
         except Exception as e:
             logger.debug(f"Stale alert resolution failed: {e}")
 
@@ -254,51 +229,6 @@ class HealthMonitorService:
                 "message": f"Qdrant unreachable: {e}",
             }]
         return []
-
-    async def _check_redis(self) -> list[dict]:
-        """Check Redis health via PING."""
-        try:
-            import socket
-            # Parse redis URL for host/port
-            url = self._redis_url
-            host = "localhost"
-            port = 6379
-            if "://" in url:
-                parts = url.split("://")[1].split("/")[0]
-                if ":" in parts:
-                    host, port_s = parts.split(":", 1)
-                    port = int(port_s)
-                else:
-                    host = parts
-
-            loop = asyncio.get_event_loop()
-
-            def _ping():
-                s = socket.create_connection((host, port), timeout=5)
-                try:
-                    s.sendall(b"PING\r\n")
-                    data = s.recv(64)
-                    return b"+PONG" in data
-                finally:
-                    s.close()
-
-            ok = await asyncio.wait_for(
-                loop.run_in_executor(None, _ping),
-                timeout=10,
-            )
-            if ok:
-                return []  # Healthy
-        except Exception as e:
-            return [{
-                "type": "health_error",
-                "severity": "high",
-                "message": f"Redis unreachable: {e}",
-            }]
-        return [{
-            "type": "health_error",
-            "severity": "high",
-            "message": "Redis PING failed (unexpected response)",
-        }]
 
     async def _check_unresolved_alerts(self) -> list[dict]:
         """Check alerts table for unresolved high/medium alerts in last 4 hours."""
@@ -366,15 +296,15 @@ class HealthMonitorService:
                             ev.get("type", "unknown"),
                             ev.get("severity", "info"),
                             ev.get("message", ""),
-                            ev.get("source", "heartbeat"),
+                            ev.get("source", "health_check"),
                         ),
                     )
                 await db.commit()
         except Exception as e:
-            logger.warning(f"Failed to write heartbeat events: {e}")
+            logger.warning(f"Failed to write health check events: {e}")
 
     async def _log(self, events_count: int, duration_ms: int) -> None:
-        """Log heartbeat run to database."""
+        """Log health check run to database."""
         if not self._db_path:
             return
         try:
@@ -387,4 +317,4 @@ class HealthMonitorService:
                 )
                 await db.commit()
         except Exception as e:
-            logger.warning(f"Heartbeat log failed: {e}")
+            logger.warning(f"Health check log failed: {e}")

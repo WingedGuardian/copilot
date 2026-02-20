@@ -1,4 +1,4 @@
-"""Memory manager: orchestrates all three tiers (Redis, Qdrant, SQLite)."""
+"""Memory manager: orchestrates Qdrant (episodic) + SQLite (structured + FTS5)."""
 
 from __future__ import annotations
 
@@ -11,30 +11,26 @@ from loguru import logger
 from nanobot.copilot.memory.embedder import Embedder
 from nanobot.copilot.memory.episodic import Episode, EpisodicStore
 from nanobot.copilot.memory.fulltext import FullTextStore
-from nanobot.copilot.memory.working import WorkingMemory
 
 
 class MemoryManager:
-    """Orchestrates Redis working memory, Qdrant episodic store, and SQLite structured items."""
+    """Orchestrates Qdrant episodic store and SQLite structured items + FTS5."""
 
     def __init__(
         self,
         embedder: Embedder,
         qdrant_url: str = "http://localhost:6333",
-        redis_url: str = "redis://localhost:6379/0",
         db_path: str | Path = "data/sqlite/copilot.db",
         dimensions: int = 768,
     ):
         self._embedder = embedder
         self._episodic = EpisodicStore(embedder, qdrant_url, dimensions=dimensions)
         self._fts = FullTextStore(db_path)
-        self._working = WorkingMemory(redis_url)
         self._db_path = str(db_path)
         self._slm_queue: Any = None  # Set by commands.py for deferred re-embedding
 
     async def initialize(self) -> None:
         """Connect to all backends."""
-        await self._working.connect()
         try:
             await self._episodic._ensure_client()
         except Exception as e:
@@ -130,25 +126,10 @@ class MemoryManager:
     async def recall(
         self, query: str, session_key: str, limit: int = 5
     ) -> list[Episode]:
-        """Check Redis cache first, then hybrid search (Qdrant + FTS5)."""
-        # Check Redis cache
-        cached = await self._working.get_cached_recall(session_key)
-        if cached:
-            return [Episode(**ep) for ep in cached[:limit]]
-
-        episodes = await self._episodic.recall_hybrid(
+        """Hybrid search across Qdrant + FTS5."""
+        return await self._episodic.recall_hybrid(
             query, self._fts, limit=limit, session_key=session_key
         )
-
-        # Cache the results
-        if episodes:
-            await self._working.cache_recall(
-                session_key,
-                [{"id": e.id, "text": e.text, "session_key": e.session_key,
-                  "role": e.role, "timestamp": e.timestamp, "score": e.score}
-                 for e in episodes],
-            )
-        return episodes
 
     async def proactive_recall(
         self, current_message: str, session_key: str, limit: int = 3
@@ -162,11 +143,6 @@ class MemoryManager:
         )
         if not episodes:
             return ""
-
-        # Update working memory with topic/entities from recall
-        if episodes:
-            top_text = episodes[0].text
-            await self._working.set_topic(session_key, top_text[:100])
 
         return self._format_for_injection(episodes, budget_tokens=200)
 
@@ -235,13 +211,53 @@ class MemoryManager:
             logger.warning(f"Memory items query failed: {e}")
             return []
 
+    async def store_fact(self, content: str, category: str, session_key: str) -> str:
+        """Store an explicit fact to all backends (searchable immediately)."""
+        # 1. SQLite memory_items (structured, confidence-tracked)
+        await self._upsert_item(
+            category=category, key=content[:100], value=content,
+            session_key=session_key, source="agent",
+        )
+        # 2. Qdrant (semantic search)
+        point_id = ""
+        try:
+            point_id = await self._episodic.store(
+                text=f"[{category}] {content}",
+                session_key=session_key, role=category,
+            )
+        except Exception as e:
+            logger.warning(f"Episodic store_fact failed: {e}")
+        # 3. FTS5 (keyword search)
+        try:
+            await self._fts.store(
+                f"[{category}] {content}",
+                session_key, importance=0.8,
+            )
+        except Exception as e:
+            logger.warning(f"FTS store_fact failed: {e}")
+        return point_id
+
+    async def get_core_facts_block(self, budget_tokens: int = 200) -> str:
+        """Format high-confidence items as a system prompt block."""
+        items = await self.get_high_confidence_items(min_confidence=0.8, limit=10)
+        if not items:
+            return ""
+        lines = ["## Core Facts"]
+        total_chars = 0
+        for item in items:
+            line = f"- [{item['category']}] {item['value']}"
+            if total_chars + len(line) > budget_tokens * 4:
+                break
+            lines.append(line)
+            total_chars += len(line)
+        return "\n".join(lines)
+
     async def health(self) -> dict[str, bool]:
         """Check health of all memory backends."""
-        redis_ok = await self._working.health()
         qdrant_ok = False
         try:
-            count = await self._episodic.count()
+            await self._episodic.count()
             qdrant_ok = True
         except Exception:
             pass
-        return {"redis": redis_ok, "qdrant": qdrant_ok}
+        return {"qdrant": qdrant_ok}

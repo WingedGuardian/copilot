@@ -96,8 +96,8 @@ See AGENTS.md for operational rules and tools.
 Your workspace is at: {workspace_path}
 - Identity files: SOUL.md, USER.md, AGENTS.md (you can edit these)
 - Memory system manual: MEMORY.md
-- Consolidation memory: {workspace_path}/memory/MEMORY.md
-- History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
+- Working scratchpad: {workspace_path}/memory/MEMORY.md (active goals, blockers)
+- Session history: searchable via `memory search` tool
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
@@ -141,8 +141,8 @@ You are conducting a getting-to-know-you interview with your user. This is your 
 1. **{workspace}/USER.md** — LEAN profile (~10 lines): name, timezone, language, communication style, key autonomy rules. Loaded every prompt, keep it tight.
 2. **{workspace}/SOUL.md** — Update your behavioral principles based on what you learned about how the user wants you to operate (proactive vs reactive, autonomy level, communication style).
 3. **{workspace}/AGENTS.md** — Update operational rules: what tools/integrations are available, what's NOT configured, scheduling preferences, escalation rules.
-4. **{workspace}/memory/MEMORY.md** — LEAN working snapshot (~300 words max): active goals, current projects, immediate priorities. NOT a detailed store — this is injected every prompt. Detail goes to HISTORY.md.
-5. **{workspace}/memory/HISTORY.md** — Append a detailed summary of the onboarding conversation: full context, preferences discussed, action plans, everything that doesn't fit in the lean files above.
+4. **{workspace}/memory/MEMORY.md** — LEAN working scratchpad (~150 tokens max): active goals, current blockers, immediate priorities ONLY. NOT for facts — those go to `memory store`.
+5. **Store the full onboarding summary** via the `memory` tool (`action=store`, `category=fact`) so it's searchable in future sessions. Store key facts individually (e.g., user preferences, project context, communication style).
 6. Summarize what you learned and present your action plan to the user.
 7. Tell the user the interview is complete and they can start chatting normally.
 

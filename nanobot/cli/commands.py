@@ -354,10 +354,14 @@ def _make_provider(config, cost_logger=None):
         local_model=copilot.local_model,
         fast_model=copilot.fast_model,
         big_model=copilot.big_model,
+        default_model=copilot.default_conversation_model,
+        escalation_model=copilot.escalation_model,
         emergency_cloud_model=copilot.emergency_cloud_model,
         escalation_enabled=copilot.escalation_enabled,
         escalation_marker=copilot.escalation_marker,
         provider_models=_provider_models,
+        routing_plan=copilot.routing_plan,
+        notify_on_failover=copilot.routing_plan_notify,
     )
 
 
@@ -711,7 +715,6 @@ def gateway(
             memory_manager = MemoryManager(
                 embedder=embedder,
                 qdrant_url=config.copilot.qdrant_url,
-                redis_url=config.copilot.redis_url,
                 db_path=db_path,
                 dimensions=config.copilot.embedding_local_dimensions,
             )
@@ -725,7 +728,7 @@ def gateway(
                         import time as _t; _t.sleep(2)
                     else:
                         raise _mem_err
-            console.print("[green]v[/green] Memory system enabled (Qdrant + Redis + SQLite)")
+            console.print("[green]v[/green] Memory system enabled (Qdrant + SQLite)")
         except Exception as e:
             console.print(f"[yellow]Warning: Memory init failed (degraded): {e}[/yellow]")
             memory_manager = None
@@ -777,11 +780,15 @@ def gateway(
             extended_context._memory_manager = memory_manager
 
     # Create agent with cron service
+    # When copilot routing is active and no explicit model is set, let the router decide
+    _agent_model = config.agents.defaults.model
+    if config.copilot.enabled and not _agent_model:
+        _agent_model = config.copilot.default_conversation_model
     agent = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
-        model=config.agents.defaults.model,
+        model=_agent_model,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
         llm_timeout=config.agents.defaults.llm_timeout,
@@ -830,12 +837,12 @@ def gateway(
         from nanobot.config.loader import get_config_path
 
         reschedule_cbs: dict = {}
-        # Heartbeat reschedule uses a late-binding closure so it works
-        # even though health_monitor is created later in this function.
-        def _restart_heartbeat(val):
-            if health_monitor is not None:
-                health_monitor._interval_s = int(val)
-        reschedule_cbs["heartbeat_interval"] = _restart_heartbeat
+        # Health check reschedule uses a late-binding closure so it works
+        # even though health_check is created later in this function.
+        def _restart_health_check(val):
+            if health_check is not None:
+                health_check._interval = int(val)
+        reschedule_cbs["health_check_interval"] = _restart_health_check
 
         pref_tool = SetPreferenceTool(
             config_path=get_config_path(),
@@ -857,9 +864,8 @@ def gateway(
                 db_path=str(db_path),
                 lm_studio_url=config.providers.vllm.api_base or "http://192.168.50.100:1234",
                 qdrant_url=config.copilot.qdrant_url,
-                redis_url=config.copilot.redis_url,
                 memory_manager=memory_manager,
-                router=provider if hasattr(provider, '_fast_model') else None,
+                router=provider if hasattr(provider, '_default_model') else None,
                 timezone_name=config.copilot.timezone,
                 copilot_config=config.copilot,
             )
@@ -874,6 +880,15 @@ def gateway(
             _timeout_min = (config.copilot.use_override_timeout or 1800) // 60
             agent.tools.register(UseModelTool(session_manager, timeout_minutes=_timeout_min))
             console.print("[green]v[/green] Model override tool enabled")
+
+            from nanobot.copilot.tools.plan_routing import PlanRoutingTool
+            from nanobot.config.loader import get_config_path as _gcp
+            agent.tools.register(PlanRoutingTool(
+                router=provider if hasattr(provider, 'set_routing_plan') else None,
+                config_path=_gcp(),
+                copilot_config=config.copilot,
+            ))
+            console.print("[green]v[/green] Routing plan tool enabled")
         except Exception as e:
             console.print(f"[yellow]Warning: Status init failed: {e}[/yellow]")
 
@@ -975,7 +990,7 @@ def gateway(
     # --- Copilot: Phase 8 — dream cycle + monitor + copilot heartbeat ---
     dream_cycle = None
     monitor_service = None
-    health_monitor = None
+    health_check = None
 
     if config.copilot.enabled:
         import asyncio as _aio
@@ -986,7 +1001,7 @@ def gateway(
         try:
             from nanobot.copilot.dream.cycle import DreamCycle
             from nanobot.copilot.dream.monitor import MonitorService
-            from nanobot.copilot.dream.heartbeat import HealthMonitorService
+            from nanobot.copilot.dream.health_check import HealthCheckService
 
             async def _deliver_msg(channel, chat_id, content):
                 from nanobot.bus.events import OutboundMessage
@@ -1025,7 +1040,7 @@ def gateway(
             if status_aggregator:
                 status_aggregator._heartbeat = heartbeat
                 status_aggregator._extractor = extractor
-                # health_monitor wired below after creation
+                # health_check wired below after creation
 
             monitor_service = MonitorService(
                 status_aggregator=status_aggregator,
@@ -1036,25 +1051,24 @@ def gateway(
                 silent_subsystems={"LM Studio"},
             )
 
-            health_monitor = HealthMonitorService(
+            health_check = HealthCheckService(
                 copilot_docs_dir=config.copilot.copilot_docs_dir,
                 deliver_fn=_deliver_msg,
                 delivery_channel=config.copilot.monitor_channel,
                 delivery_chat_id=config.copilot.monitor_chat_id,
                 db_path=str(db_path),
-                interval_s=config.copilot.heartbeat_interval,
+                interval_s=config.copilot.health_check_interval,
                 subagent_manager=getattr(agent, '_subagent_manager', None),
                 task_manager=getattr(agent, '_task_manager', None),
                 qdrant_url=config.copilot.qdrant_url,
-                redis_url=config.copilot.redis_url,
             )
             if status_aggregator:
-                status_aggregator._health_monitor = health_monitor
+                status_aggregator._health_check = health_check
             # Wire cost alerter for daily threshold checks
-            if cost_alerter and health_monitor:
-                health_monitor._cost_alerter = cost_alerter
+            if cost_alerter and health_check:
+                health_check._cost_alerter = cost_alerter
 
-            console.print("[green]v[/green] Dream cycle + monitor + heartbeat enabled")
+            console.print("[green]v[/green] Dream cycle + monitor + health check enabled")
         except Exception as e:
             console.print(f"[yellow]Warning: Dream/monitor init failed: {e}[/yellow]")
 
@@ -1081,12 +1095,14 @@ def gateway(
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
-    hb_interval = config.copilot.heartbeat_interval // 60 if config.copilot.enabled else 0
-    console.print(f"[green]✓[/green] Heartbeat: health every {hb_interval}m, HEARTBEAT.md every 2h")
+    hc_interval = config.copilot.health_check_interval // 60 if config.copilot.enabled else 0
+    console.print(f"[green]✓[/green] Heartbeat: health check every {hc_interval}m, HEARTBEAT.md every 2h")
 
     # --- Process Supervisor ---
     from nanobot.copilot.dream.supervisor import ProcessSupervisor
     supervisor = ProcessSupervisor(check_interval=30.0, max_restarts=5)
+    if status_aggregator:
+        status_aggregator._supervisor = supervisor
 
     async def run():
         try:
@@ -1097,8 +1113,8 @@ def gateway(
                 supervisor.register("task_worker", task_worker.start, lambda: task_worker._task)
             if monitor_service:
                 supervisor.register("monitor", monitor_service.start, lambda: monitor_service._task)
-            if health_monitor:
-                supervisor.register("health_monitor", health_monitor.start, lambda: health_monitor._task)
+            if health_check:
+                supervisor.register("health_check", health_check.start, lambda: health_check._task)
             if slm_drainer:
                 supervisor.register("slm_drainer", slm_drainer.start, lambda: slm_drainer._task)
             await supervisor.start()
@@ -1223,8 +1239,8 @@ def gateway(
             await supervisor.stop()
             if slm_drainer:
                 await slm_drainer.stop()
-            if health_monitor:
-                health_monitor.stop()
+            if health_check:
+                health_check.stop()
             if monitor_service:
                 monitor_service.stop()
             if task_worker:

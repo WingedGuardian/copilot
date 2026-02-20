@@ -77,6 +77,7 @@ class ExtendedContextBuilder:
         lessons: list | None = None,
         memory_context: str | None = None,
         recent_events: str | None = None,
+        core_facts: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build messages with tiered context injection.
 
@@ -84,6 +85,7 @@ class ExtendedContextBuilder:
         contain an ``"extractions"`` key with a list of extraction result dicts.
         ``lessons`` is a list of active Lesson objects to inject.
         ``memory_context`` is pre-fetched episodic memory from proactive_recall.
+        ``core_facts`` is a pre-fetched block of high-confidence facts.
         """
         # Start from the base builder's output
         messages = self._base.build_messages(
@@ -115,6 +117,10 @@ class ExtendedContextBuilder:
             lesson_block = LessonManager.format_for_injection(lessons)
             if lesson_block:
                 self._inject_into_system(messages, lesson_block)
+
+        # Inject core facts (high-confidence structured items)
+        if core_facts:
+            self._inject_into_system(messages, core_facts)
 
         # Inject proactive episodic memory (cross-session recall)
         if memory_context:

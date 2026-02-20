@@ -79,13 +79,7 @@ class MemoryTool(Tool):
             if not content:
                 return "Error: 'content' is required for store action."
             session_key = kwargs.get("session_key", "agent:direct")
-            await self._manager._upsert_item(
-                category=category,
-                key=content[:100],
-                value=content,
-                session_key=session_key,
-                source="agent",
-            )
+            await self._manager.store_fact(content, category, session_key)
             return f"Stored {category}: {content[:100]}"
 
         elif action == "stats":
@@ -93,7 +87,6 @@ class MemoryTool(Tool):
             episode_count = await self._manager._episodic.count()
             items = await self._manager.get_high_confidence_items(limit=5)
             lines = [
-                f"Redis: {'connected' if health['redis'] else 'disconnected'}",
                 f"Qdrant: {'connected' if health['qdrant'] else 'disconnected'}",
                 f"Episodes: {episode_count}",
                 f"High-confidence items: {len(items)}",

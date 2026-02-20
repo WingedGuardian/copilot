@@ -131,7 +131,7 @@ nanobot cron remove <job_id>   # Remove a job
 
 ## Heartbeat Task Management
 
-The `HEARTBEAT.md` file in the workspace is checked every 30 minutes.
+The `HEARTBEAT.md` file in the workspace is checked every 2 hours.
 Use file operations to manage periodic tasks:
 
 ### Add a heartbeat task
@@ -200,7 +200,7 @@ memory(action="stats")
 **Actions:**
 - `search` — Semantic search across memories (limit 5 results, scored by relevance)
 - `store` — Save facts, preferences, or entities for long-term recall
-- `stats` — Check Redis/Qdrant connection status and episode count
+- `stats` — Check Qdrant connection status and episode/item counts
 
 ---
 

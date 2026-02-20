@@ -108,9 +108,9 @@ def _generate_tips(copilot_config, session_meta: dict) -> list[str]:
         tips.append("  \U0001f512 Private mode active — all requests stay local")
     if hasattr(copilot_config, "dream_cron_expr"):
         tips.append(f"  \U0001f4a4 Dream cycle: {copilot_config.dream_cron_expr}")
-    if hasattr(copilot_config, "heartbeat_interval"):
-        hrs = copilot_config.heartbeat_interval / 3600
-        tips.append(f"  \U0001f493 Heartbeat: every {hrs:.0f}h")
+    if hasattr(copilot_config, "health_check_interval"):
+        mins = copilot_config.health_check_interval // 60
+        tips.append(f"  \U0001f493 Health check: every {mins}m")
     return tips[:5]
 
 
@@ -694,19 +694,30 @@ class AgentLoop:
         if lessons_for_context and hasattr(self.context, '_base'):
             build_kwargs["lessons"] = lessons_for_context
 
-        # Proactive episodic memory recall (cross-session, gracefully degrades)
+        # Proactive episodic memory recall + core facts (concurrent, gracefully degrades)
         if self._memory_manager and hasattr(self.context, '_base'):
             try:
-                memory_ctx = await asyncio.wait_for(
-                    self._memory_manager.proactive_recall(
-                        msg.content, session.key, limit=3
+                results = await asyncio.gather(
+                    asyncio.wait_for(
+                        self._memory_manager.get_core_facts_block(budget_tokens=200),
+                        timeout=2.0,
                     ),
-                    timeout=2.0,
+                    asyncio.wait_for(
+                        self._memory_manager.proactive_recall(
+                            msg.content, session.key, limit=3
+                        ),
+                        timeout=2.0,
+                    ),
+                    return_exceptions=True,
                 )
+                core_facts = results[0] if not isinstance(results[0], Exception) else ""
+                memory_ctx = results[1] if not isinstance(results[1], Exception) else ""
+                if core_facts:
+                    build_kwargs["core_facts"] = core_facts
                 if memory_ctx:
                     build_kwargs["memory_context"] = memory_ctx
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.debug(f"Proactive recall skipped: {e}")
+            except Exception as e:
+                logger.debug(f"Memory recall skipped: {e}")
 
         # Heartbeat event injection (news feed from background monitoring)
         if self._copilot_config and hasattr(self.context, '_base'):
@@ -861,13 +872,13 @@ class AgentLoop:
         self.sessions.save(session)
 
         # Copilot: background extraction (async, never blocks response)
-        if self._extractor:
+        if self._extractor and not is_error:
             self._extractor.schedule_extraction(
                 msg.content, final_content, session.key
             )
 
         # Copilot: store exchange in memory (async, never blocks response)
-        if self._memory_manager:
+        if self._memory_manager and not is_error:
             self._track_task(
                 self._memory_manager.remember_exchange(msg.content, final_content, session.key),
                 name="memory_remember_exchange",
@@ -1003,7 +1014,7 @@ class AgentLoop:
         )
     
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
-        """Consolidate old messages into MEMORY.md + HISTORY.md, then trim session."""
+        """Consolidate old messages into searchable memory, then trim session."""
         if not session.messages:
             return
         memory = MemoryStore(self.workspace)
@@ -1053,9 +1064,15 @@ Respond with ONLY valid JSON, no markdown fences."""
             result = json.loads(text)
 
             if entry := result.get("history_entry"):
-                memory.append_history(entry)
-            # memory/MEMORY.md is now Data-curated only.
-            # Consolidation writes to HISTORY.md; Data manages MEMORY.md manually.
+                # Primary: store to all searchable backends (copilot mode)
+                if self._memory_manager:
+                    await self._memory_manager.store_fact(
+                        content=entry, category="session_summary",
+                        session_key=session.key,
+                    )
+                else:
+                    # Fallback: flat file (non-copilot mode)
+                    memory.append_history(entry)
 
             session.messages = session.messages[-keep_count:] if keep_count else []
             self.sessions.save(session)

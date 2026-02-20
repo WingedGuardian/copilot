@@ -11,6 +11,8 @@ from typing import Any, Callable, Awaitable
 import aiosqlite
 from loguru import logger
 
+from nanobot.copilot.memory.episodic import EpisodicStore
+
 
 @dataclass
 class DreamReport:
@@ -30,7 +32,7 @@ class DreamReport:
     duration_ms: int = 0
 
     def to_summary(self) -> str:
-        """Format as WhatsApp-friendly summary."""
+        """Format as a concise summary."""
         lines = ["Dream Cycle Complete"]
         lines.append(f"Duration: {self.duration_ms}ms")
         if self.episodes_consolidated:
@@ -156,19 +158,28 @@ class DreamCycle:
         except Exception as e:
             report.errors.append(f"memory_budget: {e}")
 
-        # Job 10: Prune HISTORY.md (keep last 30 days)
-        try:
-            await self._prune_history()
-        except Exception as e:
-            report.errors.append(f"history_prune: {e}")
-
-        # Job 11: Metacognitive self-reflection
+        # Job 10: Metacognitive self-reflection
         try:
             report.reflection = await self._self_reflect(report)
         except Exception as e:
             report.errors.append(f"reflection: {e}")
 
         report.duration_ms = int((time.time() - start) * 1000)
+
+        # Surface errors in AlertBus so they appear in /status Active Alerts
+        if report.errors:
+            try:
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                bus = get_alert_bus()
+                for err in report.errors:
+                    job_name = err.split(":")[0] if ":" in err else "unknown"
+                    await bus.alert(
+                        "dream", "medium",
+                        f"Dream cycle job failed: {err[:200]}",
+                        f"dream_job_{job_name}",
+                    )
+            except Exception as e:
+                logger.debug(f"Dream AlertBus write failed: {e}")
 
         # Log to DB
         await self._log_report(report)
@@ -348,7 +359,7 @@ class DreamCycle:
             if hasattr(self._memory, '_qdrant') and self._memory._qdrant:
                 try:
                     result = await self._memory._qdrant.scroll(
-                        collection_name="episodes",
+                        collection_name=EpisodicStore.COLLECTION,
                         limit=max_per_cycle,
                         with_payload=False,
                     )
@@ -356,7 +367,7 @@ class DreamCycle:
                     orphan_ids = [p.id for p in points if str(p.id) not in db_ids]
                     if orphan_ids:
                         await self._memory._qdrant.delete(
-                            collection_name="episodes",
+                            collection_name=EpisodicStore.COLLECTION,
                             points_selector=orphan_ids,
                         )
                         cleaned = len(orphan_ids)
@@ -388,7 +399,7 @@ class DreamCycle:
         cleaned = 0
         try:
             result = await self._memory._qdrant.scroll(
-                collection_name="episodes",
+                collection_name=EpisodicStore.COLLECTION,
                 limit=100,
                 with_vectors=True,
                 with_payload=True,
@@ -410,7 +421,7 @@ class DreamCycle:
                 logger.info(f"Dream: skipped {skipped} zero-vectors (pending re-embed)")
             if zero_ids:
                 await self._memory._qdrant.delete(
-                    collection_name="episodes",
+                    collection_name=EpisodicStore.COLLECTION,
                     points_selector=zero_ids,
                 )
                 cleaned = len(zero_ids)
@@ -432,13 +443,15 @@ class DreamCycle:
 
 {recent_context}
 
-Answer in 2-3 concise sentences (operational only, not strategic):
-1. What broke or failed today? Any errors, timeouts, or degraded services?
-2. What needs immediate attention tomorrow? (e.g., a service to restart, a file over budget, a queue backing up)
-3. Any data quality issues? (extraction failures, memory health, stale content)
+Give a high-level summary of what happened tonight. Keep it operational — the weekly review handles strategy.
 
-Do NOT use headers or formatting. Just plain sentences. Be specific, not generic.
-Do NOT suggest new features, capability gaps, or strategic changes — that's the weekly review's job."""
+- What broke or degraded? What recovered?
+- What needs user attention or approval? (be specific — recommended changes, actions required, decisions pending)
+- Any data quality or resource concerns?
+
+Be as long as you need to be, but stay high-level. Only go into detail on items that require user action or approval.
+Do NOT use headers or markdown formatting. Plain sentences.
+Do NOT suggest new features or capability gaps — that's the weekly review's job."""
 
         try:
             result = await self._execute_fn(prompt)
@@ -448,9 +461,6 @@ Do NOT suggest new features, capability gaps, or strategic changes — that's th
             for prefix in ("*Reflection Complete:*", "*Reflection:*", "Reflection:", "**Reflection:**"):
                 if text.startswith(prefix):
                     text = text[len(prefix):].strip()
-            # Truncate to 1000 chars (fits comfortably in WhatsApp's ~4096 limit)
-            if len(text) > 1000:
-                text = text[:997] + "..."
             return text
         except Exception as e:
             logger.warning(f"Self-reflection failed: {e}")
@@ -545,7 +555,7 @@ Do NOT suggest new features, capability gaps, or strategic changes — that's th
         # Default budgets if config file missing
         defaults = {
             "SOUL.md": 250, "USER.md": 250, "AGENTS.md": 600,
-            "POLICY.md": 200, "memory/MEMORY.md": 400,
+            "POLICY.md": 200, "memory/MEMORY.md": 150,
         }
 
         try:
@@ -588,68 +598,6 @@ Do NOT suggest new features, capability gaps, or strategic changes — that's th
                     await db.commit()
             except Exception as e:
                 logger.warning(f"Failed to write budget event: {e}")
-
-    async def _prune_history(self, max_kb: int = 50, keep_days: int = 30) -> None:
-        """Prune HISTORY.md when it exceeds *max_kb*.
-
-        Keeps entries from the last *keep_days*. Older entries are moved to
-        HISTORY.archive.md so nothing is lost but the active file stays lean.
-        """
-        import re
-        from datetime import datetime, timedelta
-
-        history_path = Path("/home/ubuntu/.nanobot/workspace/memory/HISTORY.md")
-        if not history_path.exists():
-            return
-
-        size_kb = history_path.stat().st_size / 1024
-        if size_kb <= max_kb:
-            return
-
-        text = history_path.read_text(encoding="utf-8")
-        # Split into entries by timestamp pattern at start of line
-        entries = re.split(r'(?=^\[20\d{2}-\d{2}-\d{2})', text, flags=re.MULTILINE)
-        entries = [e for e in entries if e.strip()]
-
-        if not entries:
-            return
-
-        cutoff = datetime.now() - timedelta(days=keep_days)
-        keep: list[str] = []
-        archive: list[str] = []
-
-        for entry in entries:
-            # Parse date from entry start: [YYYY-MM-DD ...
-            match = re.match(r'\[(\d{4}-\d{2}-\d{2})', entry)
-            if match:
-                try:
-                    entry_date = datetime.strptime(match.group(1), "%Y-%m-%d")
-                    if entry_date >= cutoff:
-                        keep.append(entry)
-                    else:
-                        archive.append(entry)
-                    continue
-                except ValueError:
-                    pass
-            # If can't parse date, keep it (safety)
-            keep.append(entry)
-
-        if not archive:
-            return
-
-        # Append old entries to archive file
-        archive_path = history_path.parent / "HISTORY.archive.md"
-        with open(archive_path, "a", encoding="utf-8") as f:
-            for entry in archive:
-                f.write(entry.rstrip() + "\n\n")
-
-        # Rewrite HISTORY.md with only recent entries
-        history_path.write_text("".join(keep), encoding="utf-8")
-
-        logger.info(
-            f"Dream: pruned HISTORY.md — archived {len(archive)} old entries, "
-            f"kept {len(keep)} ({size_kb:.0f}KB → {len(''.join(keep)) / 1024:.0f}KB)"
-        )
 
     async def _cleanup_routing_preferences(self) -> None:
         """Remove routing preferences older than 7 days."""
@@ -754,7 +702,7 @@ Compare this week vs. last week. Flag overspending by tier or model.
 - If you edited code, suggest significant changes to the user first via message tool.
 
 ## Response Format
-Provide a concise weekly report (goes to WhatsApp — keep it brief):
+Provide a weekly report. Be thorough but stay high-level:
 - Dream cycle health (clean / N errors)
 - Monthly findings addressed (or "none pending")
 - Architecture/code changes made
@@ -928,9 +876,6 @@ Provide a concise weekly report (goes to WhatsApp — keep it brief):
                 status = "OVER" if isinstance(limit, int) and tokens > limit else "ok"
                 file_report.append(f"  {filename}: ~{tokens} tok (budget: {limit}) [{status}]")
 
-        history_path = workspace / "memory" / "HISTORY.md"
-        history_kb = f"{history_path.stat().st_size / 1024:.0f}KB" if history_path.exists() else "N/A"
-
         monthly_stats = await self._get_monthly_stats()
 
         # Gather weekly review summaries from the past 30 days
@@ -961,7 +906,6 @@ long-term health, adjust policies, and write findings for the weekly review to i
 
 ## File Budget Report
 {chr(10).join(file_report)}
-HISTORY.md: {history_kb}
 Current budgets.json: {json.dumps(budgets, indent=2) if budgets else "(missing)"}
 
 ## Cost Data (30 days)
@@ -1030,7 +974,7 @@ Only include findings that need ACTION — not observations.
 - Do NOT commit architecture fixes — weekly handles implementation.
 
 ## Response Format
-Provide a comprehensive monthly audit report (goes to WhatsApp):
+Provide a comprehensive monthly audit report:
 - Weekly review assessment (doing well / needs attention)
 - Budget policy changes (with reasoning, or "no changes")
 - Architecture findings written for weekly (count + summary)

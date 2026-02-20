@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS slm_queue_stats (
     total_queued     INTEGER NOT NULL DEFAULT 0,
     total_processed  INTEGER NOT NULL DEFAULT 0,
     total_failed     INTEGER NOT NULL DEFAULT 0,
+    total_dropped    INTEGER NOT NULL DEFAULT 0,
     queue_size_limit INTEGER NOT NULL DEFAULT 500,
     last_drain_ts    REAL    NOT NULL DEFAULT 0.0
 );
@@ -77,6 +78,13 @@ class SlmWorkQueue:
         conn = await self._pool.acquire()
         try:
             await conn.executescript(_SCHEMA)
+            # Migrate: add total_dropped column if missing (existing DBs)
+            try:
+                await conn.execute(
+                    "ALTER TABLE slm_queue_stats ADD COLUMN total_dropped INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass  # Column already exists
             await conn.commit()
         finally:
             await self._pool.release(conn)
@@ -138,6 +146,19 @@ class SlmWorkQueue:
     ) -> int | None:
         if await self.size() >= self._size_limit:
             logger.warning(f"SLM queue full ({self._size_limit}) — dropping {work_type}")
+            try:
+                await self._pool.execute(
+                    "UPDATE slm_queue_stats SET total_dropped = total_dropped + 1 WHERE id = 1",
+                    commit=True,
+                )
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert(
+                    "slm_queue", "medium",
+                    f"SLM queue full ({self._size_limit}) — dropped {work_type}",
+                    "queue_full",
+                )
+            except Exception:
+                pass
             return None
         try:
             cur = await self._pool.execute(
@@ -217,6 +238,37 @@ class SlmWorkQueue:
 
     # ── Maintenance ──────────────────────────────────────────────────
 
+    async def alert_abandoned(self) -> int:
+        """Find items at max_attempts that will never be retried and fire alerts.
+
+        Returns count of abandoned items found.
+        """
+        rows = await self._pool.fetchall(
+            """SELECT id, work_type, session_key, last_error, attempts
+               FROM slm_work_queue
+               WHERE status = 'failed' AND attempts >= max_attempts
+               LIMIT 20""",
+        )
+        if not rows:
+            return 0
+
+        try:
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            bus = get_alert_bus()
+            for r in rows:
+                work_id, work_type, session_key, last_error, attempts = r
+                await bus.alert(
+                    "slm_queue", "medium",
+                    f"Abandoned {work_type} (id={work_id}, session={session_key}, "
+                    f"attempts={attempts}): {(last_error or 'unknown')[:100]}",
+                    f"abandoned_{work_id}",
+                )
+        except Exception as e:
+            logger.warning(f"SLM abandoned alert failed: {e}")
+
+        logger.warning(f"SLM queue: {len(rows)} abandoned item(s) at max_attempts")
+        return len(rows)
+
     async def reset_stuck(self, timeout_s: int = 300) -> int:
         """Reset items stuck in 'processing' longer than timeout."""
         cur = await self._pool.execute(
@@ -263,8 +315,9 @@ class SlmWorkQueue:
             "total_queued": row[1],
             "total_processed": row[2],
             "total_failed": row[3],
-            "queue_size_limit": row[4],
-            "last_drain_ts": row[5],
+            "total_dropped": row[4],
+            "queue_size_limit": row[5],
+            "last_drain_ts": row[6],
             "current_size": await self.size(),
         }
 

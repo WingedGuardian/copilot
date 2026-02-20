@@ -11,13 +11,21 @@ _ALIASES: dict[str, str] = {
     "haiku": "anthropic/claude-haiku-4-5",
     "sonnet": "anthropic/claude-sonnet-4-6",
     "opus": "anthropic/claude-opus-4-6",
+    "claude": "anthropic/claude-sonnet-4-6",
     "gpt4": "openai/gpt-4o",
     "gpt4o": "openai/gpt-4o",
     "gpt4mini": "openai/gpt-4o-mini",
+    "o1": "openai/o1",
+    "o3": "openai/o3-mini",
     "gemini": "google/gemini-2.5-flash",
     "flash": "google/gemini-2.5-flash",
     "deepseek": "deepseek/deepseek-chat",
     "r1": "deepseek/deepseek-r1",
+    "minimax": "MiniMax-M2.5",
+    "m25": "MiniMax-M2.5",
+    "kimi": "moonshotai/kimi-k2.5",
+    "llama": "meta-llama/llama-4-scout",
+    "glm": "THUDM/glm-5",
 }
 
 

@@ -70,6 +70,14 @@ class CopilotConfig(BaseModel):
     #   "google/gemini-2.0-pro"               — large context window
     big_model: str = "anthropic/claude-sonnet-4-6"
 
+    # ── Routing Plan ───────────────────────────────────────────────────
+    # LLM-generated, user-approved routing plan.  When set, the router
+    # follows this plan instead of the default model.  Empty list = use default.
+    default_conversation_model: str = "MiniMax-M2.5"
+    escalation_model: str = "anthropic/claude-sonnet-4-6"
+    routing_plan: list[dict] = Field(default_factory=list)
+    routing_plan_notify: bool = True  # inline failover notes (toggle off later)
+
     # ── Background Extraction ───────────────────────────────────────────
     # Runs after every exchange to extract facts/decisions/entities/sentiment.
     # Needs structured JSON output.  Small models work fine here.
@@ -206,7 +214,6 @@ class CopilotConfig(BaseModel):
 
     # Memory infrastructure
     qdrant_url: str = "http://localhost:6333"
-    redis_url: str = "redis://localhost:6379/0"
     memory_recall_limit: int = 5
     memory_min_score: float = 0.35
 
@@ -246,7 +253,7 @@ class CopilotConfig(BaseModel):
     monthly_review_cron_expr: str = "0 15 1 * *"  # 1st of month 10 AM EST (UTC-5)
     backup_dir: str = "/home/ubuntu/executive-copilot/backups"
     monitor_interval: int = 300
-    heartbeat_interval: int = 1800  # 30 minutes (daytime only, health + task review)
+    health_check_interval: int = 1800  # 30 minutes (daytime only, programmatic health checks)
     monitor_channel: str = "whatsapp"
     monitor_chat_id: str = ""
 

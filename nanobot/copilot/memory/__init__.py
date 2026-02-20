@@ -1,1 +1,1 @@
-"""Three-tier memory: Redis (working), Qdrant (episodic), SQLite (structured)."""
+"""Two-tier memory: Qdrant (episodic) + SQLite (structured + FTS5)."""

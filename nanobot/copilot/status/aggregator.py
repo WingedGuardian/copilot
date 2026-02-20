@@ -91,9 +91,10 @@ class DashboardReport:
     ops_summary: dict = field(default_factory=dict)  # last dream/heartbeat/alert counts
     extraction_stats: dict = field(default_factory=dict)  # last extraction info
     queue_breakdown: dict = field(default_factory=dict)  # by work_type
+    services: dict = field(default_factory=dict)  # from ProcessSupervisor.get_status()
 
     def to_text(self) -> str:
-        """Format as WhatsApp-friendly text."""
+        """Format as readable text."""
         lines = ["System Status"]
         lines.append("")
 
@@ -129,6 +130,17 @@ class DashboardReport:
             latency = f" ({s.latency_ms}ms)" if s.latency_ms else ""
             detail = f" - {s.details}" if s.details else ""
             lines.append(f"  {s.name}: {icon}{latency}{detail}")
+
+        # Services (from ProcessSupervisor)
+        if self.services:
+            lines.append("")
+            lines.append("Services:")
+            for svc_name, svc_info in self.services.items():
+                alive = svc_info.get("alive", False)
+                restarts = svc_info.get("restarts", 0)
+                icon = "OK" if alive else "DEAD"
+                restart_note = f" ({restarts} restarts)" if restarts > 0 else ""
+                lines.append(f"  {svc_name}: {icon}{restart_note}")
 
         # Models
         if self.models:
@@ -237,6 +249,9 @@ class DashboardReport:
                 if parts:
                     lines.append(f"    ({', '.join(parts)})")
             lines.append(f"  Processed: {rate}")
+            dropped = q.get('total_dropped', 0)
+            if dropped:
+                lines.append(f"  Dropped (queue full): {dropped}")
             ts = q.get("last_drain_ts", 0)
             if ts:
                 import time
@@ -259,23 +274,23 @@ class StatusAggregator:
         db_path: str = "",
         lm_studio_url: str = "http://192.168.50.100:1234",
         qdrant_url: str = "http://localhost:6333",
-        redis_url: str = "redis://localhost:6379/0",
         memory_manager: Any = None,
         cron_service: Any = None,
         channel_manager: Any = None,
         session_manager: Any = None,
         router: Any = None,
+        **kwargs,  # Accept and ignore legacy kwargs (redis_url, timezone_name, copilot_config)
     ):
         self._db_path = db_path
         self._lm_studio_url = lm_studio_url
         self._qdrant_url = qdrant_url
-        self._redis_url = redis_url
         self._memory_manager = memory_manager
         self._cron_service = cron_service
         self._channel_manager = channel_manager
         self._session_manager = session_manager
         self._router = router
         self._heartbeat = None  # Set externally: HeartbeatService instance
+        self._supervisor = None  # Set externally: ProcessSupervisor instance
 
     async def collect(self, session_metadata: dict | None = None, session=None, session_manager=None) -> DashboardReport:
         """Run all checks in parallel and assemble report."""
@@ -288,7 +303,6 @@ class StatusAggregator:
         checks = await asyncio.gather(
             self._check_lm_studio(),
             self._check_qdrant(),
-            self._check_redis(),
             return_exceptions=True,
         )
 
@@ -299,6 +313,13 @@ class StatusAggregator:
                 report.subsystems.append(SubsystemStatus(
                     name="unknown", healthy=False, details=str(result)
                 ))
+
+        # Supervised service status
+        if self._supervisor:
+            try:
+                report.services = self._supervisor.get_status()
+            except Exception:
+                pass
 
         # Model info + health
         if self._router:
@@ -407,21 +428,6 @@ class StatusAggregator:
         except Exception as e:
             return SubsystemStatus(name="Qdrant", healthy=False, details=str(e))
 
-    async def _check_redis(self) -> SubsystemStatus:
-        """Check Redis via ping."""
-        start = time.time()
-        try:
-            import redis.asyncio as aioredis
-            r = aioredis.from_url(self._redis_url, decode_responses=True)
-            pong = await r.ping()
-            latency = int((time.time() - start) * 1000)
-            await r.close()
-            return SubsystemStatus(
-                name="Redis", healthy=pong, latency_ms=latency,
-            )
-        except Exception as e:
-            return SubsystemStatus(name="Redis", healthy=False, details=str(e))
-
     async def _get_cost_data(self) -> dict:
         """Query cost_log for today and weekly totals."""
         if not self._db_path:
@@ -529,11 +535,19 @@ class StatusAggregator:
         import httpx
 
         router = self._router
-        tiers = [
-            ("fast", router._fast_model),
-            ("big", router._big_model),
-            ("local", router._local_model),
-        ]
+        # Show plan-based routing info if available, otherwise default/escalation
+        if hasattr(router, '_routing_plan') and router._routing_plan:
+            tiers = []
+            for entry in router._routing_plan:
+                tiers.append((f"plan:{entry.get('provider', '?')}", entry.get("model", "?")))
+            tiers.append(("escalation", getattr(router, "_escalation_model", "?")))
+            tiers.append(("local", router._local_model))
+        else:
+            tiers = [
+                ("default", getattr(router, "_default_model", router._fast_model)),
+                ("escalation", getattr(router, "_escalation_model", router._big_model)),
+                ("local", router._local_model),
+            ]
 
         # Collect unique cloud provider base URLs to probe
         provider_health: dict[str, bool | None] = {}
@@ -654,8 +668,10 @@ class StatusAggregator:
         force_provider = meta.get("force_provider")
         if force_provider:
             tier = meta.get("force_tier", "big")
+            default_m = getattr(router, "_default_model", router._fast_model)
+            escalation_m = getattr(router, "_escalation_model", router._big_model)
             model = meta.get("force_model") or (
-                router._fast_model if tier == "fast" else router._big_model
+                default_m if tier == "fast" else escalation_m
             )
             return RoutingState(
                 mode="override", active_tier=tier,

@@ -13,8 +13,9 @@ from nanobot.agent.tools.base import Tool
 # Fields the LLM is allowed to change (no secrets, no security settings)
 _ALLOWED_KEYS = {
     "fast_model", "big_model", "local_model",
+    "default_conversation_model", "escalation_model", "routing_plan_notify",
     "dream_model", "heartbeat_model", "weekly_model", "monthly_model",
-    "dream_cron_expr", "weekly_review_cron_expr", "monthly_review_cron_expr", "heartbeat_interval",
+    "dream_cron_expr", "weekly_review_cron_expr", "monthly_review_cron_expr", "health_check_interval",
     "use_override_timeout", "daily_cost_alert", "per_call_cost_alert",
     "context_budget", "continuation_threshold",
     "lesson_injection_count", "lesson_min_confidence",
@@ -23,7 +24,7 @@ _ALLOWED_KEYS = {
 
 # Type coercion map (field name → target type)
 _TYPE_MAP: dict[str, type] = {
-    "heartbeat_interval": int,
+    "health_check_interval": int,
     "use_override_timeout": int,
     "context_budget": int,
     "lesson_injection_count": int,
@@ -59,10 +60,12 @@ class SetPreferenceTool(Tool):
     def description(self) -> str:
         return (
             "Change a copilot runtime preference. "
-            "Supported keys: fast_model, big_model, local_model, dream_cron_expr, "
-            "heartbeat_interval, use_override_timeout, daily_cost_alert, "
-            "per_call_cost_alert, context_budget, lesson_injection_count, "
-            "lesson_min_confidence, memory_recall_limit, memory_min_score. "
+            "Supported keys: default_conversation_model, escalation_model, "
+            "fast_model, big_model, local_model, routing_plan_notify, "
+            "dream_cron_expr, health_check_interval, use_override_timeout, "
+            "daily_cost_alert, per_call_cost_alert, context_budget, "
+            "lesson_injection_count, lesson_min_confidence, "
+            "memory_recall_limit, memory_min_score. "
             "Changes take effect immediately and persist across restarts."
         )
 
@@ -93,8 +96,8 @@ class SetPreferenceTool(Tool):
 
         # Validate ranges for numeric fields
         if isinstance(typed_value, (int, float)):
-            if key == "heartbeat_interval" and typed_value < 60:
-                return f"Error: heartbeat_interval must be >= 60 seconds, got {typed_value}"
+            if key == "health_check_interval" and typed_value < 60:
+                return f"Error: health_check_interval must be >= 60 seconds, got {typed_value}"
             if key == "use_override_timeout" and typed_value < 60:
                 return f"Error: use_override_timeout must be >= 60 seconds, got {typed_value}"
             if key in ("lesson_min_confidence", "memory_min_score", "continuation_threshold"):
@@ -110,9 +113,15 @@ class SetPreferenceTool(Tool):
         setattr(self._copilot, key, typed_value)
 
         # Hot-swap router models
-        if self._router and key in ("fast_model", "big_model", "local_model"):
-            tier = key.replace("_model", "")
-            self._router.set_model(tier, typed_value)
+        _model_tier_map = {
+            "fast_model": "fast",
+            "big_model": "big",
+            "local_model": "local",
+            "default_conversation_model": "default",
+            "escalation_model": "escalation",
+        }
+        if self._router and key in _model_tier_map:
+            self._router.set_model(_model_tier_map[key], typed_value)
 
         # Trigger reschedule callbacks (dream cron, heartbeat interval, etc.)
         if key in self._reschedule:

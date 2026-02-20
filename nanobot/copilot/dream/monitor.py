@@ -91,9 +91,9 @@ class MonitorService:
 
                     # Notify
                     if remediated:
-                        await self._notify(f"[Fixed] {sub.name} restarted automatically")
+                        await self._notify(f"[Fixed] {sub.name} restarted automatically", sub.name)
                     else:
-                        await self._notify(f"[Down] {sub.name}: {sub.details}")
+                        await self._notify(f"[Down] {sub.name}: {sub.details}", sub.name)
 
             elif not was_healthy and sub.healthy:
                 # Transition: unhealthy -> healthy (recovery)
@@ -102,7 +102,7 @@ class MonitorService:
                     duration = time.time() - down_since
                     hours = int(duration // 3600)
                     minutes = int((duration % 3600) // 60)
-                    await self._notify(f"[Recovered] {sub.name} back online after {hours}h{minutes}m")
+                    await self._notify(f"[Recovered] {sub.name} back online after {hours}h{minutes}m", sub.name)
 
             self._prev_health[sub.name] = sub.healthy
 
@@ -131,8 +131,17 @@ class MonitorService:
             lines.append(f"  {name}: down for {hours}h")
         await self._notify("\n".join(lines))
 
-    async def _notify(self, message: str) -> None:
-        """Send notification via message bus."""
+    async def _notify(self, message: str, subsystem: str = "monitor") -> None:
+        """Send notification via message bus and record in AlertBus."""
+        # Always write to AlertBus so state transitions surface in /status
+        try:
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            severity = "high" if "[Down]" in message else "medium"
+            error_key = f"monitor_{subsystem}"
+            await get_alert_bus().alert(subsystem, severity, message, error_key)
+        except Exception as e:
+            logger.debug(f"Monitor AlertBus write failed: {e}")
+
         if not self._deliver or not self._chat_id:
             logger.warning(f"Monitor alert (no delivery): {message}")
             return

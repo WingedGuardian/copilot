@@ -1,31 +1,35 @@
 ---
 name: memory
-description: Two-layer memory system with grep-based recall.
-always: true
+description: Memory tool reference — search, store, and stats actions.
+always: false
 ---
 
-# Memory
+# Memory Tool Reference
 
-## Structure
+## Actions
 
-- `memory/MEMORY.md` — Long-term facts (preferences, project context, relationships). Always loaded into your context.
-- `memory/HISTORY.md` — Append-only event log. NOT loaded into context. Search it with grep.
-
-## Search Past Events
-
-```bash
-grep -i "keyword" memory/HISTORY.md
+### search
+Find memories across all stored data (semantic + keyword).
+```
+memory(action="search", query="user's timezone preference")
 ```
 
-Use the `exec` tool to run grep. Combine patterns: `grep -iE "meeting|deadline" memory/HISTORY.md`
+### store
+Persist a fact to all backends (SQLite + Qdrant + FTS5). Immediately searchable.
+```
+memory(action="store", category="fact", content="User prefers dark mode")
+memory(action="store", category="preference", content="Communication style: direct and concise")
+memory(action="store", category="entity", content="Alice is the project lead for Nexus")
+```
 
-## When to Update MEMORY.md
+### stats
+Check memory system health and counts.
+```
+memory(action="stats")
+```
 
-Write important facts immediately using `edit_file` or `write_file`:
-- User preferences ("I prefer dark mode")
-- Project context ("The API uses OAuth2")
-- Relationships ("Alice is the project lead")
+## When to Use
 
-## Auto-consolidation
-
-Old conversations are automatically summarized and appended to HISTORY.md when the session grows large. Long-term facts are extracted to MEMORY.md. You don't need to manage this.
+- **Search** before claiming you don't know something
+- **Store** user preferences, project context, and key decisions immediately
+- MEMORY.md is a lean scratchpad (active goals/blockers only) — facts go to `memory store`

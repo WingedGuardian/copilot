@@ -30,6 +30,7 @@ _MODEL_WINDOWS: dict[str, int] = {
     # Cloud — Google
     "gemini-2.5-flash": 1_000_000,
     "gemini-2.5-pro": 1_000_000,
+    "gemini-3-flash-preview": 1_000_000,
     # Cloud — MiniMax
     "MiniMax-M1": 1_000_000,
     "MiniMax-M2.5": 200_000,

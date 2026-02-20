@@ -59,7 +59,7 @@ async def get_heartbeat_summary(db_path: str) -> str:
 
     Returns a brief one-liner like:
       "Last heartbeat: 45m ago, all healthy"
-      "Last heartbeat: 2h ago — [high] Redis unreachable"
+      "Last heartbeat: 2h ago — [high] Qdrant unreachable"
     """
     if not db_path:
         return ""

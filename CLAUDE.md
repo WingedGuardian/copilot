@@ -10,6 +10,13 @@ Always be trying to "one up" the user's ideas when there's a good opportunity th
 - **Verify against actual code**: Before claiming a gap, bug, or missing feature exists, read the actual source files — not just design docs. The codebase has more infrastructure than the docs suggest (e.g., AlertBus, ProcessSupervisor, heartbeat_events, SqlitePool with WAL+retry). Design docs describe intent; code describes reality. When the two conflict, trust the code.
 - **API keys live in `~/.nanobot/secrets.json`** — NEVER check environment variables to determine if an API key is set. The `api_key: str = ""` defaults in Pydantic schemas are structural defaults that get populated from `secrets.json` at runtime. Empty string in the schema does NOT mean the key is missing. If you need to verify a key exists, read `secrets.json` directly (path: `providers.<name>.apiKey`).
 
+# Process Discipline
+
+- **Pre-commit verification**: Before committing, verify the specific code path changed. Query the DB table you referenced. Hit the endpoint you modified. Trigger the feature you added. "It looks right" is not verification.
+- **Commit scope**: Keep commits under ~10 files. If a change touches more, break it into sequential atomic commits that each independently work. Large surface area = large blast radius.
+- **Loud failure default**: New `try/except` blocks in background services must call `get_alert_bus().alert()` or surface in `/status`. No silent `logger.warning` for conditions the user would want to know about. If you're catching an exception just to log it, that's a smell — either handle it or alert on it.
+- **Stabilize before extending**: Don't start new features while the previous feature has uncommitted fixes or known broken paths. Finish the fix chain first.
+
 # Coding Guidelines
 
 - Every changed line should trace directly to the user's request.
@@ -43,3 +50,19 @@ After committing code changes, append a one/two-line entry to `~/.nanobot/CHANGE
 [YYYY-MM-DD HH:MM] claude-code: brief description of everything changed
 ```
 This file is read by nanobot's heartbeat to stay aware of external codebase changes. Keep entries concise but with specific keywords needed to understand what was affected (one/two line per commit MAX).
+
+# Periodic Services — Quick Reference
+
+| Service | Class | File | Interval | LLM? | Purpose |
+|---------|-------|------|----------|------|---------|
+| **Heartbeat** | `HeartbeatService` | `nanobot/heartbeat/service.py` | 2h | YES | Reads HEARTBEAT.md, executes tasks via LLM agent |
+| **Health check** | `HealthCheckService` | `nanobot/copilot/dream/health_check.py` | 30min | **NO** | Programmatic HTTP pings, DB queries, changelog diff, alert management |
+| **Monitor** | `MonitorService` | `nanobot/copilot/dream/monitor.py` | 5min | NO | State-transition alerting, self-heal |
+| **Dream cycle** | `DreamCycle` | `nanobot/copilot/dream/cycle.py` | Nightly (cron) | YES | Consolidation, reflection, cleanup, cost report |
+| **Weekly review** | `DreamCycle._run_weekly_review()` | `nanobot/copilot/dream/cycle.py` | Sunday (cron) | YES | MANAGER role — architecture, memory, models, costs |
+| **Monthly review** | `DreamCycle._run_monthly_review()` | `nanobot/copilot/dream/cycle.py` | 1st of month (cron) | YES | DIRECTOR role — audits weekly, adjusts budgets |
+
+**Rules:**
+- The ONLY LLM-powered heartbeat is `HeartbeatService` (reads HEARTBEAT.md). No other "health check" or "heartbeat" service should ever call an LLM.
+- `HealthCheckService` is purely programmatic. If it needs intelligence, escalate to the heartbeat or dream cycle — never add an LLM call to it.
+- Config key `heartbeat_model` is for `HeartbeatService`. Config key `health_check_interval` is for `HealthCheckService`. Don't confuse them.

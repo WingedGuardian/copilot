@@ -1,1 +1,1 @@
-"""Dream cycle, monitoring, and heartbeat services."""
+"""Dream cycle, monitoring, and health check services."""

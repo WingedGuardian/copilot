@@ -39,6 +39,7 @@ _PRICING: dict[str, tuple[float, float]] = {
     # Google Gemini
     "gemini-2.5-flash": (0.15, 0.60),
     "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-3-flash-preview": (0.0, 0.0),
 
     # MiniMax
     "MiniMax-M1": (0.15, 0.60),
