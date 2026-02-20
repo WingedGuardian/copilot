@@ -981,8 +981,15 @@ def gateway(
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        # Frame the message so the LLM knows it's delivering a reminder,
+        # not interpreting an open-ended task prompt.
+        framed = (
+            "[SCHEDULED REMINDER — deliver this message to the user as-is. "
+            "Do NOT run tools or interpret it as a task.]\n\n"
+            + job.payload.message
+        )
         response = await agent.process_direct(
-            job.payload.message,
+            framed,
             session_key=f"cron:{job.id}",
             channel=job.payload.channel or "cli",
             chat_id=job.payload.to or "direct",
