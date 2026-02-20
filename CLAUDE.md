@@ -67,7 +67,8 @@ This file is read by nanobot's heartbeat to stay aware of external codebase chan
 
 | Service | Class | File | Interval | LLM? | Purpose |
 |---------|-------|------|----------|------|---------|
-| **Heartbeat** | `HeartbeatService` | `nanobot/heartbeat/service.py` | 2h | YES | Reads HEARTBEAT.md, executes tasks via LLM agent |
+| **Heartbeat** | `HeartbeatService` | `nanobot/heartbeat/service.py` | 2h | YES | Reads HEARTBEAT.md, executes tasks via LLM agent (upstream — do not modify) |
+| **Cognitive Heartbeat** | `CopilotHeartbeatService` | `nanobot/copilot/dream/cognitive_heartbeat.py` | 2h | YES | Subclass of HeartbeatService; adds dream observations, pending tasks, autonomy permissions, and morning brief to heartbeat prompt. Active when copilot mode is enabled. |
 | **Health check** | `HealthCheckService` | `nanobot/copilot/dream/health_check.py` | 30min | **NO** | Programmatic HTTP pings, DB queries, changelog diff, alert management |
 | **Monitor** | `MonitorService` | `nanobot/copilot/dream/monitor.py` | 5min | NO | State-transition alerting, self-heal |
 | **Dream cycle** | `DreamCycle` | `nanobot/copilot/dream/cycle.py` | Nightly (cron) | YES | Consolidation, reflection, cleanup, cost report |
@@ -75,6 +76,7 @@ This file is read by nanobot's heartbeat to stay aware of external codebase chan
 | **Monthly review** | `DreamCycle._run_monthly_review()` | `nanobot/copilot/dream/cycle.py` | 1st of month (cron) | YES | DIRECTOR role — audits weekly, adjusts budgets |
 
 **Rules:**
-- The ONLY LLM-powered heartbeat is `HeartbeatService` (reads HEARTBEAT.md). No other "health check" or "heartbeat" service should ever call an LLM.
+- When copilot mode is enabled, `CopilotHeartbeatService` replaces `HeartbeatService` — same 2h interval, extended with cognitive context (dream observations, pending tasks, autonomy permissions). Upstream `HeartbeatService` is **never modified** — changes go in the subclass.
 - `HealthCheckService` is purely programmatic. If it needs intelligence, escalate to the heartbeat or dream cycle — never add an LLM call to it.
-- Config key `heartbeat_model` is for `HeartbeatService`. Config key `health_check_interval` is for `HealthCheckService`. Don't confuse them.
+- Config key `heartbeat_model` is for heartbeat LLM calls. Config key `health_check_interval` is for `HealthCheckService`. Don't confuse them.
+- Dream cycle `is_running` flag is checked by `CopilotHeartbeatService` before executing — if dream is running, tick is skipped (avoids concurrent `process_direct()` calls).
