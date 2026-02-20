@@ -25,3 +25,5 @@ data/sqlite/*.db-journal
 data/sqlite/*.db-wal
 data/sqlite/*.db-shm
 tests/
+node_modules/
+firebase-debug.log
