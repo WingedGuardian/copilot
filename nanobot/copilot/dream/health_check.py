@@ -53,6 +53,7 @@ class HealthCheckService:
         self._task: asyncio.Task | None = None
         self._changelog_path = Path.home() / ".nanobot" / "CHANGELOG.local"
         self._last_changelog_size: int = 0  # Track file size to detect new entries
+        self.last_tick_at: datetime.datetime | None = None  # Surfaced in /status
 
     async def start(self) -> None:
         """Start the health check loop."""
@@ -130,6 +131,8 @@ class HealthCheckService:
                 await self._deliver(self._channel, self._chat_id, f"Alert:\n{summary}")
             except Exception as e:
                 logger.warning(f"Health check delivery failed: {e}")
+
+        self.last_tick_at = now
 
     # --- Local changelog detection ---
 

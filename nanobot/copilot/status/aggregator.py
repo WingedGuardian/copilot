@@ -213,6 +213,10 @@ class DashboardReport:
                 lines.append(f"  Dream cycle: {ops['dream_ago']}{err_str}")
             else:
                 lines.append("  Dream cycle: never run")
+            if ops.get("health_check_ago") is not None:
+                lines.append(f"  Health check: {ops['health_check_ago']}")
+            else:
+                lines.append("  Health check: not yet")
             if ops.get("heartbeat_ago") is not None:
                 lines.append(f"  Heartbeat: {ops['heartbeat_ago']}")
             else:
@@ -621,6 +625,12 @@ class StatusAggregator:
                 if row:
                     result["dream_ago"] = _format_ago(row[0])
                     result["dream_errors"] = len(row[1].split(";")) if row[1] else 0
+
+                # Health check (programmatic, 30m interval)
+                if getattr(self, '_health_check', None) and getattr(self._health_check, 'last_tick_at', None):
+                    result["health_check_ago"] = _format_ago(
+                        self._health_check.last_tick_at.strftime("%Y-%m-%d %H:%M:%S")
+                    )
 
                 # Nanobot heartbeat (HEARTBEAT.md agent check-in, 2h interval)
                 if self._heartbeat and self._heartbeat.last_tick_at:

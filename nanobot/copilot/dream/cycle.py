@@ -398,24 +398,32 @@ class DreamCycle:
 
         cleaned = 0
         try:
-            result = await self._memory._qdrant.scroll(
-                collection_name=EpisodicStore.COLLECTION,
-                limit=100,
-                with_vectors=True,
-                with_payload=True,
-            )
-            points = result[0] if result else []
             zero_ids = []
             skipped = 0
-            for p in points:
-                if p.vector and isinstance(p.vector, list):
-                    magnitude = sum(v * v for v in p.vector) ** 0.5
-                    if magnitude < 0.01:
-                        session_key = (p.payload or {}).get("session_key", "")
-                        if session_key in protected_sessions:
-                            skipped += 1
-                            continue
-                        zero_ids.append(p.id)
+            offset = None  # Qdrant scroll cursor
+            while True:
+                scroll_kwargs = {
+                    "collection_name": EpisodicStore.COLLECTION,
+                    "limit": 100,
+                    "with_vectors": True,
+                    "with_payload": True,
+                }
+                if offset is not None:
+                    scroll_kwargs["offset"] = offset
+                result = await self._memory._qdrant.scroll(**scroll_kwargs)
+                points, next_offset = result if result else ([], None)
+                for p in points:
+                    if p.vector and isinstance(p.vector, list):
+                        magnitude = sum(v * v for v in p.vector) ** 0.5
+                        if magnitude < 0.01:
+                            session_key = (p.payload or {}).get("session_key", "")
+                            if session_key in protected_sessions:
+                                skipped += 1
+                                continue
+                            zero_ids.append(p.id)
+                if not next_offset:
+                    break
+                offset = next_offset
 
             if skipped:
                 logger.info(f"Dream: skipped {skipped} zero-vectors (pending re-embed)")

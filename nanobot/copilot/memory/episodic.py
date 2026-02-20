@@ -66,6 +66,11 @@ class EpisodicStore:
             from nanobot.copilot.alerting.bus import get_alert_bus
             await get_alert_bus().alert("memory", "high", f"Qdrant collection init failed: {e}", "qdrant_init")
 
+    @staticmethod
+    def _deterministic_id(text: str, session_key: str, role: str) -> str:
+        """Deterministic UUID from content — upserts overwrite instead of duplicating."""
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_key}:{role}:{text[:500]}"))
+
     async def store(
         self,
         text: str,
@@ -80,7 +85,7 @@ class EpisodicStore:
         from qdrant_client.models import PointStruct
 
         vector = await self._embedder.embed(text)
-        point_id = str(uuid.uuid4())
+        point_id = self._deterministic_id(text, session_key, role)
         payload = {
             "text": text,
             "session_key": session_key,
@@ -116,7 +121,7 @@ class EpisodicStore:
         await self._ensure_client()
         from qdrant_client.models import PointStruct
 
-        point_id = str(uuid.uuid4())
+        point_id = self._deterministic_id(text, session_key, role)
         payload = {
             "text": text,
             "session_key": session_key,
@@ -134,6 +139,8 @@ class EpisodicStore:
             )
         except Exception as e:
             logger.warning(f"Qdrant store failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "high", f"Re-embed store failed (recovery path): {e}", "qdrant_store")
         return point_id
 
     async def store_extractions(
@@ -144,7 +151,7 @@ class EpisodicStore:
         ids = []
         for key in ("facts", "decisions", "constraints", "entities"):
             for item in extractions.get(key, []):
-                role = key.rstrip("s")  # 'fact', 'decision', etc.
+                role = {"facts": "fact", "decisions": "decision", "constraints": "constraint", "entities": "entity"}[key]
                 pid = await self.store(
                     text=item,
                     session_key=session_key,

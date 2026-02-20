@@ -185,17 +185,28 @@ class SlmWorkQueue:
 
     # ── Dequeue / process ────────────────────────────────────────────
 
-    async def dequeue_batch(self, limit: int = 5) -> list[WorkItem]:
-        """Claim up to *limit* pending items for processing."""
+    async def dequeue_batch(
+        self, limit: int = 5, work_type: str | None = None,
+    ) -> list[WorkItem]:
+        """Claim up to *limit* pending items for processing.
+
+        If *work_type* is set, only dequeue items of that type.
+        """
+        where = "status IN ('pending', 'failed') AND attempts < max_attempts"
+        params: list = []
+        if work_type:
+            where += " AND work_type = ?"
+            params.append(work_type)
+        params.append(limit)
         rows = await self._pool.fetchall(
-            """SELECT id, work_type, status, priority, payload,
+            f"""SELECT id, work_type, status, priority, payload,
                       conversation_ts, queued_at, started_at,
                       attempts, max_attempts, session_key, last_error
                FROM slm_work_queue
-               WHERE status IN ('pending', 'failed') AND attempts < max_attempts
+               WHERE {where}
                ORDER BY priority ASC, queued_at ASC
                LIMIT ?""",
-            (limit,),
+            tuple(params),
         )
         items: list[WorkItem] = []
         now = time.time()
@@ -308,16 +319,21 @@ class SlmWorkQueue:
         return row[0] if row else 0
 
     async def stats(self) -> dict[str, Any]:
-        row = await self._pool.fetchone("SELECT * FROM slm_queue_stats WHERE id = 1")
+        row = await self._pool.fetchone(
+            "SELECT total_queued, total_processed, total_failed, "
+            "queue_size_limit, last_drain_ts, "
+            "COALESCE(total_dropped, 0) as total_dropped "
+            "FROM slm_queue_stats WHERE id = 1"
+        )
         if not row:
             return {}
         return {
-            "total_queued": row[1],
-            "total_processed": row[2],
-            "total_failed": row[3],
-            "total_dropped": row[4],
-            "queue_size_limit": row[5],
-            "last_drain_ts": row[6],
+            "total_queued": row[0],
+            "total_processed": row[1],
+            "total_failed": row[2],
+            "queue_size_limit": row[3],
+            "last_drain_ts": row[4],
+            "total_dropped": row[5],
             "current_size": await self.size(),
         }
 

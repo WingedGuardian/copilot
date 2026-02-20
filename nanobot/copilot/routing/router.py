@@ -244,6 +244,12 @@ class RouterProvider(LLMProvider):
                 self._last_decision = decision
             except RuntimeError as e:
                 logger.error(f"Escalation retry failed: {e}")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert(
+                    "routing", "high",
+                    f"Escalation failed — both default and escalation models down: {e}",
+                    "escalation_failed",
+                )
                 response.content = reason_text or response.content
 
         # Track last-known-working (only for plan/default tiers, not safety/emergency)

@@ -59,8 +59,8 @@ class MemoryManager:
             await get_alert_bus().alert("memory", "medium", f"Exchange storage failed: {e}", "remember_exchange")
             point_id = ""
 
-        # Queue re-embedding if local embedding was unavailable (zero-vector stored)
-        if self._slm_queue and not self._embedder._local_available:
+        # Queue re-embedding only on double failure (local AND cloud both down)
+        if self._slm_queue and self._embedder._last_zero:
             try:
                 await self._slm_queue.enqueue_embedding(
                     text=combined, session_key=session_key, role="exchange",
@@ -73,6 +73,8 @@ class MemoryManager:
             await self._fts.store(combined, session_key)
         except Exception as e:
             logger.warning(f"FTS exchange storage failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"FTS exchange storage failed: {e}", "fts_store")
 
         return point_id
 
@@ -88,32 +90,39 @@ class MemoryManager:
             )
         except Exception as e:
             logger.warning(f"Extraction storage failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"Extraction storage failed: {e}", "extraction_store")
 
-        # Queue re-embedding if local embedding was unavailable (zero-vectors stored)
-        if self._slm_queue and not self._embedder._local_available:
+        # Queue re-embedding only on double failure (local AND cloud both down)
+        if self._slm_queue and self._embedder._last_zero:
             for key in ("facts", "decisions", "constraints", "entities"):
                 for item in extractions.get(key, []):
                     try:
                         await self._slm_queue.enqueue_embedding(
                             text=item, session_key=session_key,
-                            role=key.rstrip("s"), importance=0.8,
+                            role={"facts": "fact", "decisions": "decision", "constraints": "constraint", "entities": "entity"}[key], importance=0.8,
                             conversation_ts=conversation_ts,
                         )
                     except Exception:
                         pass
 
         # Also write extractions to FTS5
+        fts_failures = 0
         for key in ("facts", "decisions", "constraints", "entities"):
             for item in extractions.get(key, []):
                 try:
                     await self._fts.store(item, session_key, importance=0.8)
                 except Exception:
-                    pass
+                    fts_failures += 1
+        if fts_failures:
+            logger.warning(f"FTS extraction storage: {fts_failures} item(s) failed")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"FTS extraction storage: {fts_failures} item(s) failed", "fts_extraction")
 
         # Also upsert into SQLite structured items
         for key in ("facts", "decisions", "entities"):
             for item in extractions.get(key, []):
-                category = key.rstrip("s")
+                category = {"facts": "fact", "decisions": "decision", "entities": "entity"}[key]
                 await self._upsert_item(
                     category=category,
                     key=item[:100],
@@ -191,6 +200,8 @@ class MemoryManager:
                 await db.commit()
         except Exception as e:
             logger.warning(f"Memory item upsert failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"Structured memory write failed: {e}", "upsert_item")
 
     async def get_high_confidence_items(
         self, min_confidence: float = 0.6, limit: int = 20
@@ -227,6 +238,8 @@ class MemoryManager:
             )
         except Exception as e:
             logger.warning(f"Episodic store_fact failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"store_fact Qdrant failed: {e}", "store_fact_qdrant")
         # 3. FTS5 (keyword search)
         try:
             await self._fts.store(
@@ -235,6 +248,8 @@ class MemoryManager:
             )
         except Exception as e:
             logger.warning(f"FTS store_fact failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("memory", "medium", f"store_fact FTS failed: {e}", "store_fact_fts")
         return point_id
 
     async def get_core_facts_block(self, budget_tokens: int = 200) -> str:
