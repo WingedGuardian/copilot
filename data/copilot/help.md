@@ -20,7 +20,7 @@ Control which models handle your requests.
 
 Customize what requires your approval before I act.
 
-**Current behavior:** Defined in `data/copilot/policy.md`
+**Current behavior:** Defined in `workspace/POLICY.md`
 
 **Autonomy levels:**
 - **High autonomy**: Remove items from "Always Ask First" — I act without asking
@@ -73,10 +73,10 @@ Available model aliases for `/use` commands.
 
 **Short names:**
 - `haiku` — Claude Haiku 4.5 (fast, cheap)
-- `sonnet` — Claude Sonnet 4 (balanced)
-- `opus` — Claude Opus 4 (most capable)
+- `sonnet` — Claude Sonnet 4.5/4.6 (balanced)
+- `opus` — Claude Opus 4.5/4.6 (most capable)
 - `gpt4` / `gpt4o` — GPT-4o
-- `gemini` / `flash` — Gemini 2.0 Flash
+- `gemini` / `flash` — Gemini 3 Flash (gemini-3-flash-preview)
 - `deepseek` — DeepSeek Chat
 - `r1` — DeepSeek Reasoner
 

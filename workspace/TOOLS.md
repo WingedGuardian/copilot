@@ -102,7 +102,7 @@ task(action="status_summary")
 - Work the user wants done in the background
 - Anything that would take >30 seconds of execution
 
-The background TaskWorker picks up pending tasks, decomposes them into steps via a frontier model, executes each step, and sends progress updates to WhatsApp.
+The background TaskWorker picks up pending tasks, decomposes them into steps via a frontier model, executes each step, and sends progress updates to the configured channel.
 
 ## Scheduled Reminders (Cron)
 

@@ -59,11 +59,11 @@ If nothing needs attention, skip the JSON block. Silence means healthy.
 
 ## Concurrency Safety
 
-The heartbeat automatically skips when the dream cycle is running (FM4) to avoid concurrent LLM calls through the same agent.
+The heartbeat automatically skips when the dream cycle is running (checks `DreamCycle.is_running` flag) to avoid concurrent LLM calls through the same agent.
 
 ## Dream Cycle (daily, 7 AM EST)
 
-10 jobs orchestrated:
+13 jobs orchestrated:
 1. Memory consolidation
 2. Cost reporting
 3. Lesson review
@@ -74,6 +74,9 @@ The heartbeat automatically skips when the dream cycle is running (FM4) to avoid
 8. Cleanup routing preferences
 9. MEMORY.md token budget check
 10. Metacognitive self-reflection (structured observations)
+11. Identity evolution (propose or apply identity file changes)
+12. Observation cleanup (expire old unacted dream_observations)
+13. Codebase indexing (update project map skill)
 
 ## Event Rules
 

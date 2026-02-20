@@ -89,6 +89,14 @@ class DreamCycle:
         self._emergency_cloud_model = emergency_cloud_model
         self.is_running = False  # FM4: checked by cognitive heartbeat to avoid concurrent LLM calls
 
+    def _load_identity_doc(self, filename: str) -> str:
+        """Load an identity .md file from docs_dir. Returns '' if missing (no-op fallback)."""
+        path = Path(self._docs_dir) / filename
+        try:
+            return path.read_text().strip() if path.exists() else ""
+        except Exception:
+            return ""
+
     async def run(self) -> DreamReport:
         """Run all maintenance jobs and return report."""
         self.is_running = True
@@ -725,7 +733,10 @@ class DreamCycle:
 
         recent_context = await self._gather_reflection_context(report)
 
-        prompt = f"""You are performing a nightly operational self-reflection. Here is today's data:
+        dream_identity = self._load_identity_doc("dream.md")
+        identity_prefix = f"{dream_identity}\n\n---\n\n" if dream_identity else ""
+
+        prompt = f"""{identity_prefix}You are performing a nightly operational self-reflection. Here is today's data:
 
 {recent_context}
 
@@ -1002,7 +1013,10 @@ Rules:
         capability_gaps = await self._get_weekly_capability_gaps()
         failure_patterns = await self._get_weekly_failure_patterns()
 
-        prompt = f"""You are performing a weekly strategic review (MANAGER role). This runs every Sunday.
+        weekly_identity = self._load_identity_doc("weekly.md")
+        weekly_identity_prefix = f"{weekly_identity}\n\n---\n\n" if weekly_identity else ""
+
+        prompt = f"""{weekly_identity_prefix}You are performing a weekly strategic review (MANAGER role). This runs every Sunday.
 Your job: oversee the daily dream cycle, manage architecture and code quality, audit models,
 optimize costs, implement monthly findings, synthesize capability gaps, and propose evolution.
 
@@ -1371,7 +1385,10 @@ The full analysis is stored internally. Only the user_summary is sent to the use
             except Exception:
                 pass
 
-        prompt = f"""You are performing a MONTHLY comprehensive audit (DIRECTOR role). This runs on the 1st of each month.
+        monthly_identity = self._load_identity_doc("monthly.md")
+        monthly_identity_prefix = f"{monthly_identity}\n\n---\n\n" if monthly_identity else ""
+
+        prompt = f"""{monthly_identity_prefix}You are performing a MONTHLY comprehensive audit (DIRECTOR role). This runs on the 1st of each month.
 You are NOT the implementer — you are the auditor. You review the weekly review's work, assess
 long-term health, adjust policies, and write findings for the weekly review to implement.
 

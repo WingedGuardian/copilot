@@ -46,7 +46,7 @@ Always be trying to "one up" the user's ideas when there's a good opportunity th
 This is the ONLY directory for plans, architecture docs, status docs, lessons learned, changelogs, and all other project documentation. Do NOT create or update documentation files anywhere else — not in `docs/`, not in the repo root, not in `workspace/`. If you find project documentation outside this directory, it is stale and should not be trusted.
 
 **What is NOT documentation** (stays in repo):
-- `data/copilot/*.md` — runtime identity files loaded by the application (heartbeat.md, help.md, models.md, router.md). These are application config, not project docs.
+- `data/copilot/*.md` — runtime identity files loaded by the application (heartbeat.md, help.md, models.md, router.md, dream.md, weekly.md, monthly.md). These are application config, not project docs.
 - `workspace/` — runtime workspace files (SOUL.md, USER.md, MEMORY.md, etc.)
 - Code files, test files, config files
 
