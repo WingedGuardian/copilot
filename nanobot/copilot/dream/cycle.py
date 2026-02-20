@@ -6,7 +6,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
 import aiosqlite
 from loguru import logger
@@ -178,6 +178,12 @@ class DreamCycle:
             await self._cleanup_observations()
         except Exception as e:
             report.errors.append(f"observation_cleanup: {e}")
+
+        # Job 13: Codebase indexing (update project map skill + seed episodic facts)
+        try:
+            await self._index_codebase()
+        except Exception as e:
+            report.errors.append(f"codebase_index: {e}")
 
         report.duration_ms = int((time.time() - start) * 1000)
 
@@ -671,6 +677,46 @@ class DreamCycle:
                     logger.info(f"Observation cleanup: {expired} expired, {pruned} pruned")
         except Exception as e:
             logger.warning(f"Observation cleanup failed: {e}")
+
+    async def _index_codebase(self) -> None:
+        """Job 13: Update the codebase-map skill with current project structure."""
+        if not self._execute_fn:
+            return
+
+        skill_path = Path.home() / ".nanobot" / "workspace" / "skills" / "codebase-map" / "SKILL.md"
+        if not skill_path.parent.exists():
+            skill_path.parent.mkdir(parents=True, exist_ok=True)
+
+        prompt = (
+            "Update the codebase map. Do ALL of the following:\n\n"
+            "1. Run `list_dir` on the project root and key subdirectories "
+            "(nanobot/, nanobot/copilot/, nanobot/copilot/dream/, "
+            "nanobot/copilot/memory/, nanobot/copilot/routing/, "
+            "nanobot/copilot/tools/, nanobot/copilot/tasks/).\n\n"
+            "2. Run `exec` with `git log --oneline -20` for recent changes.\n\n"
+            f"3. Write a structured skill file to `{skill_path}` with YAML "
+            "frontmatter (name: codebase-map, description: Nanobot project "
+            "structure, key modules, architecture overview. Load this when "
+            "working on code tasks.) followed by:\n"
+            "   - Directory tree (key dirs only, not every file)\n"
+            "   - Module purposes (one line each)\n"
+            "   - Architecture overview (how pieces connect)\n"
+            "   - Entry points and config locations\n"
+            "   - Recent changes summary\n\n"
+            "4. Store 3-5 key architectural facts using the memory tool "
+            "(action='store', category='codebase'). Examples: "
+            "'The routing system is plan-based V2 in nanobot/copilot/routing/router.py', "
+            "'Memory is two-tier: Qdrant vectors + SQLite FTS5 in nanobot/copilot/memory/', "
+            "'Dream cycle runs 13 nightly jobs in nanobot/copilot/dream/cycle.py'.\n\n"
+            "Keep the skill file concise — under 800 words. Focus on what someone "
+            "needs to navigate the codebase, not exhaustive documentation."
+        )
+
+        try:
+            await self._execute_fn(prompt)
+            logger.info("Codebase map updated via dream cycle")
+        except Exception as e:
+            logger.warning(f"Codebase indexing agent call failed: {e}")
 
     async def _self_reflect(self, report: DreamReport) -> str:
         """Metacognitive self-reflection producing structured observations."""
