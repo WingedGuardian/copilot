@@ -42,8 +42,8 @@ class FullTextStore:
                     session_key,
                     timestamp UNINDEXED,
                     importance UNINDEXED,
-                    content={self.TABLE},
-                    content_rowid='rowid'
+                    content={self.TABLE}_content,
+                    content_rowid=id
                 )
             """)
             # Also create a regular table to back the content

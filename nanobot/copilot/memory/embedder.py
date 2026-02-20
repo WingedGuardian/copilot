@@ -39,6 +39,7 @@ class Embedder:
         self._local_client = None
         self._cloud_client = None
         self._local_available = True  # Optimistic; flips on failure
+        self._last_zero = False  # True when last embed() returned zero-vector
 
     def _ensure_local(self):
         if self._local_client is None:
@@ -57,12 +58,15 @@ class Embedder:
             self._cloud_client = AsyncOpenAI(**kwargs)
 
     async def embed(self, text: str) -> list[float]:
-        """Embed a single text. Tries local, then zero-vector (queued for re-embed).
+        """Embed a single text. Local → cloud → zero-vector.
 
-        Cloud fallback is handled by the SLM queue drainer after 4h staleness.
+        Zero-vector only on double failure (both local and cloud down).
+        Caller can check ``_last_zero`` to decide whether to enqueue for retry.
         """
         text = text[:8000]
+        self._last_zero = False
 
+        # 1. Try local (free, fast, private)
         if self._local_available:
             try:
                 self._ensure_local()
@@ -70,19 +74,27 @@ class Embedder:
                     input=text, model=self._model,
                 )
                 self._local_available = True
-                vec = response.data[0].embedding
-                return self._pad_or_trim(vec)
+                return self._pad_or_trim(response.data[0].embedding)
             except Exception as e:
-                logger.info(f"Local embedding unavailable (queued for re-embed): {e}")
+                logger.info(f"Local embedding unavailable: {e}")
                 self._local_available = False
 
-        logger.debug("Local embedding down — returning zero-vector (queued for re-embed)")
+        # 2. Try cloud (Jina/OpenAI — cheap, reliable)
+        cloud_vec = await self._embed_cloud(text)
+        if cloud_vec is not None:
+            return cloud_vec
+
+        # 3. Both down — zero-vector (enqueued for retry)
+        logger.warning("Both local and cloud embedding failed — zero-vector stored")
+        self._last_zero = True
         return [0.0] * self._dimensions
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Batch embedding. Tries local, then zero-vectors."""
+        """Batch embedding. Local → cloud per-item → zero-vectors."""
         truncated = [t[:8000] for t in texts]
+        self._last_zero = False
 
+        # Try local batch
         if self._local_available:
             try:
                 self._ensure_local()
@@ -95,10 +107,21 @@ class Embedder:
                 logger.info(f"Local batch embedding unavailable: {e}")
                 self._local_available = False
 
-        return [[0.0] * self._dimensions for _ in truncated]
+        # Fall back to cloud per-item
+        results = []
+        any_zero = False
+        for t in truncated:
+            cloud_vec = await self._embed_cloud(t)
+            if cloud_vec is not None:
+                results.append(cloud_vec)
+            else:
+                results.append([0.0] * self._dimensions)
+                any_zero = True
+        self._last_zero = any_zero
+        return results
 
     async def embed_cloud(self, text: str) -> list[float]:
-        """Embed via cloud. Used by queue drainer after staleness timeout."""
+        """Embed via cloud (public API for drainer/callers that need cloud explicitly)."""
         result = await self._embed_cloud(text)
         if result is not None:
             return result

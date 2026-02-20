@@ -1,7 +1,11 @@
 """Background worker that drains the SLM queue.
 
-Tries local SLM first. If local is offline and items are older than
-CLOUD_STALENESS_HOURS, falls back to cloud to prevent memory gaps.
+Embedding items: only enqueued on double failure (local AND cloud both down).
+The drainer retries via embed() which tries local→cloud→zero again.
+Deterministic point IDs ensure upserts overwrite zero-vectors in place.
+
+Extraction items: tries local SLM first. After CLOUD_STALENESS_HOURS, falls
+back to cloud LLM extraction.
 """
 
 from __future__ import annotations
@@ -74,7 +78,16 @@ class SlmQueueDrainer:
 
                 local_online = await self._slm_is_online()
 
-                if local_online:
+                # Embedding items: drain immediately — embed() handles
+                # local→cloud fallback internally, no staleness wait needed.
+                embedding_pending = (await self._queue.breakdown()).get("embedding", 0)
+                if embedding_pending > 0:
+                    logger.info(f"Draining {embedding_pending} embedding items")
+                    processed = await self._drain_batch(
+                        use_cloud=not local_online, work_type="embedding",
+                    )
+                # Extraction items: need local SLM or cloud LLM with staleness gate.
+                elif local_online:
                     logger.info(f"SLM online — draining queue ({size} pending)")
                     processed = await self._drain_batch(use_cloud=False)
                 elif await self._oldest_age_hours() >= CLOUD_STALENESS_HOURS:
@@ -123,8 +136,10 @@ class SlmQueueDrainer:
 
     # ── Batch processing ─────────────────────────────────────────────
 
-    async def _drain_batch(self, use_cloud: bool = False) -> int:
-        items = await self._queue.dequeue_batch(self._batch_size)
+    async def _drain_batch(
+        self, use_cloud: bool = False, work_type: str | None = None,
+    ) -> int:
+        items = await self._queue.dequeue_batch(self._batch_size, work_type=work_type)
         if not items:
             return 0
 
@@ -164,27 +179,18 @@ class SlmQueueDrainer:
         )
 
     async def _process_embedding(self, item: WorkItem, use_cloud: bool) -> None:
-        """Embed text via local or cloud, store to Qdrant."""
+        """Re-embed text and upsert to Qdrant (overwrites zero-vector via deterministic ID).
+
+        embed() handles local→cloud fallback internally. Deterministic point IDs
+        ensure the upsert overwrites the original zero-vector point.
+        """
         payload = item.payload
-        if use_cloud:
-            vec = await self._memory._embedder.embed_cloud(payload["text"])
-            await self._memory._episodic.store_with_vector(
-                text=payload["text"],
-                vector=vec,
-                session_key=item.session_key,
-                role=payload.get("role", "exchange"),
-                metadata=payload.get("metadata"),
-                importance=payload.get("importance", 0.5),
-                conversation_ts=item.conversation_ts,
-            )
-            logger.debug(f"Cloud-drained embedding #{item.id}")
-        else:
-            await self._memory._episodic.store(
-                text=payload["text"],
-                session_key=item.session_key,
-                role=payload.get("role", "exchange"),
-                metadata=payload.get("metadata"),
-                importance=payload.get("importance", 0.5),
-                conversation_ts=item.conversation_ts,
-            )
-            logger.debug(f"Drained embedding #{item.id}")
+        await self._memory._episodic.store(
+            text=payload["text"],
+            session_key=item.session_key,
+            role=payload.get("role", "exchange"),
+            metadata=payload.get("metadata"),
+            importance=payload.get("importance", 0.5),
+            conversation_ts=item.conversation_ts,
+        )
+        logger.debug(f"Re-embedded #{item.id} (deterministic upsert)")
