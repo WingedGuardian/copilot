@@ -71,7 +71,7 @@ This file is read by nanobot's heartbeat to stay aware of external codebase chan
 | **Cognitive Heartbeat** | `CopilotHeartbeatService` | `nanobot/copilot/dream/cognitive_heartbeat.py` | 2h | YES | Subclass of HeartbeatService; adds dream observations, pending tasks, autonomy permissions, and morning brief to heartbeat prompt. Active when copilot mode is enabled. |
 | **Health check** | `HealthCheckService` | `nanobot/copilot/dream/health_check.py` | 30min | **NO** | Programmatic HTTP pings, DB queries, changelog diff, alert management |
 | **Monitor** | `MonitorService` | `nanobot/copilot/dream/monitor.py` | 5min | NO | State-transition alerting, self-heal |
-| **Dream cycle** | `DreamCycle` | `nanobot/copilot/dream/cycle.py` | Nightly (cron) | YES | Consolidation, reflection, cleanup, cost report |
+| **Dream cycle** | `DreamCycle` | `nanobot/copilot/dream/cycle.py` | Nightly (cron) | YES | 13 jobs: consolidation, cost, lessons, backup, monitor, reconcile, zero-vectors, routing cleanup, budget check, reflection, identity evolution, observation cleanup, codebase indexing |
 | **Weekly review** | `DreamCycle._run_weekly_review()` | `nanobot/copilot/dream/cycle.py` | Sunday (cron) | YES | MANAGER role — architecture, memory, models, costs |
 | **Monthly review** | `DreamCycle._run_monthly_review()` | `nanobot/copilot/dream/cycle.py` | 1st of month (cron) | YES | DIRECTOR role — audits weekly, adjusts budgets |
 
