@@ -79,12 +79,24 @@ class CopilotHeartbeatService(HeartbeatService):
 
         logger.info("Heartbeat: cognitive tick starting...")
 
+        # Build checklist of gathered inputs
+        checklist = [
+            f"HEARTBEAT.md: {'tasks found' if has_heartbeat_tasks else 'empty'}",
+            f"Observations: {len(observations)} unacted",
+            f"Tasks: {len(pending_tasks)} pending",
+            f"Permissions: {len(permissions)} configured",
+            f"Lessons: {len(active_lessons)} active",
+            f"Morning brief: {'yes' if morning_brief else 'no'}",
+        ]
+
         if self.on_heartbeat:
             try:
                 response = await self.on_heartbeat(prompt)
                 await self._process_response(response)
+                checklist.append("LLM execution: ok")
                 logger.info("Heartbeat: cognitive tick complete")
             except Exception as e:
+                checklist.append(f"LLM execution: FAILED ({e})")
                 logger.error(f"Heartbeat execution failed: {e}")
                 try:
                     from nanobot.copilot.alerting.bus import get_alert_bus
@@ -95,6 +107,26 @@ class CopilotHeartbeatService(HeartbeatService):
                     )
                 except Exception:
                     pass
+
+        # Log checklist as heartbeat_event for /status visibility
+        await self._log_checklist(checklist)
+
+    async def _log_checklist(self, checklist: list[str]) -> None:
+        """Write heartbeat checklist to heartbeat_events for /status visibility."""
+        if not self._db_path:
+            return
+        try:
+            msg = "Heartbeat checklist: " + " | ".join(checklist)
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    """INSERT INTO heartbeat_events
+                       (event_type, severity, message, source)
+                       VALUES ('heartbeat_checklist', 'info', ?, 'cognitive_heartbeat')""",
+                    (msg[:500],),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.debug(f"Heartbeat: checklist log failed: {e}")
 
     # ------------------------------------------------------------------
     # Context gathering

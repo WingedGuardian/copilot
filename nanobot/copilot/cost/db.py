@@ -491,6 +491,14 @@ async def migrate_sentience(db_path: str | Path) -> None:
         except Exception:
             pass  # Column already exists
 
+        # ALTER TABLE dream_cycle_log: add job_results_json column (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE dream_cycle_log ADD COLUMN job_results_json TEXT"
+            )
+        except Exception:
+            pass  # Column already exists
+
         # Seed autonomy_permissions with defaults (idempotent via INSERT OR IGNORE)
         for category in (
             "task_management",

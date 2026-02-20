@@ -15,6 +15,16 @@ from nanobot.copilot.memory.episodic import EpisodicStore
 
 
 @dataclass
+class JobResult:
+    """Per-job execution record for dream cycle checklist."""
+
+    name: str
+    status: str  # "ok", "skipped", "error"
+    duration_ms: int = 0
+    detail: str = ""
+
+
+@dataclass
 class DreamReport:
     """Aggregated results from all maintenance jobs."""
 
@@ -30,12 +40,20 @@ class DreamReport:
     reflection: str = ""
     reflection_full: str = ""
     errors: list[str] = field(default_factory=list)
+    jobs: list[JobResult] = field(default_factory=list)
     duration_ms: int = 0
 
     def to_summary(self) -> str:
         """Format as a concise summary."""
         lines = ["Dream Cycle Complete"]
         lines.append(f"Duration: {self.duration_ms}ms")
+        if self.jobs:
+            lines.append("Jobs:")
+            for j in self.jobs:
+                icon = {"ok": "+", "skipped": "~", "error": "!"}.get(j.status, "?")
+                time_str = f" ({j.duration_ms}ms)" if j.duration_ms else ""
+                detail_str = f" — {j.detail}" if j.detail else ""
+                lines.append(f"  [{icon}] {j.name}{time_str}{detail_str}")
         if self.episodes_consolidated:
             lines.append(f"Memory: {self.episodes_consolidated} consolidated, {self.items_created} items created")
         if self.cost_summary:
@@ -52,7 +70,7 @@ class DreamReport:
             lines.append(f"Reflection: {self.reflection}")
         if self.errors:
             lines.append(f"Errors: {'; '.join(self.errors[:3])}")
-        if len(lines) == 2:  # Only header + duration — quiet night
+        if not self.jobs and len(lines) == 2:  # Only header + duration, no jobs tracked
             lines.append("Quiet night. All systems healthy.")
         return "\n".join(lines)
 
@@ -97,6 +115,32 @@ class DreamCycle:
         except Exception:
             return ""
 
+    async def _run_job(self, name: str, coro: Any, report: DreamReport) -> Any:
+        """Execute a job coroutine with timing and status tracking."""
+        start = time.monotonic()
+        try:
+            result = await coro
+            elapsed = int((time.monotonic() - start) * 1000)
+            if isinstance(result, dict) and result.get("_skipped"):
+                report.jobs.append(JobResult(
+                    name=name, status="skipped", duration_ms=elapsed,
+                    detail=result.get("reason", ""),
+                ))
+            else:
+                report.jobs.append(JobResult(
+                    name=name, status="ok", duration_ms=elapsed,
+                ))
+            return result
+        except Exception as e:
+            elapsed = int((time.monotonic() - start) * 1000)
+            report.jobs.append(JobResult(
+                name=name, status="error", duration_ms=elapsed,
+                detail=str(e)[:200],
+            ))
+            report.errors.append(f"{name}: {e}")
+            logger.error(f"Dream job '{name}' failed: {e}")
+            return None
+
     async def run(self) -> DreamReport:
         """Run all maintenance jobs and return report."""
         self.is_running = True
@@ -104,94 +148,62 @@ class DreamCycle:
         report = DreamReport()
 
         # Job 1: Memory consolidation
-        try:
-            c = await self._consolidate_memory()
+        c = await self._run_job("consolidation", self._consolidate_memory(), report)
+        if isinstance(c, dict) and not c.get("_skipped"):
             report.episodes_consolidated = c.get("processed", 0)
             report.items_created = c.get("created", 0)
-        except Exception as e:
-            report.errors.append(f"consolidation: {e}")
-            logger.error(f"Dream consolidation failed: {e}")
 
         # Job 2: Cost reporting
-        try:
-            report.cost_summary = await self._generate_cost_report()
-        except Exception as e:
-            report.errors.append(f"cost: {e}")
+        c = await self._run_job("cost_report", self._generate_cost_report(), report)
+        if isinstance(c, str):
+            report.cost_summary = c
 
         # Job 3: Lesson review
-        try:
-            lr = await self._review_lessons()
-            report.lessons_reviewed = lr.get("reviewed", 0)
-            report.lessons_deactivated = lr.get("deactivated", 0)
-        except Exception as e:
-            report.errors.append(f"lessons: {e}")
+        c = await self._run_job("lesson_review", self._review_lessons(), report)
+        if isinstance(c, dict) and not c.get("_skipped"):
+            report.lessons_reviewed = c.get("reviewed", 0)
+            report.lessons_deactivated = c.get("deactivated", 0)
 
         # Job 4: Backup
-        try:
-            report.backup_status = await self._backup()
-        except Exception as e:
-            report.errors.append(f"backup: {e}")
+        c = await self._run_job("backup", self._backup(), report)
+        if isinstance(c, str):
+            report.backup_status = c
 
         # Job 5: Monitor + remediation
-        try:
-            mr = await self._monitor_and_remediate()
-            report.alerts = mr.get("alerts", [])
-            report.remediations = mr.get("remediations", 0)
-        except Exception as e:
-            report.errors.append(f"monitor: {e}")
+        c = await self._run_job("monitor", self._monitor_and_remediate(), report)
+        if isinstance(c, dict) and not c.get("_skipped"):
+            report.alerts = c.get("alerts", [])
+            report.remediations = c.get("remediations", 0)
 
         # Job 6: Reconcile memory stores (Qdrant vs FTS5)
-        try:
-            reconciled = await self._reconcile_memory_stores()
-            if reconciled:
-                report.items_pruned += reconciled
-        except Exception as e:
-            report.errors.append(f"reconcile: {e}")
-            logger.error(f"Dream reconcile failed: {e}")
+        c = await self._run_job("reconcile", self._reconcile_memory_stores(), report)
+        if isinstance(c, int) and c:
+            report.items_pruned += c
 
         # Job 7: Cleanup zero vectors
-        try:
-            cleaned = await self._cleanup_zero_vectors()
-            if cleaned:
-                report.items_pruned += cleaned
-        except Exception as e:
-            report.errors.append(f"zero_vectors: {e}")
+        c = await self._run_job("zero_vectors", self._cleanup_zero_vectors(), report)
+        if isinstance(c, int) and c:
+            report.items_pruned += c
 
         # Job 8: Cleanup stale routing preferences (>7 days)
-        try:
-            await self._cleanup_routing_preferences()
-        except Exception as e:
-            report.errors.append(f"routing_prefs: {e}")
+        await self._run_job("routing_prefs", self._cleanup_routing_preferences(), report)
 
         # Job 9: MEMORY.md token budget check
-        try:
-            await self._check_memory_budget()
-        except Exception as e:
-            report.errors.append(f"memory_budget: {e}")
+        await self._run_job("memory_budget", self._check_memory_budget(), report)
 
         # Job 10: Metacognitive self-reflection
-        try:
-            report.reflection = await self._self_reflect(report)
-        except Exception as e:
-            report.errors.append(f"reflection: {e}")
+        c = await self._run_job("reflection", self._self_reflect(report), report)
+        if isinstance(c, str) and c:
+            report.reflection = c
 
         # Job 11: Identity evolution (propose or apply changes)
-        try:
-            await self._evolve_identity(report)
-        except Exception as e:
-            report.errors.append(f"identity_evolution: {e}")
+        await self._run_job("identity_evolution", self._evolve_identity(report), report)
 
         # Job 12: Observation cleanup (expire old unacted observations)
-        try:
-            await self._cleanup_observations()
-        except Exception as e:
-            report.errors.append(f"observation_cleanup: {e}")
+        await self._run_job("observation_cleanup", self._cleanup_observations(), report)
 
         # Job 13: Codebase indexing (update project map skill + seed episodic facts)
-        try:
-            await self._index_codebase()
-        except Exception as e:
-            report.errors.append(f"codebase_index: {e}")
+        await self._run_job("codebase_index", self._index_codebase(), report)
 
         report.duration_ms = int((time.time() - start) * 1000)
 
@@ -243,7 +255,7 @@ class DreamCycle:
     async def _consolidate_memory(self) -> dict:
         """Use agent to review recent episodes and extract patterns."""
         if not self._memory or not self._execute_fn:
-            return {"processed": 0, "created": 0}
+            return {"_skipped": True, "reason": "no memory manager or execute_fn"}
 
         # Count episodes before consolidation
         before_count = 0
@@ -279,10 +291,10 @@ class DreamCycle:
         created = max(0, after_count - before_count)
         return {"processed": 1, "created": created}
 
-    async def _generate_cost_report(self) -> str:
+    async def _generate_cost_report(self) -> str | dict:
         """Query yesterday's costs and generate summary."""
         if not self._db_path:
-            return "No DB configured"
+            return {"_skipped": True, "reason": "no DB configured"}
 
         async with aiosqlite.connect(self._db_path) as db:
             cur = await db.execute(
@@ -305,7 +317,7 @@ class DreamCycle:
     async def _review_lessons(self) -> dict:
         """Decay confidence for stale lessons, deactivate dead ones."""
         if not self._db_path:
-            return {"reviewed": 0, "deactivated": 0}
+            return {"_skipped": True, "reason": "no DB configured"}
 
         async with aiosqlite.connect(self._db_path) as db:
             # Decay lessons not applied in 7 days
@@ -372,7 +384,7 @@ class DreamCycle:
     async def _monitor_and_remediate(self) -> dict:
         """Run health checks and attempt remediation."""
         if not self._status:
-            return {"alerts": [], "remediations": 0}
+            return {"_skipped": True, "reason": "no status aggregator"}
 
         report = await self._status.collect()
         alerts = []
@@ -385,10 +397,10 @@ class DreamCycle:
 
         return {"alerts": alerts, "remediations": remediations}
 
-    async def _reconcile_memory_stores(self, max_per_cycle: int = 50) -> int:
+    async def _reconcile_memory_stores(self, max_per_cycle: int = 50) -> int | dict:
         """Reconcile Qdrant vectors with FTS5 index — remove orphans."""
         if not self._memory or not self._db_path:
-            return 0
+            return {"_skipped": True, "reason": "no memory manager or DB"}
 
         cleaned = 0
         try:
@@ -421,13 +433,13 @@ class DreamCycle:
 
         return cleaned
 
-    async def _cleanup_zero_vectors(self) -> int:
+    async def _cleanup_zero_vectors(self) -> int | dict:
         """Find and delete near-zero vectors from Qdrant.
 
         Skips points whose session_key has a pending re-embedding in the SLM queue.
         """
         if not self._memory or not hasattr(self._memory, '_qdrant') or not self._memory._qdrant:
-            return 0
+            return {"_skipped": True, "reason": "no Qdrant client"}
 
         # Get protected session keys (pending embedding in SLM queue)
         protected_sessions: set[str] = set()
@@ -553,7 +565,7 @@ class DreamCycle:
             logger.warning(f"Failed to write dream observations: {e}")
         return written
 
-    async def _evolve_identity(self, report: DreamReport) -> None:
+    async def _evolve_identity(self, report: DreamReport) -> dict | None:
         """Job 11: Propose or apply identity file changes based on observations.
 
         Checks autonomy_permissions for identity_evolution mode:
@@ -563,7 +575,7 @@ class DreamCycle:
         Velocity limit: max 1 file change per cycle (system-initiated).
         """
         if not self._db_path:
-            return
+            return {"_skipped": True, "reason": "no DB configured"}
 
         # Check autonomy permission
         mode = "notify"
@@ -579,7 +591,7 @@ class DreamCycle:
             pass
 
         if mode == "disabled":
-            return
+            return {"_skipped": True, "reason": "mode disabled"}
 
         # Gather evolution proposals from dream_observations
         proposals = []
@@ -656,10 +668,10 @@ class DreamCycle:
         except Exception as e:
             logger.warning(f"Identity evolution failed: {e}")
 
-    async def _cleanup_observations(self) -> None:
+    async def _cleanup_observations(self) -> dict | None:
         """Job 12: Expire old unacted observations and prune old acted ones."""
         if not self._db_path:
-            return
+            return {"_skipped": True, "reason": "no DB configured"}
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 # Expire unacted observations older than 14 days
@@ -686,10 +698,10 @@ class DreamCycle:
         except Exception as e:
             logger.warning(f"Observation cleanup failed: {e}")
 
-    async def _index_codebase(self) -> None:
+    async def _index_codebase(self) -> dict | None:
         """Job 13: Update the codebase-map skill with current project structure."""
         if not self._execute_fn:
-            return
+            return {"_skipped": True, "reason": "no execute_fn"}
 
         skill_path = Path.home() / ".nanobot" / "workspace" / "skills" / "codebase-map" / "SKILL.md"
         if not skill_path.parent.exists():
@@ -726,10 +738,10 @@ class DreamCycle:
         except Exception as e:
             logger.warning(f"Codebase indexing agent call failed: {e}")
 
-    async def _self_reflect(self, report: DreamReport) -> str:
+    async def _self_reflect(self, report: DreamReport) -> str | dict:
         """Metacognitive self-reflection producing structured observations."""
         if not self._execute_fn:
-            return ""
+            return {"_skipped": True, "reason": "no execute_fn"}
 
         recent_context = await self._gather_reflection_context(report)
 
@@ -904,7 +916,7 @@ Rules:
 
         return "\n\n".join(sections) if sections else "No activity data available."
 
-    async def _check_memory_budget(self) -> None:
+    async def _check_memory_budget(self) -> dict | None:
         """Warn if any identity file exceeds its token budget.
 
         Reads budgets from ``~/.nanobot/workspace/budgets.json``.
@@ -963,10 +975,10 @@ Rules:
             except Exception as e:
                 logger.warning(f"Failed to write budget event: {e}")
 
-    async def _cleanup_routing_preferences(self) -> None:
+    async def _cleanup_routing_preferences(self) -> dict | None:
         """Remove routing preferences older than 7 days."""
         if not self._db_path:
-            return
+            return {"_skipped": True, "reason": "no DB configured"}
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 await db.execute(
@@ -987,12 +999,16 @@ Rules:
             return "No execute function configured"
 
         start = time.time()
+        checklist: list[str] = []
 
         pool_path = Path(self._docs_dir) / "models.md"
         pool_content = pool_path.read_text() if pool_path.exists() else "(no model pool file found)"
+        checklist.append(f"[+] Model pool loaded ({len(pool_content)} chars)")
 
         weekly_stats = await self._get_weekly_stats()
+        checklist.append("[+] Weekly cost stats gathered")
         dream_health = await self._get_dream_errors()
+        checklist.append("[+] Dream health queried")
 
         # Read monthly findings if they exist
         import json as _json
@@ -1006,12 +1022,19 @@ Rules:
                     monthly_findings = "The monthly review left these findings for you to implement:\n"
                     for f in items:
                         monthly_findings += f"  - [{f.get('priority', '?')}] {f.get('category', '?')}: {f.get('finding', '')}\n"
+                    checklist.append(f"[+] Monthly findings loaded ({len(items)} items)")
+                else:
+                    checklist.append("[~] Monthly findings: none pending")
             except Exception:
-                pass
+                checklist.append("[!] Monthly findings: parse error")
+        else:
+            checklist.append("[~] Monthly findings: no file")
 
         # Phase 4A: Gather sentience context
         capability_gaps = await self._get_weekly_capability_gaps()
+        checklist.append(f"[+] Capability gaps: {'found' if capability_gaps else 'none'}")
         failure_patterns = await self._get_weekly_failure_patterns()
+        checklist.append(f"[+] Failure patterns: {'found' if failure_patterns else 'none'}")
 
         weekly_identity = self._load_identity_doc("weekly.md")
         weekly_identity_prefix = f"{weekly_identity}\n\n---\n\n" if weekly_identity else ""
@@ -1112,7 +1135,9 @@ The full analysis is stored internally. Only the user_summary is sent to the use
 
         try:
             result = await self._weekly_execute_fn(prompt)
+            checklist.append("[+] LLM analysis complete")
         except Exception as e:
+            checklist.append(f"[!] LLM analysis: FAILED ({e})")
             logger.error(f"Weekly review agent call failed: {e}")
             return f"Weekly review failed: {e}"
 
@@ -1135,6 +1160,7 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                             "priority": "medium",
                         })
                 await self._write_dream_observations(obs, source="weekly_review")
+                checklist.append(f"[+] Evolution proposals written ({len(evolution_proposals)} items)")
 
         # Store full report in weekly_review_log
         try:
@@ -1156,14 +1182,19 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                     ),
                 )
                 await db.commit()
+            checklist.append("[+] Report persisted to DB")
         except Exception as e:
+            checklist.append(f"[!] Report persist: FAILED ({e})")
             logger.warning(f"Weekly review log write failed: {e}")
+
+        # Build checklist header for delivery
+        checklist_str = "Data gathered:\n" + "\n".join(f"  {c}" for c in checklist) + "\n\n"
 
         # Deliver brief summary to user (not the full report)
         if self._deliver and self._chat_id:
             try:
                 brief = user_summary[:2000] if user_summary != result else (result or "")[:2000]
-                await self._deliver(self._channel, self._chat_id, f"Weekly Review\n\n{brief}")
+                await self._deliver(self._channel, self._chat_id, f"Weekly Review\n{checklist_str}{brief}")
             except Exception as e:
                 logger.warning(f"Weekly review delivery failed: {e}")
 
@@ -1344,6 +1375,7 @@ The full analysis is stored internally. Only the user_summary is sent to the use
 
         import json
         workspace = Path("/home/ubuntu/.nanobot/workspace")
+        checklist: list[str] = []
 
         # Gather file sizes
         file_report: list[str] = []
@@ -1363,8 +1395,10 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                 limit = budgets.get(filename, "?")
                 status = "OVER" if isinstance(limit, int) and tokens > limit else "ok"
                 file_report.append(f"  {filename}: ~{tokens} tok (budget: {limit}) [{status}]")
+        checklist.append(f"[+] File budget report ({len(file_report)} files)")
 
         monthly_stats = await self._get_monthly_stats()
+        checklist.append("[+] Monthly cost stats gathered")
 
         # Gather weekly review summaries from the past 30 days
         weekly_summaries = ""
@@ -1382,8 +1416,11 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                         weekly_summaries = "\n".join(
                             f"  [{r[0]}] {r[1]}" for r in rows
                         )
+                        checklist.append(f"[+] Weekly review logs loaded ({len(rows)} reviews)")
+                    else:
+                        checklist.append("[~] Weekly review logs: none found")
             except Exception:
-                pass
+                checklist.append("[!] Weekly review logs: query failed")
 
         monthly_identity = self._load_identity_doc("monthly.md")
         monthly_identity_prefix = f"{monthly_identity}\n\n---\n\n" if monthly_identity else ""
@@ -1476,13 +1513,18 @@ Provide a comprehensive monthly audit report:
 
         try:
             result = await self._monthly_execute_fn(prompt)
+            checklist.append("[+] LLM audit complete")
         except Exception as e:
+            checklist.append(f"[!] LLM audit: FAILED ({e})")
             logger.error(f"Monthly review agent call failed: {e}")
             return f"Monthly review failed: {e}"
 
+        # Build checklist header for delivery
+        checklist_str = "Data gathered:\n" + "\n".join(f"  {c}" for c in checklist) + "\n\n"
+
         if self._deliver and self._chat_id:
             try:
-                await self._deliver(self._channel, self._chat_id, f"Monthly Review\n\n{result}")
+                await self._deliver(self._channel, self._chat_id, f"Monthly Review\n{checklist_str}{result}")
             except Exception as e:
                 logger.warning(f"Monthly review delivery failed: {e}")
 
@@ -1494,6 +1536,7 @@ Provide a comprehensive monthly audit report:
                     ((result or "")[:500],),
                 )
                 await db.commit()
+            checklist.append("[+] Report persisted")
         except Exception:
             pass
 
@@ -1504,13 +1547,21 @@ Provide a comprehensive monthly audit report:
         """Log dream cycle to database."""
         if not self._db_path:
             return
+
+        import json as _json
+        jobs_json = _json.dumps([
+            {"name": j.name, "status": j.status, "duration_ms": j.duration_ms, "detail": j.detail}
+            for j in report.jobs
+        ]) if report.jobs else None
+
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 await db.execute(
                     """INSERT INTO dream_cycle_log
                        (duration_ms, episodes_consolidated, items_created, items_pruned,
-                        lessons_reviewed, alerts_count, remediations_count, errors, reflection_full)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        lessons_reviewed, alerts_count, remediations_count, errors,
+                        reflection_full, job_results_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         report.duration_ms,
                         report.episodes_consolidated,
@@ -1521,6 +1572,7 @@ Provide a comprehensive monthly audit report:
                         report.remediations,
                         "; ".join(report.errors) if report.errors else None,
                         report.reflection_full or None,
+                        jobs_json,
                     ),
                 )
                 await db.commit()
