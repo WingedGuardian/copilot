@@ -374,13 +374,18 @@ class AgentLoop:
             self._tracked_tasks.clear()
         logger.info("Agent loop stopped")
 
-    async def _process_message(self, msg: InboundMessage, session_key: str | None = None) -> OutboundMessage | None:
+    async def _process_message(self, msg: InboundMessage, session_key: str | None = None, skip_enrichment: bool = False) -> OutboundMessage | None:
         """
         Process a single inbound message.
 
         Args:
             msg: The inbound message to process.
             session_key: Override session key (used by process_direct).
+            skip_enrichment: If True, skip user-facing context enrichment
+                (lessons, episodic recall, events, extraction, memory storage).
+                Background services set this to avoid contaminating/being
+                contaminated by user conversation context. Core facts and
+                identity files (SOUL.md, USER.md, etc.) are still loaded.
 
         Returns:
             The response message, or None if no response needed.
@@ -394,7 +399,7 @@ class AgentLoop:
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
         # Copilot: quick satisfaction check on user message
-        if self._satisfaction_detector:
+        if self._satisfaction_detector and not skip_enrichment:
             signal = self._satisfaction_detector.detect_regex(msg.content)
             if signal:
                 self._track_task(
@@ -684,9 +689,9 @@ class AgentLoop:
                 if not msg.content:
                     msg.content = f"(Topic set to: {forced_label})"
 
-        # Copilot: fetch relevant lessons for injection
+        # Copilot: fetch relevant lessons for injection (skip for background services)
         lessons_for_context = None
-        if self._lesson_manager:
+        if self._lesson_manager and not skip_enrichment:
             try:
                 _lim = self._copilot_config.lesson_injection_count if self._copilot_config else 3
                 _min_conf = self._copilot_config.lesson_min_confidence if self._copilot_config else 0.30
@@ -716,33 +721,51 @@ class AgentLoop:
         if lessons_for_context and hasattr(self.context, '_base'):
             build_kwargs["lessons"] = lessons_for_context
 
-        # Proactive episodic memory recall + core facts (concurrent, gracefully degrades)
+        # Core facts + proactive episodic recall (concurrent, gracefully degrades)
+        # Background services get core facts only; episodic recall is skipped to
+        # prevent user conversation memories from contaminating background prompts.
         if self._memory_manager and hasattr(self.context, '_base'):
             try:
-                results = await asyncio.gather(
-                    asyncio.wait_for(
-                        self._memory_manager.get_core_facts_block(budget_tokens=200),
-                        timeout=2.0,
-                    ),
-                    asyncio.wait_for(
-                        self._memory_manager.proactive_recall(
-                            msg.content, session.key, limit=3
+                if skip_enrichment:
+                    # Background: core facts only (cheap, useful for identity grounding)
+                    try:
+                        core_facts = await asyncio.wait_for(
+                            self._memory_manager.get_core_facts_block(budget_tokens=200),
+                            timeout=2.0,
+                        )
+                    except Exception:
+                        core_facts = ""
+                    if core_facts:
+                        build_kwargs["core_facts"] = core_facts
+                else:
+                    # Interactive: core facts + proactive episodic recall
+                    results = await asyncio.gather(
+                        asyncio.wait_for(
+                            self._memory_manager.get_core_facts_block(budget_tokens=200),
+                            timeout=2.0,
                         ),
-                        timeout=2.0,
-                    ),
-                    return_exceptions=True,
-                )
-                core_facts = results[0] if not isinstance(results[0], Exception) else ""
-                memory_ctx = results[1] if not isinstance(results[1], Exception) else ""
-                if core_facts:
-                    build_kwargs["core_facts"] = core_facts
-                if memory_ctx:
-                    build_kwargs["memory_context"] = memory_ctx
+                        asyncio.wait_for(
+                            self._memory_manager.proactive_recall(
+                                msg.content, session.key, limit=3
+                            ),
+                            timeout=2.0,
+                        ),
+                        return_exceptions=True,
+                    )
+                    core_facts = results[0] if not isinstance(results[0], Exception) else ""
+                    memory_ctx = results[1] if not isinstance(results[1], Exception) else ""
+                    if core_facts:
+                        build_kwargs["core_facts"] = core_facts
+                    if memory_ctx:
+                        build_kwargs["memory_context"] = memory_ctx
             except Exception as e:
                 logger.debug(f"Memory recall skipped: {e}")
 
         # Heartbeat event injection (news feed from background monitoring)
-        if self._copilot_config and hasattr(self.context, '_base'):
+        # Skip for background services: get_unacknowledged_events has a destructive
+        # side effect (marks events acknowledged), and background services should not
+        # consume events meant for user sessions.
+        if self._copilot_config and hasattr(self.context, '_base') and not skip_enrichment:
             try:
                 from nanobot.copilot.context.events import (
                     get_heartbeat_summary,
@@ -894,13 +917,16 @@ class AgentLoop:
         self.sessions.save(session)
 
         # Copilot: background extraction (async, never blocks response)
-        if self._extractor and not is_error:
+        # Skip for background services to avoid extracting heartbeat/dream conversations.
+        if self._extractor and not is_error and not skip_enrichment:
             self._extractor.schedule_extraction(
                 msg.content, final_content, session.key
             )
 
         # Copilot: store exchange in memory (async, never blocks response)
-        if self._memory_manager and not is_error:
+        # Skip for background services to prevent reverse contamination —
+        # heartbeat/dream conversations should not appear in user episodic recall.
+        if self._memory_manager and not is_error and not skip_enrichment:
             self._track_task(
                 self._memory_manager.remember_exchange(msg.content, final_content, session.key),
                 name="memory_remember_exchange",
@@ -1111,6 +1137,7 @@ Respond with ONLY valid JSON, no markdown fences."""
         channel: str = "cli",
         chat_id: str = "direct",
         model: str | None = None,
+        skip_enrichment: bool = False,
     ) -> str:
         """
         Process a message directly (for CLI or cron usage).
@@ -1121,6 +1148,9 @@ Respond with ONLY valid JSON, no markdown fences."""
             channel: Source channel (for tool context routing).
             chat_id: Source chat ID (for tool context routing).
             model: Optional model override for this call only.
+            skip_enrichment: If True, skip user-facing context enrichment
+                (lessons, episodic recall, events, extraction, memory storage).
+                Set this for background services (heartbeat, dream, cron, etc.).
 
         Returns:
             The agent's response.
@@ -1138,7 +1168,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             original_model = self.model
             self.model = model
         try:
-            response = await self._process_message(msg, session_key=session_key)
+            response = await self._process_message(msg, session_key=session_key, skip_enrichment=skip_enrichment)
             return response.content if response else ""
         finally:
             if original_model is not None:
