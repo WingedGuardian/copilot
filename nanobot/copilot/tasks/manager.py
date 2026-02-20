@@ -200,6 +200,15 @@ class TaskManager:
             rows = await cur.fetchall()
             return [self._row_to_task(dict(r)) for r in rows]
 
+    async def list_pending(self) -> list[str]:
+        """Return string summaries of pending/active/awaiting tasks for heartbeat."""
+        tasks = await self.list_tasks()
+        return [
+            f"{t.id}: {t.title} ({t.status})"
+            for t in tasks
+            if t.status in ("pending", "active", "awaiting")
+        ]
+
     async def get_stuck_tasks(self, threshold_minutes: int = 30) -> list[Task]:
         """Get tasks that have been in_progress/active for longer than threshold."""
         async with aiosqlite.connect(self._db_path) as db:

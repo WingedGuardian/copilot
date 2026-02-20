@@ -37,6 +37,13 @@ _TYPE_MAP: dict[str, type] = {
 }
 
 
+_AUTONOMY_MODES = {"notify", "autonomous", "disabled"}
+_AUTONOMY_CATEGORIES = {
+    "task_management", "identity_evolution", "config_changes",
+    "proactive_notifications", "memory_management", "scheduling",
+}
+
+
 class SetPreferenceTool(Tool):
     """Change a copilot runtime preference. Changes take effect immediately and persist."""
 
@@ -46,11 +53,13 @@ class SetPreferenceTool(Tool):
         copilot_config: Any,
         router: Any = None,
         reschedule_callbacks: dict[str, Callable] | None = None,
+        db_path: str = "",
     ):
         self._config_path = config_path
         self._copilot = copilot_config
         self._router = router
         self._reschedule = reschedule_callbacks or {}
+        self._db_path = db_path
 
     @property
     def name(self) -> str:
@@ -66,6 +75,8 @@ class SetPreferenceTool(Tool):
             "daily_cost_alert, per_call_cost_alert, context_budget, "
             "lesson_injection_count, lesson_min_confidence, "
             "memory_recall_limit, memory_min_score. "
+            "Also supports 'autonomy:<category>' keys (e.g. autonomy:task_management) "
+            "with values: notify, autonomous, disabled. "
             "Changes take effect immediately and persist across restarts."
         )
 
@@ -83,6 +94,10 @@ class SetPreferenceTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         key = kwargs.get("key", "")
         value = kwargs.get("value", "")
+
+        # Handle autonomy: prefix
+        if key.startswith("autonomy:"):
+            return await self._set_autonomy(key, value)
 
         if key not in _ALLOWED_KEYS:
             return f"Error: '{key}' is not a configurable preference. Allowed: {', '.join(sorted(_ALLOWED_KEYS))}"
@@ -139,6 +154,43 @@ class SetPreferenceTool(Tool):
 
         logger.info(f"Preference changed: {key} = {typed_value} (was {old_value})")
         return f"Updated {key}: {old_value} → {typed_value}"
+
+    async def _set_autonomy(self, key: str, value: str) -> str:
+        """Handle autonomy:<category> preference changes."""
+        category = key.split(":", 1)[1]
+        if category not in _AUTONOMY_CATEGORIES:
+            return f"Error: unknown autonomy category '{category}'. Valid: {', '.join(sorted(_AUTONOMY_CATEGORIES))}"
+        mode = value.lower().strip()
+        if mode not in _AUTONOMY_MODES:
+            return f"Error: autonomy mode must be one of {sorted(_AUTONOMY_MODES)}, got '{mode}'"
+
+        if not self._db_path:
+            return "Error: no database configured for autonomy permissions"
+
+        import aiosqlite
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    "SELECT mode FROM autonomy_permissions WHERE category = ?",
+                    (category,),
+                )
+                row = await cur.fetchone()
+                old_mode = row[0] if row else "notify"
+                await db.execute(
+                    """INSERT INTO autonomy_permissions (category, mode, granted_at, granted_by)
+                       VALUES (?, ?, CURRENT_TIMESTAMP, 'user')
+                       ON CONFLICT(category) DO UPDATE SET
+                         mode = excluded.mode,
+                         granted_at = excluded.granted_at,
+                         granted_by = excluded.granted_by""",
+                    (category, mode),
+                )
+                await db.commit()
+        except Exception as e:
+            return f"Error updating autonomy permission: {e}"
+
+        logger.info(f"Autonomy changed: {category} = {mode} (was {old_mode})")
+        return f"Autonomy updated: {category}: {old_mode} → {mode}"
 
     def _persist(self, key: str, value: Any) -> None:
         """Update the copilot section in config.json."""

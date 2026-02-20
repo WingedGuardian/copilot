@@ -397,6 +397,119 @@ async def migrate_heartbeat_events(db_path: str | Path) -> None:
     logger.info(f"Heartbeat events migration complete in {db_path}")
 
 
+async def migrate_sentience(db_path: str | Path) -> None:
+    """Sentience plan schema: observations, autonomy, retrospectives, evolution.
+
+    Safe to call repeatedly — all operations are idempotent.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript("""
+            -- Structured observations from dream/heartbeat/weekly/task failures
+            CREATE TABLE IF NOT EXISTS dream_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source TEXT NOT NULL DEFAULT 'dream_cycle',
+                observation_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                priority TEXT DEFAULT 'medium',
+                actionable INTEGER DEFAULT 1,
+                acted_on INTEGER DEFAULT 0,
+                acted_on_at TIMESTAMP,
+                expires_at TIMESTAMP,
+                related_task_id TEXT,
+                metadata_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_dream_obs_unacted
+                ON dream_observations(acted_on, created_at);
+            CREATE INDEX IF NOT EXISTS idx_dream_obs_source
+                ON dream_observations(source, observation_type);
+
+            -- Per-category autonomy permissions (all start as 'notify')
+            CREATE TABLE IF NOT EXISTS autonomy_permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL UNIQUE,
+                mode TEXT NOT NULL DEFAULT 'notify',
+                granted_at TIMESTAMP,
+                granted_by TEXT DEFAULT 'system',
+                notes TEXT
+            );
+
+            -- Post-task analysis with optional Qdrant embedding
+            CREATE TABLE IF NOT EXISTS task_retrospectives (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                outcome TEXT NOT NULL,
+                approach_summary TEXT,
+                diagnosis TEXT,
+                learnings TEXT,
+                capability_gaps TEXT,
+                model_used TEXT,
+                cost_usd REAL,
+                qdrant_point_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_retro_task
+                ON task_retrospectives(task_id);
+            CREATE INDEX IF NOT EXISTS idx_retro_outcome
+                ON task_retrospectives(outcome, created_at);
+
+            -- Full weekly review storage
+            CREATE TABLE IF NOT EXISTS weekly_review_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                duration_ms INTEGER DEFAULT 0,
+                full_report TEXT,
+                user_summary TEXT,
+                capability_gaps_json TEXT,
+                proposed_roadmap_json TEXT,
+                failure_patterns_json TEXT,
+                evolution_proposals_json TEXT
+            );
+
+            -- Version tracking for identity file changes
+            CREATE TABLE IF NOT EXISTS evolution_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                file_path TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                change_description TEXT,
+                diff_text TEXT,
+                triggered_by TEXT,
+                rolled_back INTEGER DEFAULT 0,
+                rolled_back_at TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_evo_file
+                ON evolution_log(file_path, created_at);
+        """)
+
+        # ALTER TABLE dream_cycle_log: add reflection_full column (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE dream_cycle_log ADD COLUMN reflection_full TEXT"
+            )
+        except Exception:
+            pass  # Column already exists
+
+        # Seed autonomy_permissions with defaults (idempotent via INSERT OR IGNORE)
+        for category in (
+            "task_management",
+            "identity_evolution",
+            "config_changes",
+            "proactive_notifications",
+            "memory_management",
+            "scheduling",
+        ):
+            await db.execute(
+                """INSERT OR IGNORE INTO autonomy_permissions (category, mode, granted_by)
+                   VALUES (?, 'notify', 'system')""",
+                (category,),
+            )
+
+        await db.commit()
+    logger.info(f"Sentience migration complete in {db_path}")
+
+
 async def migrate_alert_resolution(db_path: str | Path) -> None:
     """Add resolved_at column to alerts for active/resolved tracking.
 

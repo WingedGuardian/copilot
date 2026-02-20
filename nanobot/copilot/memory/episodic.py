@@ -6,7 +6,10 @@ import math
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from nanobot.copilot.memory.fts import FullTextStore
 
 from loguru import logger
 
@@ -168,10 +171,12 @@ class EpisodicStore:
         limit: int = 5,
         session_key: str | None = None,
         min_score: float = 0.35,
+        role_filter: str | None = None,
     ) -> list[Episode]:
         """Recall memories using multi-factor scoring.
 
         Factors: semantic similarity (50%), recency (20%), access count (15%), importance (15%).
+        Optional role_filter restricts to specific payload.role values (e.g. "retrospective").
         """
         await self._ensure_client()
         vector = await self._embedder.embed(query)
@@ -179,12 +184,17 @@ class EpisodicStore:
         # Fetch 3x candidates for re-ranking
         fetch_limit = limit * 3
         try:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            search_filter = None
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
+            conditions = []
             if session_key:
-                search_filter = Filter(must=[
+                conditions.append(
                     FieldCondition(key="session_key", match=MatchValue(value=session_key))
-                ])
+                )
+            if role_filter:
+                conditions.append(
+                    FieldCondition(key="role", match=MatchValue(value=role_filter))
+                )
+            search_filter = Filter(must=conditions) if conditions else None
 
             response = await self._client.query_points(
                 collection_name=self.COLLECTION,
@@ -315,7 +325,7 @@ class EpisodicStore:
         """Delete all episodes for a session."""
         try:
             await self._ensure_client()
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
             await self._client.delete(
                 collection_name=self.COLLECTION,
                 points_selector=Filter(must=[

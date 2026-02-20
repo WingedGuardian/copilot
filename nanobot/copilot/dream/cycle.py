@@ -28,6 +28,7 @@ class DreamReport:
     alerts: list[str] = field(default_factory=list)
     remediations: int = 0
     reflection: str = ""
+    reflection_full: str = ""
     errors: list[str] = field(default_factory=list)
     duration_ms: int = 0
 
@@ -86,9 +87,11 @@ class DreamCycle:
         self._chat_id = delivery_chat_id
         self._docs_dir = docs_dir
         self._emergency_cloud_model = emergency_cloud_model
+        self.is_running = False  # FM4: checked by cognitive heartbeat to avoid concurrent LLM calls
 
     async def run(self) -> DreamReport:
         """Run all maintenance jobs and return report."""
+        self.is_running = True
         start = time.time()
         report = DreamReport()
 
@@ -164,7 +167,31 @@ class DreamCycle:
         except Exception as e:
             report.errors.append(f"reflection: {e}")
 
+        # Job 11: Identity evolution (propose or apply changes)
+        try:
+            await self._evolve_identity(report)
+        except Exception as e:
+            report.errors.append(f"identity_evolution: {e}")
+
+        # Job 12: Observation cleanup (expire old unacted observations)
+        try:
+            await self._cleanup_observations()
+        except Exception as e:
+            report.errors.append(f"observation_cleanup: {e}")
+
         report.duration_ms = int((time.time() - start) * 1000)
+
+        # Write failure_diagnosis observations for any dream job errors
+        if report.errors:
+            failure_obs = [
+                {
+                    "observation_type": "failure_diagnosis",
+                    "content": f"Dream job failed: {err}",
+                    "priority": "high",
+                }
+                for err in report.errors
+            ]
+            await self._write_dream_observations(failure_obs)
 
         # Surface errors in AlertBus so they appear in /status Active Alerts
         if report.errors:
@@ -195,6 +222,7 @@ class DreamCycle:
         elif self._deliver:
             logger.warning("Dream report ready but no chat_id configured for delivery")
 
+        self.is_running = False
         logger.info(f"Dream cycle complete in {report.duration_ms}ms")
         return report
 
@@ -208,7 +236,7 @@ class DreamCycle:
         if self._db_path:
             try:
                 async with aiosqlite.connect(self._db_path) as db:
-                    cur = await db.execute("SELECT COUNT(*) FROM episodes_content")
+                    cur = await db.execute("SELECT COUNT(*) FROM episodic_fts_content")
                     before_count = (await cur.fetchone())[0]
             except Exception:
                 pass  # Table may not exist yet
@@ -229,7 +257,7 @@ class DreamCycle:
         if self._db_path:
             try:
                 async with aiosqlite.connect(self._db_path) as db:
-                    cur = await db.execute("SELECT COUNT(*) FROM episodes_content")
+                    cur = await db.execute("SELECT COUNT(*) FROM episodic_fts_content")
                     after_count = (await cur.fetchone())[0]
             except Exception:
                 pass
@@ -352,7 +380,7 @@ class DreamCycle:
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 cur = await db.execute(
-                    "SELECT id FROM episodes ORDER BY id DESC LIMIT ?", (max_per_cycle * 2,)
+                    "SELECT id FROM episodic_fts_content ORDER BY id DESC LIMIT ?", (max_per_cycle * 2,)
                 )
                 db_ids = {str(row[0]) for row in await cur.fetchall()}
 
@@ -439,37 +467,307 @@ class DreamCycle:
 
         return cleaned
 
+    @staticmethod
+    def _parse_llm_json(text: str) -> dict | list | None:
+        """Parse JSON from LLM output with robust fallback chain (FM1).
+
+        Tries: direct parse → markdown fence extraction → regex outermost braces.
+        Returns parsed object or None on failure.
+        """
+        import json as _json
+        import re
+
+        if not text:
+            return None
+
+        # 1. Direct parse
+        try:
+            return _json.loads(text)
+        except (ValueError, TypeError):
+            pass
+
+        # 2. Extract from markdown code blocks
+        fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+        if fence_match:
+            try:
+                return _json.loads(fence_match.group(1))
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Regex: outermost { ... } or [ ... ]
+        for pattern in (r"\{[\s\S]*\}", r"\[[\s\S]*\]"):
+            m = re.search(pattern, text)
+            if m:
+                try:
+                    return _json.loads(m.group(0))
+                except (ValueError, TypeError):
+                    # Tolerate trailing commas (common with Gemini models)
+                    cleaned = re.sub(r",\s*([}\]])", r"\1", m.group(0))
+                    try:
+                        return _json.loads(cleaned)
+                    except (ValueError, TypeError):
+                        pass
+
+        return None
+
+    async def _write_dream_observations(
+        self, observations: list[dict], source: str = "dream_cycle"
+    ) -> int:
+        """Write structured observations to dream_observations table. Returns count written."""
+        if not self._db_path or not observations:
+            return 0
+        written = 0
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                for obs in observations:
+                    await db.execute(
+                        """INSERT INTO dream_observations
+                           (source, observation_type, content, priority, related_task_id, metadata_json)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            source,
+                            obs.get("observation_type", "pattern"),
+                            obs.get("content", ""),
+                            obs.get("priority", "medium"),
+                            obs.get("related_task_id"),
+                            obs.get("metadata_json"),
+                        ),
+                    )
+                    written += 1
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to write dream observations: {e}")
+        return written
+
+    async def _evolve_identity(self, report: DreamReport) -> None:
+        """Job 11: Propose or apply identity file changes based on observations.
+
+        Checks autonomy_permissions for identity_evolution mode:
+        - disabled: skip entirely
+        - notify: write evolution_proposal observations for user review
+        - autonomous: apply small changes, log to evolution_log
+        Velocity limit: max 1 file change per cycle (system-initiated).
+        """
+        if not self._db_path:
+            return
+
+        # Check autonomy permission
+        mode = "notify"
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    "SELECT mode FROM autonomy_permissions WHERE category = 'identity_evolution'"
+                )
+                row = await cur.fetchone()
+                if row:
+                    mode = row[0]
+        except Exception:
+            pass
+
+        if mode == "disabled":
+            return
+
+        # Gather evolution proposals from dream_observations
+        proposals = []
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """SELECT id, content FROM dream_observations
+                       WHERE observation_type = 'evolution_proposal'
+                         AND acted_on = 0
+                       ORDER BY created_at DESC LIMIT 5"""
+                )
+                proposals = await cur.fetchall()
+        except Exception:
+            return
+
+        if not proposals:
+            return
+
+        if mode == "notify":
+            # Proposals already exist in dream_observations — heartbeat will surface them
+            logger.info(f"Identity evolution: {len(proposals)} proposals pending (notify mode)")
+            return
+
+        # mode == "autonomous": apply the top proposal
+        # Safety: verify no recent user activity (30 min)
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """SELECT COUNT(*) FROM routing_log
+                       WHERE timestamp >= datetime('now', '-30 minutes')"""
+                )
+                recent_activity = (await cur.fetchone())[0]
+                if recent_activity > 0:
+                    logger.info("Identity evolution: skipping — recent user activity detected")
+                    return
+        except Exception:
+            pass  # Can't check, proceed cautiously
+
+        # Apply top proposal via LLM
+        if not self._execute_fn:
+            return
+
+        top_id, top_content = proposals[0]
+        try:
+            result = await self._execute_fn(
+                f"Apply this identity file change (keep it small and incremental):\n{top_content}\n\n"
+                "Read the target file, make the change, write it back. "
+                "Respond with the file path and a brief description of what changed."
+            )
+
+            # Log to evolution_log
+            async with aiosqlite.connect(self._db_path) as db:
+                # Extract file path from content (best effort)
+                file_path = "unknown"
+                for token in top_content.split():
+                    if token.endswith(".md"):
+                        file_path = token
+                        break
+
+                await db.execute(
+                    """INSERT INTO evolution_log
+                       (file_path, change_type, change_description, triggered_by)
+                       VALUES (?, ?, ?, ?)""",
+                    (file_path, "autonomous_evolution", (result or "")[:500], "dream_cycle"),
+                )
+                # Mark proposal as acted_on
+                await db.execute(
+                    "UPDATE dream_observations SET acted_on = 1, acted_on_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (top_id,),
+                )
+                await db.commit()
+
+            logger.info(f"Identity evolution: applied proposal {top_id}")
+        except Exception as e:
+            logger.warning(f"Identity evolution failed: {e}")
+
+    async def _cleanup_observations(self) -> None:
+        """Job 12: Expire old unacted observations and prune old acted ones."""
+        if not self._db_path:
+            return
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                # Expire unacted observations older than 14 days
+                cur = await db.execute(
+                    """UPDATE dream_observations
+                       SET acted_on = -1
+                       WHERE acted_on = 0
+                         AND created_at < datetime('now', '-14 days')"""
+                )
+                expired = cur.rowcount
+
+                # Delete acted observations older than 90 days
+                cur = await db.execute(
+                    """DELETE FROM dream_observations
+                       WHERE acted_on = 1
+                         AND created_at < datetime('now', '-90 days')"""
+                )
+                pruned = cur.rowcount
+
+                await db.commit()
+
+                if expired or pruned:
+                    logger.info(f"Observation cleanup: {expired} expired, {pruned} pruned")
+        except Exception as e:
+            logger.warning(f"Observation cleanup failed: {e}")
+
     async def _self_reflect(self, report: DreamReport) -> str:
-        """Metacognitive self-reflection: what could be improved?"""
+        """Metacognitive self-reflection producing structured observations."""
         if not self._execute_fn:
             return ""
 
-        # Gather context for a meaningful reflection
         recent_context = await self._gather_reflection_context(report)
 
         prompt = f"""You are performing a nightly operational self-reflection. Here is today's data:
 
 {recent_context}
 
-Give a high-level summary of what happened tonight. Keep it operational — the weekly review handles strategy.
+Produce a JSON object with these fields:
+{{
+  "summary": "2-5 sentence operational overview of what happened tonight",
+  "capability_gaps": [{{"gap": "...", "impact": "high|medium|low"}}],
+  "patterns_noticed": ["..."],
+  "failure_diagnoses": [{{"what_failed": "...", "why": "...", "proposed_fix": "..."}}],
+  "tomorrow_priorities": ["..."],
+  "evolution_suggestions": [{{"target_file": "SOUL.md|AGENTS.md|etc", "suggested_change": "...", "reasoning": "..."}}]
+}}
 
-- What broke or degraded? What recovered?
-- What needs user attention or approval? (be specific — recommended changes, actions required, decisions pending)
-- Any data quality or resource concerns?
-
-Be as long as you need to be, but stay high-level. Only go into detail on items that require user action or approval.
-Do NOT use headers or markdown formatting. Plain sentences.
-Do NOT suggest new features or capability gaps — that's the weekly review's job."""
+Rules:
+- summary: operational, not strategic. What broke, recovered, needs attention.
+- capability_gaps: things you couldn't do or did poorly. Weekly review handles strategy.
+- failure_diagnoses: root cause analysis for anything that failed tonight.
+- evolution_suggestions: specific proposed changes to identity/config files.
+- Empty arrays are fine if nothing applies.
+- Output ONLY the JSON object, no markdown fences or preamble."""
 
         try:
             result = await self._execute_fn(prompt)
-            # Take the substantive content, strip formatting artifacts
-            text = (result or "").strip()
-            # Remove common LLM formatting wrappers
-            for prefix in ("*Reflection Complete:*", "*Reflection:*", "Reflection:", "**Reflection:**"):
-                if text.startswith(prefix):
-                    text = text[len(prefix):].strip()
-            return text
+            raw_text = (result or "").strip()
+
+            # Store full response regardless of parse success
+            report.reflection_full = raw_text
+
+            # Parse structured output
+            parsed = self._parse_llm_json(raw_text)
+            if isinstance(parsed, dict):
+                summary = parsed.get("summary", "")
+                # Write observations to dream_observations table
+                observations: list[dict] = []
+
+                for gap in parsed.get("capability_gaps", []):
+                    if isinstance(gap, dict) and gap.get("gap"):
+                        observations.append({
+                            "observation_type": "capability_gap",
+                            "content": f"{gap['gap']} (impact: {gap.get('impact', 'medium')})",
+                            "priority": gap.get("impact", "medium"),
+                        })
+
+                for pattern in parsed.get("patterns_noticed", []):
+                    if pattern:
+                        observations.append({
+                            "observation_type": "pattern",
+                            "content": str(pattern),
+                            "priority": "low",
+                        })
+
+                for diag in parsed.get("failure_diagnoses", []):
+                    if isinstance(diag, dict) and diag.get("what_failed"):
+                        observations.append({
+                            "observation_type": "failure_diagnosis",
+                            "content": (
+                                f"Failed: {diag['what_failed']}. "
+                                f"Why: {diag.get('why', 'unknown')}. "
+                                f"Fix: {diag.get('proposed_fix', 'unknown')}"
+                            ),
+                            "priority": "high",
+                        })
+
+                for sug in parsed.get("evolution_suggestions", []):
+                    if isinstance(sug, dict) and sug.get("suggested_change"):
+                        import json as _json
+                        observations.append({
+                            "observation_type": "evolution_proposal",
+                            "content": f"[{sug.get('target_file', '?')}] {sug['suggested_change']}",
+                            "priority": "medium",
+                            "metadata_json": _json.dumps({"reasoning": sug.get("reasoning", "")}),
+                        })
+
+                if observations:
+                    await self._write_dream_observations(observations)
+
+                return summary
+            else:
+                # JSON parse failed — store raw text as parse_failure observation
+                logger.warning("Dream reflection: JSON parse failed, storing raw text")
+                await self._write_dream_observations([{
+                    "observation_type": "parse_failure",
+                    "content": raw_text[:2000],
+                    "priority": "low",
+                }])
+                # Fall back to raw text as summary
+                return raw_text[:500]
+
         except Exception as e:
             logger.warning(f"Self-reflection failed: {e}")
             return ""
@@ -518,9 +816,10 @@ Do NOT suggest new features or capability gaps — that's the weekly review's jo
             try:
                 async with aiosqlite.connect(self._db_path) as db:
                     cur = await db.execute(
-                        """SELECT text FROM episodes_content
-                           WHERE timestamp > unixepoch('now', '-1 day')
-                           ORDER BY timestamp DESC LIMIT 10"""
+                        """SELECT text FROM episodic_fts_content
+                           WHERE timestamp > ?
+                           ORDER BY timestamp DESC LIMIT 10""",
+                        (time.time() - 86400,),
                     )
                     rows = await cur.fetchall()
                     if rows:
@@ -624,10 +923,13 @@ Do NOT suggest new features or capability gaps — that's the weekly review's jo
         """Weekly strategic review (Manager role).
 
         Oversees dream cycle, manages architecture/code quality, audits models,
-        trims over-budget files, implements monthly findings.
+        trims over-budget files, implements monthly findings. Now also synthesizes
+        capability gaps, failure patterns, and proposes evolution.
         """
         if not self._weekly_execute_fn:
             return "No execute function configured"
+
+        start = time.time()
 
         pool_path = Path(self._docs_dir) / "models.md"
         pool_content = pool_path.read_text() if pool_path.exists() else "(no model pool file found)"
@@ -650,9 +952,13 @@ Do NOT suggest new features or capability gaps — that's the weekly review's jo
             except Exception:
                 pass
 
+        # Phase 4A: Gather sentience context
+        capability_gaps = await self._get_weekly_capability_gaps()
+        failure_patterns = await self._get_weekly_failure_patterns()
+
         prompt = f"""You are performing a weekly strategic review (MANAGER role). This runs every Sunday.
 Your job: oversee the daily dream cycle, manage architecture and code quality, audit models,
-optimize costs, and implement any findings from the monthly audit.
+optimize costs, implement monthly findings, synthesize capability gaps, and propose evolution.
 
 ## Dream Cycle Health (last 7 days)
 {dream_health}
@@ -661,6 +967,12 @@ optimize costs, and implement any findings from the monthly audit.
 
 ## This Week's Stats
 {weekly_stats}
+
+## Capability Gaps This Week
+{capability_gaps or "No capability gaps recorded this week."}
+
+## Task Failures This Week
+{failure_patterns or "No task failures this week."}
 
 ## Current Model Pool
 {pool_content}
@@ -698,9 +1010,19 @@ d) Check free tier usage — can any paid calls shift to free options?
 ### 5. Cost Trends
 Compare this week vs. last week. Flag overspending by tier or model.
 
-### 6. Strategic Direction
+### 6. Capability Gap Synthesis
+Review the capability gaps listed above. What's missing? Rank by frequency and user impact.
+
+### 7. Failure Pattern Analysis
+Review the task failures above. What keeps failing? Are there systemic fixes?
+
+### 8. Roadmap & Evolution
+- What should be built next? Rank by user impact.
+- Should SOUL.md, AGENTS.md, USER.md, or POLICY.md be updated? Propose changes.
+- Is the system getting better or worse at serving the user? Evidence?
+
+### 9. Strategic Direction
 - What should nanobot focus on this week? Any priorities that need shifting?
-- Are there patterns in errors or user requests that suggest a capability gap?
 - Set direction for the coming week's dream cycles.
 
 ## After Making Changes
@@ -710,15 +1032,23 @@ Compare this week vs. last week. Flag overspending by tier or model.
 - If you edited code, suggest significant changes to the user first via message tool.
 
 ## Response Format
-Provide a weekly report. Be thorough but stay high-level:
-- Dream cycle health (clean / N errors)
-- Monthly findings addressed (or "none pending")
-- Architecture/code changes made
-- Memory health (all within budget / trimmed X)
-- Model/routing changes (or "no changes needed")
-- Cost trend (1-2 sentences)
-- Top 3 priorities for next week
-- Note current date as "Last Reviewed" in the model pool"""
+Provide a weekly report in TWO parts.
+
+**Part 1: Full Analysis** (no length limit, be thorough):
+Analyze everything above. Provide detailed findings for each checklist item.
+
+**Part 2: JSON Summary** (append at the end):
+```json
+{{
+  "user_summary": "2-3 sentence summary for the user",
+  "capability_gaps": ["gap1", "gap2"],
+  "failure_patterns": ["pattern1", "pattern2"],
+  "proposed_roadmap": ["item1", "item2"],
+  "evolution_proposals": [{{"target_file": "SOUL.md", "change": "...", "reasoning": "..."}}],
+  "priorities_next_week": ["p1", "p2", "p3"]
+}}
+```
+The full analysis is stored internally. Only the user_summary is sent to the user."""
 
         try:
             result = await self._weekly_execute_fn(prompt)
@@ -726,9 +1056,54 @@ Provide a weekly report. Be thorough but stay high-level:
             logger.error(f"Weekly review agent call failed: {e}")
             return f"Weekly review failed: {e}"
 
+        duration_ms = int((time.time() - start) * 1000)
+
+        # Parse structured output and store in weekly_review_log
+        parsed = self._parse_llm_json(result or "")
+        user_summary = result or ""
+        if isinstance(parsed, dict):
+            user_summary = parsed.get("user_summary", result or "")
+            # Store evolution proposals as dream_observations
+            evolution_proposals = parsed.get("evolution_proposals", [])
+            if evolution_proposals:
+                obs = []
+                for ep in evolution_proposals[:5]:
+                    if isinstance(ep, dict):
+                        obs.append({
+                            "observation_type": "evolution_proposal",
+                            "content": f"{ep.get('target_file', '?')}: {ep.get('change', '')} ({ep.get('reasoning', '')})",
+                            "priority": "medium",
+                        })
+                await self._write_dream_observations(obs, source="weekly_review")
+
+        # Store full report in weekly_review_log
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    """INSERT INTO weekly_review_log
+                       (duration_ms, full_report, user_summary,
+                        capability_gaps_json, proposed_roadmap_json,
+                        failure_patterns_json, evolution_proposals_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        duration_ms,
+                        result or "",
+                        user_summary[:1000] if user_summary else "",
+                        _json.dumps(parsed.get("capability_gaps", [])) if isinstance(parsed, dict) else "[]",
+                        _json.dumps(parsed.get("proposed_roadmap", [])) if isinstance(parsed, dict) else "[]",
+                        _json.dumps(parsed.get("failure_patterns", [])) if isinstance(parsed, dict) else "[]",
+                        _json.dumps(parsed.get("evolution_proposals", [])) if isinstance(parsed, dict) else "[]",
+                    ),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Weekly review log write failed: {e}")
+
+        # Deliver brief summary to user (not the full report)
         if self._deliver and self._chat_id:
             try:
-                await self._deliver(self._channel, self._chat_id, f"Weekly Review\n\n{result}")
+                brief = user_summary[:2000] if user_summary != result else (result or "")[:2000]
+                await self._deliver(self._channel, self._chat_id, f"Weekly Review\n\n{brief}")
             except Exception as e:
                 logger.warning(f"Weekly review delivery failed: {e}")
 
@@ -738,14 +1113,59 @@ Provide a weekly report. Be thorough but stay high-level:
                 await db.execute(
                     "INSERT INTO heartbeat_events (event_type, severity, message, source) "
                     "VALUES ('weekly_review', 'info', ?, 'weekly')",
-                    ((result or "")[:500],),
+                    ((user_summary or "")[:500],),
                 )
                 await db.commit()
         except Exception:
             pass
 
-        logger.info("Weekly review complete")
+        logger.info(f"Weekly review complete in {duration_ms}ms")
         return result or ""
+
+    async def _get_weekly_capability_gaps(self) -> str:
+        """Query dream_observations for capability gaps from the past 7 days."""
+        if not self._db_path:
+            return ""
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """SELECT content, source, created_at FROM dream_observations
+                       WHERE observation_type = 'capability_gap'
+                         AND created_at >= datetime('now', '-7 days')
+                       ORDER BY created_at DESC LIMIT 20"""
+                )
+                rows = await cur.fetchall()
+                if not rows:
+                    return ""
+                lines = [f"- [{r[1]}] {r[0]}" for r in rows]
+                return "\n".join(lines)
+        except Exception:
+            return ""
+
+    async def _get_weekly_failure_patterns(self) -> str:
+        """Query task_retrospectives for failures from the past 7 days."""
+        if not self._db_path:
+            return ""
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """SELECT task_id, diagnosis, capability_gaps, created_at
+                       FROM task_retrospectives
+                       WHERE outcome = 'failed'
+                         AND created_at >= datetime('now', '-7 days')
+                       ORDER BY created_at DESC LIMIT 15"""
+                )
+                rows = await cur.fetchall()
+                if not rows:
+                    return ""
+                lines = []
+                for r in rows:
+                    diag = r[1][:200] if r[1] else "no diagnosis"
+                    gaps = r[2] or ""
+                    lines.append(f"- Task {r[0]}: {diag}" + (f" [gaps: {gaps}]" if gaps else ""))
+                return "\n".join(lines)
+        except Exception:
+            return ""
 
     async def _get_weekly_stats(self) -> str:
         """Collect cost and usage stats for the past 7 days."""
@@ -1026,8 +1446,8 @@ Provide a comprehensive monthly audit report:
                 await db.execute(
                     """INSERT INTO dream_cycle_log
                        (duration_ms, episodes_consolidated, items_created, items_pruned,
-                        lessons_reviewed, alerts_count, remediations_count, errors)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        lessons_reviewed, alerts_count, remediations_count, errors, reflection_full)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         report.duration_ms,
                         report.episodes_consolidated,
@@ -1037,6 +1457,7 @@ Provide a comprehensive monthly audit report:
                         len(report.alerts),
                         report.remediations,
                         "; ".join(report.errors) if report.errors else None,
+                        report.reflection_full or None,
                     ),
                 )
                 await db.commit()
