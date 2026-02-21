@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import aiosqlite
 from loguru import logger
@@ -33,8 +33,8 @@ class HealthCheckService:
         db_path: str = "",
         interval_s: int = 1800,
         active_hours: tuple[int, int] = (7, 22),
-        subagent_manager: "SubagentManager | None" = None,
-        task_manager: "TaskManager | None" = None,
+        subagent_manager: Any = None,
+        task_manager: Any = None,
         qdrant_url: str = "http://localhost:6333",
         **kwargs,  # Accept and ignore legacy kwargs
     ):
@@ -151,10 +151,10 @@ class HealthCheckService:
             if not new_content:
                 return []
             # Filter to actual entries (skip comments)
-            lines = [l for l in new_content.splitlines() if l.startswith("[")]
+            lines = [ln for ln in new_content.splitlines() if ln.startswith("[")]
             if not lines:
                 return []
-            summary = "; ".join(l[:200] for l in lines[:5])
+            summary = "; ".join(ln[:200] for ln in lines[:5])
             return [{
                 "type": "external_change",
                 "severity": "info",
@@ -246,6 +246,7 @@ class HealthCheckService:
                          AND resolved_at IS NULL
                          AND message NOT LIKE '%lm_studio%'
                          AND message NOT LIKE '%LM Studio%'
+                         AND error_key NOT LIKE 'provider_failed%'
                        ORDER BY timestamp DESC LIMIT 5""",
                 )
                 rows = await cur.fetchall()

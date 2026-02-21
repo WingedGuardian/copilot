@@ -104,9 +104,9 @@ class DashboardReport:
             lines.append("Routing: PRIVATE MODE (local only)")
             lines.append(f"  -> {r.active_provider}: {r.active_model}")
         elif r.mode == "emergency":
-            lines.append(f"Routing: ⚠️ EMERGENCY FALLBACK")
+            lines.append("Routing: ⚠️ EMERGENCY FALLBACK")
             lines.append(f"  -> {r.active_provider}: {r.active_model}")
-            lines.append(f"  Configured models unavailable — check Active Alerts")
+            lines.append("  Configured models unavailable — check Active Alerts")
         elif r.mode == "override":
             lines.append(f"Routing: MANUAL ({r.override_detail})")
             lines.append(f"  -> {r.active_provider}: {r.active_model}")
@@ -694,14 +694,18 @@ class StatusAggregator:
         if last:
             winning = getattr(router, "_last_winning_provider", "")
             is_emergency = winning.startswith("emergency:")
-            provider = "lm_studio" if last.target == "local" else first_cloud
+            if winning:
+                clean_provider = winning.removeprefix("plan:").removeprefix("safety:")
+            else:
+                clean_provider = "lm_studio" if last.target == "local" else first_cloud
+            provider = clean_provider
             if is_emergency:
                 # Emergency routing fired — show the actual fallback that was used
                 actual_provider = winning.removeprefix("emergency:")
                 return RoutingState(
                     mode="emergency", active_tier=last.target,
                     active_provider=actual_provider, active_model=last.model,
-                    override_detail=f"EMERGENCY FALLBACK (configured models unavailable)",
+                    override_detail="EMERGENCY FALLBACK (configured models unavailable)",
                 )
             return RoutingState(
                 mode="auto", active_tier=last.target,
