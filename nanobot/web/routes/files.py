@@ -14,7 +14,6 @@ _REPO_ROOT = pathlib.Path("/home/ubuntu/executive-copilot/nanobot")
 _ALLOWED_DIRS = [
     _REPO_ROOT / "data" / "copilot",
     _REPO_ROOT / "workspace",
-    pathlib.Path.home() / ".nanobot",
 ]
 _ALLOWED_FILES = [
     _REPO_ROOT / "CLAUDE.md",
