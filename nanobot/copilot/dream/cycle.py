@@ -274,7 +274,23 @@ class DreamCycle:
             "to store any discoveries."
         )
         try:
-            await self._execute_fn(prompt)
+            _trace_start = time.monotonic()
+            _consolidation_result = await self._execute_fn(prompt)
+            _trace_ms = int((time.monotonic() - _trace_start) * 1000)
+            if self._db_path:
+                try:
+                    from nanobot.copilot.cost.db import log_llm_trace
+                    await log_llm_trace(
+                        self._db_path,
+                        service="dream_cycle",
+                        job_name="consolidation",
+                        prompt_text=(prompt or "")[:10000],
+                        response_text=(_consolidation_result or "")[:10000],
+                        model=getattr(self, "_model", "") or "",
+                        latency_ms=_trace_ms,
+                    )
+                except Exception:
+                    pass  # Tracing is best-effort
         except Exception as e:
             logger.warning(f"Memory consolidation agent call failed: {e}")
 
@@ -635,12 +651,29 @@ class DreamCycle:
             return
 
         top_id, top_content = proposals[0]
+        _identity_prompt = (
+            f"Apply this identity file change (keep it small and incremental):\n{top_content}\n\n"
+            "Read the target file, make the change, write it back. "
+            "Respond with the file path and a brief description of what changed."
+        )
         try:
-            result = await self._execute_fn(
-                f"Apply this identity file change (keep it small and incremental):\n{top_content}\n\n"
-                "Read the target file, make the change, write it back. "
-                "Respond with the file path and a brief description of what changed."
-            )
+            _trace_start = time.monotonic()
+            result = await self._execute_fn(_identity_prompt)
+            _trace_ms = int((time.monotonic() - _trace_start) * 1000)
+            if self._db_path:
+                try:
+                    from nanobot.copilot.cost.db import log_llm_trace
+                    await log_llm_trace(
+                        self._db_path,
+                        service="dream_cycle",
+                        job_name="identity_evolution",
+                        prompt_text=(_identity_prompt or "")[:10000],
+                        response_text=(result or "")[:10000],
+                        model=getattr(self, "_model", "") or "",
+                        latency_ms=_trace_ms,
+                    )
+                except Exception:
+                    pass  # Tracing is best-effort
 
             # Log to evolution_log
             async with aiosqlite.connect(self._db_path) as db:
@@ -733,7 +766,23 @@ class DreamCycle:
         )
 
         try:
-            await self._execute_fn(prompt)
+            _trace_start = time.monotonic()
+            _index_result = await self._execute_fn(prompt)
+            _trace_ms = int((time.monotonic() - _trace_start) * 1000)
+            if self._db_path:
+                try:
+                    from nanobot.copilot.cost.db import log_llm_trace
+                    await log_llm_trace(
+                        self._db_path,
+                        service="dream_cycle",
+                        job_name="codebase_index",
+                        prompt_text=(prompt or "")[:10000],
+                        response_text=(_index_result or "")[:10000],
+                        model=getattr(self, "_model", "") or "",
+                        latency_ms=_trace_ms,
+                    )
+                except Exception:
+                    pass  # Tracing is best-effort
             logger.info("Codebase map updated via dream cycle")
         except Exception as e:
             logger.warning(f"Codebase indexing agent call failed: {e}")
@@ -773,7 +822,23 @@ Rules:
 - Output ONLY the JSON object, no markdown fences or preamble."""
 
         try:
+            _trace_start = time.monotonic()
             result = await self._execute_fn(prompt)
+            _trace_ms = int((time.monotonic() - _trace_start) * 1000)
+            if self._db_path:
+                try:
+                    from nanobot.copilot.cost.db import log_llm_trace
+                    await log_llm_trace(
+                        self._db_path,
+                        service="dream_cycle",
+                        job_name="reflection",
+                        prompt_text=(prompt or "")[:10000],
+                        response_text=(result or "")[:10000],
+                        model=getattr(self, "_model", "") or "",
+                        latency_ms=_trace_ms,
+                    )
+                except Exception:
+                    pass  # Tracing is best-effort
             raw_text = (result or "").strip()
 
             # Store full response regardless of parse success
@@ -1242,7 +1307,23 @@ Analyze everything above. Provide detailed findings for each checklist item.
 The full analysis is stored internally. Only the user_summary is sent to the user."""
 
         try:
+            _trace_start = time.monotonic()
             result = await self._weekly_execute_fn(prompt)
+            _trace_ms = int((time.monotonic() - _trace_start) * 1000)
+            if self._db_path:
+                try:
+                    from nanobot.copilot.cost.db import log_llm_trace
+                    await log_llm_trace(
+                        self._db_path,
+                        service="weekly_review",
+                        job_name="",
+                        prompt_text=(prompt or "")[:10000],
+                        response_text=(result or "")[:10000],
+                        model=getattr(self, "_model", "") or "",
+                        latency_ms=_trace_ms,
+                    )
+                except Exception:
+                    pass  # Tracing is best-effort
             checklist.append("[+] LLM analysis complete")
         except Exception as e:
             checklist.append(f"[!] LLM analysis: FAILED ({e})")
@@ -1673,7 +1754,23 @@ Provide a comprehensive monthly audit report:
 - Top 3 long-term recommendations"""
 
         try:
+            _trace_start = time.monotonic()
             result = await self._monthly_execute_fn(prompt)
+            _trace_ms = int((time.monotonic() - _trace_start) * 1000)
+            if self._db_path:
+                try:
+                    from nanobot.copilot.cost.db import log_llm_trace
+                    await log_llm_trace(
+                        self._db_path,
+                        service="monthly_review",
+                        job_name="",
+                        prompt_text=(prompt or "")[:10000],
+                        response_text=(result or "")[:10000],
+                        model=getattr(self, "_model", "") or "",
+                        latency_ms=_trace_ms,
+                    )
+                except Exception:
+                    pass  # Tracing is best-effort
             checklist.append("[+] LLM audit complete")
         except Exception as e:
             checklist.append(f"[!] LLM audit: FAILED ({e})")
