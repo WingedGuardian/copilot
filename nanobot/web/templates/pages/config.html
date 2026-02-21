@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% set active = "config" %}
+
+{% block title %}Config — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Config Editor</h1>
+    <span class="text-nb-muted text-xs">~/.nanobot/config.json → copilot</span>
+  </div>
+
+  {% if saved %}
+  <div class="bg-nb-surface border border-nb-green rounded px-4 py-2 text-nb-green text-xs">
+    Config saved successfully.
+  </div>
+  {% endif %}
+
+  {% if errors %}
+  <div class="bg-nb-surface border border-nb-red rounded px-4 py-2 text-nb-red text-xs space-y-1">
+    <div class="font-semibold mb-1">Validation errors — config not saved:</div>
+    {% for err in errors %}
+    <div>{{ err }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="POST" action="/config" class="space-y-1">
+
+    <!-- Save button top -->
+    <div class="flex justify-end pb-2">
+      <button type="submit"
+        class="bg-nb-accent text-nb-bg text-xs font-semibold px-4 py-1.5 rounded hover:opacity-90 transition-opacity">
+        Save Config
+      </button>
+    </div>
+
+    {% for section in sections %}
+    <h2 class="text-nb-accent text-xs uppercase tracking-widest mb-3 mt-6 border-b border-nb-border pb-1">
+      {{ section.title }}
+    </h2>
+
+    <div class="bg-nb-surface border border-nb-border rounded px-4 py-2 space-y-0.5">
+      {% for field in section.fields %}
+      <div class="flex items-start gap-4 py-1.5 border-b border-nb-border last:border-0">
+        <label for="f_{{ field.name }}"
+          class="text-nb-muted text-xs w-52 shrink-0 pt-1 font-mono">{{ field.name }}</label>
+
+        {% if field.type == "bool" %}
+        <select id="f_{{ field.name }}" name="{{ field.name }}"
+          class="bg-nb-bg border border-nb-border rounded px-2 py-1 text-nb-text text-xs font-mono w-32 focus:outline-none focus:border-nb-accent">
+          <option value="true" {% if field.value %}selected{% endif %}>true</option>
+          <option value="false" {% if not field.value %}selected{% endif %}>false</option>
+        </select>
+
+        {% elif field.type == "int" %}
+        <input id="f_{{ field.name }}" name="{{ field.name }}" type="number" step="1"
+          value="{{ field.value }}"
+          class="bg-nb-bg border border-nb-border rounded px-2 py-1 text-nb-text text-xs font-mono w-36 focus:outline-none focus:border-nb-accent">
+
+        {% elif field.type == "float" %}
+        <input id="f_{{ field.name }}" name="{{ field.name }}" type="number" step="any"
+          value="{{ field.value }}"
+          class="bg-nb-bg border border-nb-border rounded px-2 py-1 text-nb-text text-xs font-mono w-36 focus:outline-none focus:border-nb-accent">
+
+        {% elif field.type in ("list", "dict") %}
+        <textarea id="f_{{ field.name }}" name="{{ field.name }}" rows="3"
+          class="bg-nb-bg border border-nb-border rounded px-2 py-1 text-nb-text text-xs font-mono w-full focus:outline-none focus:border-nb-accent resize-y">{{ field.value }}</textarea>
+
+        {% else %}
+        <input id="f_{{ field.name }}" name="{{ field.name }}" type="text"
+          value="{{ field.value if field.value is not none else '' }}"
+          class="bg-nb-bg border border-nb-border rounded px-2 py-1 text-nb-text text-xs font-mono w-full focus:outline-none focus:border-nb-accent">
+        {% endif %}
+
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+
+    <!-- Save button bottom -->
+    <div class="flex justify-end pt-4">
+      <button type="submit"
+        class="bg-nb-accent text-nb-bg text-xs font-semibold px-4 py-1.5 rounded hover:opacity-90 transition-opacity">
+        Save Config
+      </button>
+    </div>
+
+  </form>
+
+</div>
+{% endblock %}
