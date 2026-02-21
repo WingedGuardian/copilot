@@ -76,3 +76,24 @@ def build_progress_message(
             lines.append(f"  ? {q}")
 
     return "\n".join(lines)
+
+
+def build_navigator_escalation_message(
+    task_id: str,
+    task_title: str,
+    critique: str,
+    resolution_pattern: str,
+) -> str:
+    """Build a notification for navigator escalations that need user attention."""
+    header = f"Task #{task_id}: {task_title}"
+    if resolution_pattern == "plan_review":
+        label = "Navigator flagged plan for review"
+    elif resolution_pattern == "max_cycles":
+        label = "Navigator: max review cycles reached"
+    elif resolution_pattern == "max_rounds":
+        label = "Navigator: max rounds exhausted"
+    elif resolution_pattern == "user_escalation":
+        label = "Navigator + orchestrator: need your input"
+    else:
+        label = "Navigator review"
+    return f"{header}\n  {label}:\n  {critique}"

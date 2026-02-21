@@ -759,15 +759,17 @@ Produce a JSON object with these fields:
   "patterns_noticed": ["..."],
   "failure_diagnoses": [{{"what_failed": "...", "why": "...", "proposed_fix": "..."}}],
   "tomorrow_priorities": ["..."],
-  "evolution_suggestions": [{{"target_file": "SOUL.md|AGENTS.md|etc", "suggested_change": "...", "reasoning": "..."}}]
+  "evolution_suggestions": [{{"target_file": "SOUL.md|AGENTS.md|navigator.md|etc", "suggested_change": "...", "reasoning": "..."}}],
+  "duo_assessment": {{"navigator_effectiveness": "high|medium|low|n/a", "sycophancy_risk": "description or 'none'", "recommended_navigator_changes": "specific changes to navigator.md or 'none needed'"}}
 }}
 
 Rules:
 - summary: operational, not strategic. What broke, recovered, needs attention.
 - capability_gaps: things you couldn't do or did poorly. Weekly review handles strategy.
 - failure_diagnoses: root cause analysis for anything that failed tonight.
-- evolution_suggestions: specific proposed changes to identity/config files.
-- Empty arrays are fine if nothing applies.
+- evolution_suggestions: specific proposed changes to identity/config files (including navigator.md).
+- duo_assessment: evaluate navigator duo performance if duo stats are present. If approval rate > 90%, propose changes to navigator.md to increase critical rigor. If navigator consistently blocks on the same themes, propose changes to reduce friction on those specific themes.
+- Empty arrays/objects are fine if nothing applies.
 - Output ONLY the JSON object, no markdown fences or preamble."""
 
         try:
@@ -820,6 +822,25 @@ Rules:
                             "content": f"[{sug.get('target_file', '?')}] {sug['suggested_change']}",
                             "priority": "medium",
                             "metadata_json": _json.dumps({"reasoning": sug.get("reasoning", "")}),
+                        })
+
+                # Duo assessment (navigator performance tracking)
+                duo = parsed.get("duo_assessment")
+                if isinstance(duo, dict):
+                    effectiveness = duo.get("navigator_effectiveness", "n/a")
+                    sycophancy = duo.get("sycophancy_risk", "none")
+                    nav_changes = duo.get("recommended_navigator_changes", "none needed")
+                    if effectiveness != "n/a" or sycophancy != "none":
+                        import json as _json
+                        observations.append({
+                            "observation_type": "duo_assessment",
+                            "content": (
+                                f"Navigator effectiveness: {effectiveness}. "
+                                f"Sycophancy risk: {sycophancy}. "
+                                f"Recommended changes: {nav_changes}"
+                            ),
+                            "priority": "high" if sycophancy != "none" else "medium",
+                            "metadata_json": _json.dumps(duo),
                         })
 
                 if observations:
@@ -913,6 +934,82 @@ Rules:
                         ))
             except Exception as e:
                 logger.warning(f"Reflection context query failed: {e}")
+
+        # Task retrospectives (last 24h)
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute(
+                        """SELECT task_id, outcome, approach_summary, duo_metrics_json
+                           FROM task_retrospectives
+                           WHERE created_at >= datetime('now', '-1 day')
+                           ORDER BY created_at DESC LIMIT 10"""
+                    )
+                    retro_rows = await cur.fetchall()
+                    if retro_rows:
+                        retro_lines = []
+                        for r in retro_rows:
+                            line = f"  - Task {r[0]} [{r[1]}]: {(r[2] or '')[:150]}"
+                            if r[3]:
+                                try:
+                                    import json as _json
+                                    dm = _json.loads(r[3])
+                                    line += (
+                                        f" | duo: {dm.get('resolution_pattern', 'n/a')}, "
+                                        f"rounds={dm.get('total_rounds', 0)}, "
+                                        f"themes={dm.get('disagreement_themes', [])}"
+                                    )
+                                except Exception:
+                                    pass
+                            retro_lines.append(line)
+                        sections.append("Task retrospectives (24h):\n" + "\n".join(retro_lines))
+
+                    cur = await db.execute(
+                        """SELECT duo_metrics_json FROM task_retrospectives
+                           WHERE duo_metrics_json IS NOT NULL
+                             AND created_at >= datetime('now', '-7 days')"""
+                    )
+                    duo_rows = await cur.fetchall()
+                    if duo_rows:
+                        import json as _json
+                        total_reviewed = len(duo_rows)
+                        first_try_approvals = 0
+                        total_rounds = 0
+                        all_themes: list[str] = []
+                        pattern_counts: dict[str, int] = {}
+                        for (raw,) in duo_rows:
+                            try:
+                                dm = _json.loads(raw)
+                                if dm.get("plan_approved_first_try"):
+                                    first_try_approvals += 1
+                                total_rounds += dm.get("total_rounds", 0)
+                                all_themes.extend(dm.get("disagreement_themes", []))
+                                pat = dm.get("resolution_pattern", "unknown")
+                                pattern_counts[pat] = pattern_counts.get(pat, 0) + 1
+                            except Exception:
+                                continue
+                        approval_rate = first_try_approvals / total_reviewed if total_reviewed else 0
+                        avg_rounds = total_rounds / total_reviewed if total_reviewed else 0
+                        theme_freq: dict[str, int] = {}
+                        for t in all_themes:
+                            theme_freq[t] = theme_freq.get(t, 0) + 1
+                        top_themes = sorted(theme_freq.items(), key=lambda x: x[1], reverse=True)[:5]
+                        duo_summary = (
+                            f"Navigator duo stats (7d):\n"
+                            f"  Tasks reviewed: {total_reviewed}\n"
+                            f"  Plan approval rate (first try): {approval_rate:.0%}\n"
+                            f"  Avg execution review rounds: {avg_rounds:.1f}\n"
+                            f"  Resolution patterns: {pattern_counts}\n"
+                            f"  Top disagreement themes: {top_themes}"
+                        )
+                        if approval_rate > 0.9 and total_reviewed >= 3:
+                            duo_summary += (
+                                "\n  WARNING: Approval rate > 90% — possible navigator sycophancy. "
+                                "Consider increasing critical rigor in navigator.md."
+                            )
+                        sections.append(duo_summary)
+            except Exception as e:
+                logger.warning(f"Retrospective/duo context query failed: {e}")
 
         return "\n\n".join(sections) if sections else "No activity data available."
 
@@ -1035,6 +1132,8 @@ Rules:
         checklist.append(f"[+] Capability gaps: {'found' if capability_gaps else 'none'}")
         failure_patterns = await self._get_weekly_failure_patterns()
         checklist.append(f"[+] Failure patterns: {'found' if failure_patterns else 'none'}")
+        duo_stats = await self._get_weekly_duo_stats()
+        checklist.append(f"[+] Duo stats: {'found' if duo_stats else 'none'}")
 
         weekly_identity = self._load_identity_doc("weekly.md")
         weekly_identity_prefix = f"{weekly_identity}\n\n---\n\n" if weekly_identity else ""
@@ -1056,6 +1155,9 @@ optimize costs, implement monthly findings, synthesize capability gaps, and prop
 
 ## Task Failures This Week
 {failure_patterns or "No task failures this week."}
+
+## Navigator Duo Performance (7d)
+{duo_stats or "No navigator duo data this week (navigator may be disabled)."}
 
 ## Current Model Pool
 {pool_content}
@@ -1099,12 +1201,18 @@ Review the capability gaps listed above. What's missing? Rank by frequency and u
 ### 7. Failure Pattern Analysis
 Review the task failures above. What keeps failing? Are there systemic fixes?
 
-### 8. Roadmap & Evolution
+### 8. Navigator Duo Review
+- If duo stats are present: Is the navigator adding value or rubber-stamping?
+- Approval rate > 90%? Propose navigator.md changes to increase rigor.
+- Consistent blocking on same themes? Propose changes to reduce false friction.
+- Is the navigator model appropriate? Should it be upgraded or downgraded?
+
+### 9. Roadmap & Evolution
 - What should be built next? Rank by user impact.
 - Should SOUL.md, AGENTS.md, USER.md, or POLICY.md be updated? Propose changes.
 - Is the system getting better or worse at serving the user? Evidence?
 
-### 9. Strategic Direction
+### 10. Strategic Direction
 - What should nanobot focus on this week? Any priorities that need shifting?
 - Set direction for the coming week's dream cycles.
 
@@ -1254,6 +1362,59 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                     diag = r[1][:200] if r[1] else "no diagnosis"
                     gaps = r[2] or ""
                     lines.append(f"- Task {r[0]}: {diag}" + (f" [gaps: {gaps}]" if gaps else ""))
+                return "\n".join(lines)
+        except Exception:
+            return ""
+
+    async def _get_weekly_duo_stats(self) -> str:
+        """Aggregate navigator duo performance metrics for the past 7 days."""
+        if not self._db_path:
+            return ""
+        try:
+            import json as _json
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """SELECT duo_metrics_json FROM task_retrospectives
+                       WHERE duo_metrics_json IS NOT NULL
+                         AND created_at >= datetime('now', '-7 days')"""
+                )
+                rows = await cur.fetchall()
+                if not rows:
+                    return ""
+                total = len(rows)
+                first_try = 0
+                total_rounds = 0
+                all_themes: list[str] = []
+                patterns: dict[str, int] = {}
+                for (raw,) in rows:
+                    try:
+                        dm = _json.loads(raw)
+                        if dm.get("plan_approved_first_try"):
+                            first_try += 1
+                        total_rounds += dm.get("total_rounds", 0)
+                        all_themes.extend(dm.get("disagreement_themes", []))
+                        pat = dm.get("resolution_pattern", "unknown")
+                        patterns[pat] = patterns.get(pat, 0) + 1
+                    except Exception:
+                        continue
+                approval_rate = first_try / total if total else 0
+                avg_rounds = total_rounds / total if total else 0
+                theme_freq: dict[str, int] = {}
+                for t in all_themes:
+                    theme_freq[t] = theme_freq.get(t, 0) + 1
+                top = sorted(theme_freq.items(), key=lambda x: x[1], reverse=True)[:5]
+                lines = [
+                    f"Tasks with navigator review: {total}",
+                    f"Plan approval rate (first try): {approval_rate:.0%}",
+                    f"Avg execution review rounds: {avg_rounds:.1f}",
+                    f"Resolution patterns: {patterns}",
+                    f"Top disagreement themes: {top}",
+                ]
+                if approval_rate > 0.9 and total >= 3:
+                    lines.append(
+                        "WARNING: Approval rate > 90% — possible sycophancy. "
+                        "Review navigator.md rigor."
+                    )
                 return "\n".join(lines)
         except Exception:
             return ""

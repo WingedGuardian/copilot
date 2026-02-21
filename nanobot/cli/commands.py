@@ -531,6 +531,7 @@ def gateway(
             migrate_alert_resolution,
             migrate_alerts,
             migrate_heartbeat_events,
+            migrate_navigator,
             migrate_routing_preferences,
             migrate_sentience,
         )
@@ -543,6 +544,7 @@ def gateway(
         _aio.run(migrate_heartbeat_events(db_path))
         _aio.run(migrate_alert_resolution(db_path))
         _aio.run(migrate_sentience(db_path))
+        _aio.run(migrate_navigator(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
         # Normalize monitor_chat_id for WhatsApp (must be JID format)
@@ -932,13 +934,15 @@ def gateway(
             _monitor_cid = config.copilot.monitor_chat_id
 
             async def _decompose_task(description: str, past_wisdom: str | None = None) -> str:
+                import uuid as _uuid
                 pool_path = Path(config.copilot.copilot_docs_dir) / "models.md"
                 model_pool = pool_path.read_text() if pool_path.exists() else None
                 prompt = build_decomposition_prompt(
                     description, model_pool=model_pool, past_wisdom=past_wisdom,
                 )
+                session_key = f"task:decompose:{_uuid.uuid4().hex[:8]}"
                 return await agent.process_direct(
-                    prompt, session_key="task:decompose", model=_decomp_model,
+                    prompt, session_key=session_key, model=_decomp_model,
                 )
 
             async def _notify_task_progress(message: str) -> None:
@@ -956,10 +960,31 @@ def gateway(
 
             _dream_model = config.copilot.resolved_dream_model or None
             async def _run_retrospective(prompt: str) -> str:
+                import uuid as _uuid
+                session_key = f"task:retro:{_uuid.uuid4().hex[:8]}"
                 return await agent.process_direct(
-                    prompt, session_key="task:retrospective", model=_dream_model,
+                    prompt, session_key=session_key, model=_dream_model,
                     skip_enrichment=True,
                 )
+
+            # Navigator duo (opt-in)
+            _navigator_fn = None
+            _navigator_identity = ""
+            if config.copilot.navigator_enabled:
+                _nav_model = config.copilot.resolved_navigator_model
+                _nav_identity_path = Path(config.copilot.copilot_docs_dir) / "navigator.md"
+                _navigator_identity = _nav_identity_path.read_text() if _nav_identity_path.exists() else ""
+
+                async def _navigator_call(messages: list[dict]) -> str:
+                    """Direct provider.chat() for navigator reviews. No tools."""
+                    response = await provider.chat(
+                        messages=messages, model=_nav_model,
+                        tools=None, max_tokens=2048, temperature=0.3,
+                    )
+                    return response.content or ""
+
+                _navigator_fn = _navigator_call
+                console.print(f"[green]v[/green] Navigator duo enabled (model: {_nav_model})")
 
             task_worker = TaskWorker(
                 task_manager=task_manager,
@@ -970,6 +995,10 @@ def gateway(
                 db_path=str(db_path),
                 memory_manager=memory_manager,
                 retrospective_fn=_run_retrospective,
+                navigator_fn=_navigator_fn,
+                navigator_identity=_navigator_identity,
+                max_duo_rounds=config.copilot.max_duo_rounds,
+                max_review_cycles=config.copilot.max_review_cycles,
             )
 
             # Increase subagent iteration limit for task execution
@@ -1010,9 +1039,15 @@ def gateway(
     _hb_model = config.copilot.resolved_heartbeat_model if config.copilot.enabled else None
 
     async def on_heartbeat(prompt: str) -> str:
-        """Execute heartbeat through the agent with explicit model."""
+        """Execute heartbeat through the agent with explicit model.
+
+        Uses daily session key for within-day continuity (stream of consciousness).
+        New day = new session (natural reset, dream cycle seeds first tick).
+        """
+        from datetime import date
+        daily_key = f"heartbeat:{date.today().isoformat()}"
         return await agent.process_direct(
-            prompt, session_key="heartbeat", model=_hb_model or None,
+            prompt, session_key=daily_key, model=_hb_model or None,
             skip_enrichment=True,
         )
 

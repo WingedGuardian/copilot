@@ -165,6 +165,14 @@ class CopilotConfig(BaseModel):
     task_model: str = ""               # empty = use router (local → fast → big)
     decomposition_model: str = ""      # empty = use big_model (frontier for decomposition)
 
+    # ── Navigator Duo ──────────────────────────────────────────────────
+    # Thinking-model peer that reviews orchestrator work during task execution.
+    # Opt-in: no navigator unless explicitly enabled.
+    navigator_model: str = ""          # empty = use big_model (thinking model preferred)
+    navigator_enabled: bool = False    # opt-in; no navigator unless explicitly enabled
+    max_duo_rounds: int = 3            # max rounds per review cycle
+    max_review_cycles: int = 3         # max review cycles per task (meta-loop protection)
+
     # ── Emergency Fallbacks ──────────────────────────────────────────────
     # Last-resort models appended to EVERY failover chain.  Used when all
     # configured models fail (e.g. stale model IDs, provider outage).
@@ -292,3 +300,7 @@ class CopilotConfig(BaseModel):
     @property
     def resolved_decomposition_model(self) -> str:
         return self.decomposition_model or self.big_model
+
+    @property
+    def resolved_navigator_model(self) -> str:
+        return self.navigator_model or self.big_model

@@ -518,6 +518,23 @@ async def migrate_sentience(db_path: str | Path) -> None:
     logger.info(f"Sentience migration complete in {db_path}")
 
 
+async def migrate_navigator(db_path: str | Path) -> None:
+    """Add duo_metrics_json column to task_retrospectives for navigator duo tracking.
+
+    Safe to call repeatedly.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        cur = await db.execute("PRAGMA table_info(task_retrospectives)")
+        cols = {r[1] for r in await cur.fetchall()}
+        if "duo_metrics_json" not in cols:
+            await db.execute(
+                "ALTER TABLE task_retrospectives ADD COLUMN duo_metrics_json TEXT"
+            )
+            await db.commit()
+    logger.info(f"Navigator migration complete in {db_path}")
+
+
 async def migrate_alert_resolution(db_path: str | Path) -> None:
     """Add resolved_at column to alerts for active/resolved tracking.
 

@@ -64,8 +64,8 @@ class CopilotHeartbeatService(HeartbeatService):
         has_cognitive_context = bool(observations or pending_tasks or morning_brief)
 
         if not has_heartbeat_tasks and not has_cognitive_context:
-            logger.debug("Heartbeat: nothing to process (no tasks, no observations)")
-            return
+            logger.info("Heartbeat: no explicit tasks or observations — running ambient tick")
+            # Still proceed to LLM call — the model decides what to attend to
 
         # Build cognitive prompt
         prompt = self._build_cognitive_prompt(

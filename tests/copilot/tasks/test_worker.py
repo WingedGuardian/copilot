@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import aiosqlite
 import pytest
 
 from nanobot.copilot.tasks.manager import TaskManager
@@ -254,4 +255,134 @@ def test_notify_fn_failure_does_not_crash_worker(manager):
         await worker._tick()
         updated = await manager.get_task(task.id)
         assert updated.status == "completed"
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ------------------------------------------------------------------
+# Navigator duo integration tests
+# ------------------------------------------------------------------
+
+
+def _make_navigator_fn(responses):
+    calls = []
+    idx = 0
+    async def nav_fn(messages):
+        nonlocal idx
+        calls.append(messages)
+        resp = responses[min(idx, len(responses) - 1)]
+        idx += 1
+        return json.dumps(resp)
+    return nav_fn, calls
+
+
+def test_tick_with_navigator_plan_review(manager):
+    async def _run():
+        decompose, _ = _make_decompose_fn({
+            "steps": [{"description": "Research", "tool_type": "research"}, {"description": "Write", "tool_type": "write"}],
+            "clarifying_questions": [],
+        })
+        execute, e_calls = _make_execute_fn()
+        nav_fn, nav_calls = _make_navigator_fn([
+            {"approved": True, "needs_user": False, "critique": "Good plan.", "themes": []},
+        ])
+        worker = TaskWorker(manager, execute, decompose_fn=decompose, navigator_fn=nav_fn, navigator_identity="test navigator")
+        await manager.create_task("Nav plan test")
+        await worker._tick()
+        assert len(nav_calls) == 1
+        assert len(e_calls) == 1
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+def test_tick_with_navigator_plan_escalation(manager):
+    async def _run():
+        decompose, _ = _make_decompose_fn({
+            "steps": [{"description": "Vague step", "tool_type": "general"}],
+            "clarifying_questions": [],
+        })
+        execute, e_calls = _make_execute_fn()
+        notify, messages = _make_notify_fn()
+        nav_fn, _ = _make_navigator_fn([
+            {"approved": False, "needs_user": True, "critique": "Steps are too vague.", "themes": ["clarity"]},
+        ])
+        worker = TaskWorker(manager, execute, decompose_fn=decompose, notify_fn=notify, navigator_fn=nav_fn)
+        task = await manager.create_task("Nav escalation test")
+        await worker._tick()
+        assert len(e_calls) == 0
+        updated = await manager.get_task(task.id)
+        assert updated.status == "awaiting"
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+def test_tick_with_navigator_execution_review(manager):
+    async def _run():
+        execute, _ = _make_execute_fn()
+        notify, messages = _make_notify_fn()
+        nav_fn, nav_calls = _make_navigator_fn([
+            {"approved": True, "needs_user": False, "critique": "Work is complete.", "themes": []},
+        ])
+        worker = TaskWorker(manager, execute, notify_fn=notify, navigator_fn=nav_fn)
+        task = await manager.create_task("Nav exec test")
+        await manager.add_steps_v2(task.id, [{"description": "Only step", "tool_type": "general"}])
+        await worker._tick()
+        assert len(nav_calls) == 1
+        updated = await manager.get_task(task.id)
+        assert updated.status == "completed"
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+def test_meta_loop_protection(manager):
+    async def _run():
+        execute, _ = _make_execute_fn()
+        notify, messages = _make_notify_fn()
+        async def cycling_nav(messages):
+            return json.dumps({"approved": False, "needs_user": False, "critique": "Not good enough.", "themes": ["quality"]})
+        worker = TaskWorker(manager, execute, notify_fn=notify, navigator_fn=cycling_nav, max_duo_rounds=1, max_review_cycles=2)
+        task = await manager.create_task("Meta loop test")
+        await manager.add_steps_v2(task.id, [{"description": "Do work", "tool_type": "general"}])
+        await worker._tick()
+        updated = await manager.get_task(task.id)
+        assert updated.status == "completed"
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+@pytest.fixture
+def retro_db_path(tmp_path):
+    db = str(tmp_path / "retro.db")
+    async def _setup():
+        from nanobot.copilot.cost.db import (
+            ensure_tables,
+            migrate_navigator,
+            migrate_phase7,
+            migrate_sentience,
+        )
+        await ensure_tables(db)
+        await migrate_phase7(db)
+        await migrate_sentience(db)
+        await migrate_navigator(db)
+        return db
+    return asyncio.get_event_loop().run_until_complete(_setup())
+
+
+def test_retrospective_stores_duo_metrics(retro_db_path):
+    async def _run():
+        mgr = TaskManager(retro_db_path)
+        execute, _ = _make_execute_fn()
+        notify, _ = _make_notify_fn()
+        async def retro_fn(prompt):
+            return json.dumps({"approach_summary": "Did the work", "learnings": "Navigator caught edge case", "capability_gaps": []})
+        nav_fn, _ = _make_navigator_fn([
+            {"approved": True, "needs_user": False, "critique": "Good.", "themes": []},
+        ])
+        worker = TaskWorker(mgr, execute, notify_fn=notify, retrospective_fn=retro_fn, db_path=retro_db_path, navigator_fn=nav_fn)
+        task = await mgr.create_task("Retro test")
+        await mgr.add_steps_v2(task.id, [{"description": "Step 1", "tool_type": "general"}, {"description": "Step 2", "tool_type": "general"}])
+        await worker._tick()
+        await worker._tick()
+        async with aiosqlite.connect(retro_db_path) as db:
+            cur = await db.execute("SELECT duo_metrics_json FROM task_retrospectives WHERE task_id = ?", (task.id,))
+            row = await cur.fetchone()
+            assert row is not None
+            assert row[0] is not None
+            metrics = json.loads(row[0])
+            assert "total_rounds" in metrics
     asyncio.get_event_loop().run_until_complete(_run())
