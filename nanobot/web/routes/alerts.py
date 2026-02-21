@@ -41,5 +41,21 @@ async def index(request: web.Request) -> dict:
     }
 
 
+async def resolve_alert(request: web.Request) -> web.Response:
+    """Manually resolve an active alert."""
+    alert_id = int(request.match_info["id"])
+    ctx = request.app.get("ctx", {})
+    db_path = ctx.get("db_path", "")
+    if db_path:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "UPDATE alerts SET resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND resolved_at IS NULL",
+                (alert_id,),
+            )
+            await db.commit()
+    raise web.HTTPSeeOther("/alerts")
+
+
 def setup(app: web.Application) -> None:
     app.router.add_get("/alerts", index)
+    app.router.add_post("/alerts/{id}/resolve", resolve_alert)

@@ -33,6 +33,7 @@
           <th class="text-left pb-2 font-normal">Steps</th>
           <th class="text-left pb-2 font-normal">Assignee</th>
           <th class="text-left pb-2 font-normal">Created</th>
+          <th class="pb-2 font-normal"></th>
         </tr>
       </thead>
       <tbody class="divide-y divide-nb-border">
@@ -71,6 +72,15 @@
           </td>
           <td class="py-2 text-nb-muted text-xs truncate max-w-[80px]">{{ t.current_assignee or "—" }}</td>
           <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ t.created_at[:16] if t.created_at else "—" }}</td>
+          <td class="py-2 text-right">
+            {% if t.status not in ('completed', 'failed') %}
+            <form method="POST" action="/tasks/{{ t.id }}/cancel"
+              onclick="event.stopPropagation()"
+              onsubmit="return confirm('Cancel this task?')">
+              <button class="text-[10px] text-nb-muted hover:text-nb-red hover:underline">Cancel</button>
+            </form>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>

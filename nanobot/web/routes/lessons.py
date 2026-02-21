@@ -1,9 +1,13 @@
 """Lessons page — metacognitive lessons viewer."""
 from __future__ import annotations
 
+import logging
+
 import aiohttp_jinja2
 import aiosqlite
 from aiohttp import web
+
+logger = logging.getLogger(__name__)
 
 
 @aiohttp_jinja2.template("pages/lessons.html")
@@ -64,5 +68,34 @@ async def index(request: web.Request) -> dict:
     }
 
 
+async def toggle_active(request: web.Request) -> web.Response:
+    """Toggle lesson active/inactive."""
+    lesson_id = int(request.match_info["id"])
+    ctx = request.app.get("ctx", {})
+    db_path = ctx.get("db_path", "")
+    if db_path:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "UPDATE lessons SET active = NOT active WHERE id = ?", (lesson_id,)
+            )
+            await db.commit()
+    raise web.HTTPSeeOther("/lessons")
+
+
+async def delete_lesson(request: web.Request) -> web.Response:
+    """Delete a lesson permanently."""
+    lesson_id = int(request.match_info["id"])
+    ctx = request.app.get("ctx", {})
+    db_path = ctx.get("db_path", "")
+    if db_path:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("DELETE FROM lessons WHERE id = ?", (lesson_id,))
+            await db.commit()
+        logger.info(f"Lesson {lesson_id} deleted via web UI")
+    raise web.HTTPSeeOther("/lessons")
+
+
 def setup(app: web.Application) -> None:
     app.router.add_get("/lessons", index)
+    app.router.add_post("/lessons/{id}/toggle-active", toggle_active)
+    app.router.add_post("/lessons/{id}/delete", delete_lesson)

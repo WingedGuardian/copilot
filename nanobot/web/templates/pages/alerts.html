@@ -34,7 +34,12 @@
           </div>
           <p class="text-nb-text text-xs mt-0.5">{{ alert.message }}</p>
         </div>
-        <span class="text-nb-muted text-xs shrink-0 whitespace-nowrap">{{ alert.timestamp }}</span>
+        <div class="shrink-0 flex flex-col items-end gap-1">
+          <span class="text-nb-muted text-xs whitespace-nowrap">{{ alert.timestamp }}</span>
+          <form method="POST" action="/alerts/{{ alert.id }}/resolve">
+            <button class="text-[10px] text-nb-muted hover:text-nb-green hover:underline">Resolve</button>
+          </form>
+        </div>
       </div>
       {% endfor %}
     </div>
