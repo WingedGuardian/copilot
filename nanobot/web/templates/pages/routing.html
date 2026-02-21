@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% set active = "routing" %}
+
+{% block title %}Routing — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Routing</h1>
+
+  <!-- Routing Log -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Routing Log (last 50)</h2>
+    {% if not routing_log %}
+    <p class="text-nb-muted text-sm">No routing log entries.</p>
+    {% else %}
+    <div class="overflow-x-auto">
+    <table class="w-full text-xs">
+      <thead>
+        <tr class="text-nb-muted border-b border-nb-border">
+          <th class="text-left pb-2 font-normal pr-3">Time</th>
+          <th class="text-left pb-2 font-normal pr-3">Provider</th>
+          <th class="text-left pb-2 font-normal pr-3">Model</th>
+          <th class="text-left pb-2 font-normal pr-3">Routed To</th>
+          <th class="text-right pb-2 font-normal pr-3">Input</th>
+          <th class="text-right pb-2 font-normal pr-3">Latency</th>
+          <th class="text-right pb-2 font-normal pr-3">Cost</th>
+          <th class="text-left pb-2 font-normal pr-3">Status</th>
+          <th class="text-left pb-2 font-normal">Reason</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for row in routing_log %}
+        <tr>
+          <td class="py-2 text-nb-muted pr-3 whitespace-nowrap font-mono">{{ (row.timestamp or "")[:19] }}</td>
+          <td class="py-2 text-nb-text pr-3">{{ row.provider or "—" }}</td>
+          <td class="py-2 text-nb-muted pr-3 font-mono truncate max-w-[10rem]">{{ row.model_used or "—" }}</td>
+          <td class="py-2 text-nb-text pr-3">{{ row.routed_to or "—" }}</td>
+          <td class="py-2 text-nb-muted pr-3 text-right">{{ row.input_length or 0 }}</td>
+          <td class="py-2 text-nb-muted pr-3 text-right">{% if row.latency_ms is not none %}{{ row.latency_ms }}ms{% else %}—{% endif %}</td>
+          <td class="py-2 text-nb-muted pr-3 text-right">{% if row.cost_usd %}${{ "%.5f"|format(row.cost_usd) }}{% else %}—{% endif %}</td>
+          <td class="py-2 pr-3">
+            {% if row.success %}
+            <span class="text-nb-green">OK</span>
+            {% else %}
+            <span class="text-nb-red" title="{{ row.failure_reason or '' }}">FAIL</span>
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-muted truncate max-w-[14rem]">{{ row.route_reason or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Routing Preferences -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Routing Preferences</h2>
+    {% if not routing_preferences %}
+    <p class="text-nb-muted text-sm">No routing preferences configured.</p>
+    {% else %}
+    <div class="overflow-x-auto">
+    <table class="w-full text-xs">
+      <thead>
+        <tr class="text-nb-muted border-b border-nb-border">
+          {% for col in pref_columns %}
+          <th class="text-left pb-2 font-normal pr-3">{{ col }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for row in routing_preferences %}
+        <tr>
+          {% for col in pref_columns %}
+          <td class="py-2 text-nb-text pr-3 font-mono">{{ row[col] if row[col] is not none else "—" }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
