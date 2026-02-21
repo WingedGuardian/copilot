@@ -46,6 +46,7 @@ def create_web_app(**ctx) -> web.Application:
         memory,
         models,
         routing,
+        secrets,
         services,
         sessions,
         tasks,
@@ -64,5 +65,6 @@ def create_web_app(**ctx) -> web.Application:
     logs.setup(app)
     sessions.setup(app)
     routing.setup(app)
+    secrets.setup(app)
 
     return app
