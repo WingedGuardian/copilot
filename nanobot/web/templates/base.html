@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Nanobot{% endblock %}</title>
+
+  <!-- JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'nb-bg':      '#0a0a0f',
+            'nb-surface': '#12121a',
+            'nb-border':  '#1e1e2e',
+            'nb-text':    '#c9d1d9',
+            'nb-muted':   '#6b7280',
+            'nb-accent':  '#58a6ff',
+            'nb-green':   '#3fb950',
+            'nb-yellow':  '#d29922',
+            'nb-red':     '#f85149',
+          },
+          fontFamily: {
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- HTMX -->
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+
+  <!-- Custom styles -->
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="bg-nb-bg text-nb-text font-mono min-h-screen flex">
+
+  <!-- Sidebar -->
+  {% include "components/sidebar.html" %}
+
+  <!-- Main content -->
+  <main class="flex-1 overflow-y-auto p-6">
+    {% block content %}{% endblock %}
+  </main>
+
+</body>
+</html>

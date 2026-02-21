@@ -1,0 +1,68 @@
+<aside class="w-56 bg-nb-surface border-r border-nb-border flex flex-col shrink-0 overflow-y-auto">
+
+  <!-- Header -->
+  <div class="px-4 py-4 border-b border-nb-border">
+    <span class="text-nb-accent font-semibold text-sm tracking-wide">&#x25cf; nanobot</span>
+  </div>
+
+  <nav class="flex-1 px-2 py-3 space-y-4 text-xs">
+
+    <!-- System -->
+    <div>
+      <p class="px-2 mb-1 text-nb-muted uppercase tracking-widest text-[10px]">System</p>
+      <a href="/"          class="nav-link {% if active == 'dashboard'  %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Dashboard</a>
+      <a href="/services"  class="nav-link {% if active == 'services'   %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Services</a>
+      <a href="/costs"     class="nav-link {% if active == 'costs'      %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Costs</a>
+      <a href="/alerts"    class="nav-link {% if active == 'alerts'     %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Alerts</a>
+    </div>
+
+    <!-- Config -->
+    <div>
+      <p class="px-2 mb-1 text-nb-muted uppercase tracking-widest text-[10px]">Config</p>
+      <a href="/config"    class="nav-link {% if active == 'config'     %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Settings</a>
+      <a href="/secrets"   class="nav-link {% if active == 'secrets'    %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Secrets</a>
+      <a href="/models"    class="nav-link {% if active == 'models'     %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Models</a>
+      <a href="/autonomy"  class="nav-link {% if active == 'autonomy'   %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Autonomy</a>
+    </div>
+
+    <!-- Files -->
+    <div>
+      <p class="px-2 mb-1 text-nb-muted uppercase tracking-widest text-[10px]">Files</p>
+      <a href="/files"     class="nav-link {% if active == 'files'      %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">MD Files</a>
+    </div>
+
+    <!-- Data -->
+    <div>
+      <p class="px-2 mb-1 text-nb-muted uppercase tracking-widest text-[10px]">Data</p>
+      <a href="/tasks"     class="nav-link {% if active == 'tasks'      %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Tasks</a>
+      <a href="/memory"    class="nav-link {% if active == 'memory'     %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Memory</a>
+      <a href="/lessons"   class="nav-link {% if active == 'lessons'    %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Lessons</a>
+      <a href="/heartbeat" class="nav-link {% if active == 'heartbeat'  %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Heartbeat</a>
+      <a href="/dream"     class="nav-link {% if active == 'dream'      %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Dream</a>
+    </div>
+
+    <!-- Ops -->
+    <div>
+      <p class="px-2 mb-1 text-nb-muted uppercase tracking-widest text-[10px]">Ops</p>
+      <a href="/logs"      class="nav-link {% if active == 'logs'       %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Logs</a>
+      <a href="/sessions"  class="nav-link {% if active == 'sessions'   %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Sessions</a>
+      <a href="/routing"   class="nav-link {% if active == 'routing'    %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Routing</a>
+    </div>
+
+    <!-- Chat -->
+    <div>
+      <p class="px-2 mb-1 text-nb-muted uppercase tracking-widest text-[10px]">Chat</p>
+      <a href="/chat"      class="nav-link {% if active == 'chat'       %}bg-nb-border text-nb-accent{% else %}text-nb-text hover:bg-nb-border hover:text-nb-accent{% endif %}">Web Chat</a>
+    </div>
+
+  </nav>
+</aside>
+
+<style>
+.nav-link {
+  display: block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  transition: background-color 0.1s, color 0.1s;
+}
+</style>

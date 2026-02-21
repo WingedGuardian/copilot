@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+
+{% block title %}Dashboard — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <h1 class="text-nb-accent text-lg font-semibold tracking-wide">System Dashboard</h1>
+
+  {% if not report %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4 text-nb-muted text-sm">
+    Status aggregator unavailable — no context injected.
+  </div>
+  {% else %}
+
+  <!-- Summary Cards -->
+  <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+
+    <div class="bg-nb-surface border border-nb-border rounded p-4">
+      <p class="text-nb-muted text-xs uppercase tracking-widest mb-1">Daily Cost</p>
+      <p class="text-nb-text text-xl font-semibold">${{ "%.2f"|format(report.cost_today) }}</p>
+    </div>
+
+    <div class="bg-nb-surface border border-nb-border rounded p-4">
+      <p class="text-nb-muted text-xs uppercase tracking-widest mb-1">Weekly Cost</p>
+      <p class="text-nb-text text-xl font-semibold">${{ "%.2f"|format(report.cost_week) }}</p>
+    </div>
+
+    <div class="bg-nb-surface border border-nb-border rounded p-4">
+      <p class="text-nb-muted text-xs uppercase tracking-widest mb-1">API Calls Today</p>
+      <p class="text-nb-text text-xl font-semibold">{{ report.call_count_today }}</p>
+    </div>
+
+    <div class="bg-nb-surface border border-nb-border rounded p-4">
+      <p class="text-nb-muted text-xs uppercase tracking-widest mb-1">Active Alerts</p>
+      <p class="text-{% if report.recent_alerts %}nb-red{% else %}nb-green{% endif %} text-xl font-semibold">
+        {{ report.recent_alerts | length }}
+      </p>
+    </div>
+
+  </div>
+
+  <!-- Subsystem Health -->
+  {% if report.subsystems %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Subsystem Health</h2>
+    <div class="space-y-2">
+      {% for s in report.subsystems %}
+      <div class="flex items-center gap-3 text-sm">
+        <span class="w-2 h-2 rounded-full {% if s.healthy %}bg-nb-green{% else %}bg-nb-red{% endif %} shrink-0"></span>
+        <span class="text-nb-text w-32 shrink-0">{{ s.name }}</span>
+        {% if s.latency_ms %}
+        <span class="text-nb-muted text-xs">{{ s.latency_ms }}ms</span>
+        {% endif %}
+        {% if s.details %}
+        <span class="text-nb-muted text-xs truncate">{{ s.details }}</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Services -->
+  {% if report.services %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Services</h2>
+    <div class="space-y-2">
+      {% for svc_name, svc_info in report.services.items() %}
+      {% set alive = svc_info.get('alive', False) %}
+      {% set restarts = svc_info.get('restarts', 0) %}
+      <div class="flex items-center gap-3 text-sm">
+        <span class="w-2 h-2 rounded-full {% if alive %}bg-nb-green{% else %}bg-nb-red{% endif %} shrink-0"></span>
+        <span class="text-nb-text w-40 shrink-0">{{ svc_name }}</span>
+        <span class="text-nb-muted text-xs">{% if alive %}running{% else %}dead{% endif %}{% if restarts %} &middot; {{ restarts }} restart{{ 's' if restarts != 1 else '' }}{% endif %}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Recent Alerts -->
+  {% if report.recent_alerts %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Active Alerts</h2>
+    <div class="space-y-2">
+      {% for alert in report.recent_alerts %}
+      <div class="flex items-start gap-3 text-sm">
+        <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase
+          {% if alert.severity == 'high' %}bg-nb-red text-white
+          {% elif alert.severity == 'medium' %}bg-nb-yellow text-nb-bg
+          {% else %}bg-nb-muted text-white{% endif %}">
+          {{ alert.severity }}
+        </span>
+        <div class="min-w-0">
+          <span class="text-nb-muted mr-2">{{ alert.subsystem }}</span>
+          <span class="text-nb-text">{{ alert.message }}</span>
+          {% if alert.occurrences and alert.occurrences > 1 %}
+          <span class="text-nb-muted text-xs ml-1">&times;{{ alert.occurrences }}</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="bg-nb-surface border border-nb-border rounded p-3 text-nb-green text-sm">
+    &#x25cf; All clear — no active alerts
+  </div>
+  {% endif %}
+
+  <!-- Ops Summary -->
+  {% if report.ops_summary %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Last Operations</h2>
+    <div class="grid grid-cols-2 gap-x-8 gap-y-1 text-xs">
+      {% set ops = report.ops_summary %}
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Dream cycle</span>
+        <span class="text-nb-text">{{ ops.dream_ago if ops.dream_ago is defined and ops.dream_ago else 'never' }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Health check</span>
+        <span class="text-nb-text">{{ ops.health_check_ago if ops.health_check_ago is defined and ops.health_check_ago else 'not yet' }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Heartbeat</span>
+        <span class="text-nb-text">{{ ops.heartbeat_ago if ops.heartbeat_ago is defined and ops.heartbeat_ago else 'not yet' }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Weekly review</span>
+        <span class="text-nb-text">{{ ops.weekly_ago if ops.weekly_ago is defined and ops.weekly_ago else 'never' }}</span>
+      </div>
+      {% if ops.alerts_high_24h or ops.alerts_med_24h %}
+      <div class="flex justify-between col-span-2">
+        <span class="text-nb-muted">Alerts (24h)</span>
+        <span class="text-nb-text">{{ ops.get('alerts_high_24h', 0) }} high &middot; {{ ops.get('alerts_med_24h', 0) }} medium</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% endif %}{# end if report #}
+
+</div>
+{% endblock %}

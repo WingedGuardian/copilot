@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* Dark scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0a0f;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e1e2e;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1e1e2e #0a0a0f;
+}
+
+/* Monospace editor textarea */
+textarea.editor {
+  background-color: #12121a;
+  color: #c9d1d9;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.8125rem;
+  border: 1px solid #1e1e2e;
+  border-radius: 0.25rem;
+  padding: 0.75rem;
+  resize: vertical;
+  width: 100%;
+  outline: none;
+}
+textarea.editor:focus {
+  border-color: #58a6ff;
+}
