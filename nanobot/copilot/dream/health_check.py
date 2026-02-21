@@ -36,6 +36,12 @@ class HealthCheckService:
         subagent_manager: Any = None,
         task_manager: Any = None,
         qdrant_url: str = "http://localhost:6333",
+        cron_service: Any = None,
+        session_manager: Any = None,
+        reset_session_fn: Callable | None = None,
+        daily_reset_enabled: bool = False,
+        daily_reset_hour: int = 6,
+        daily_reset_quiet_minutes: int = 60,
         **kwargs,  # Accept and ignore legacy kwargs
     ):
         self._docs_dir = Path(copilot_docs_dir)
@@ -48,11 +54,18 @@ class HealthCheckService:
         self._subagent_manager = subagent_manager
         self._task_manager = task_manager
         self._qdrant_url = qdrant_url.rstrip("/")
+        self._cron_service = cron_service
+        self._session_manager = session_manager
+        self._reset_session_fn = reset_session_fn
+        self._daily_reset_enabled = daily_reset_enabled
+        self._daily_reset_hour = daily_reset_hour
+        self._daily_reset_quiet_minutes = daily_reset_quiet_minutes
 
         self._running = False
         self._task: asyncio.Task | None = None
         self._changelog_path = Path.home() / ".nanobot" / "CHANGELOG.local"
         self._last_changelog_size: int = 0  # Track file size to detect new entries
+        self._last_reset_date: str | None = None  # Track daily reset
         self.last_tick_at: datetime.datetime | None = None  # Surfaced in /status
 
     async def start(self) -> None:
@@ -106,7 +119,11 @@ class HealthCheckService:
         # 3. Check for unresolved alerts
         events += await self._check_unresolved_alerts()
 
-        # 4. Check stuck subagents/tasks (no LLM)
+        # 4. Check cron timer health
+        cron_events = await self._check_cron()
+        events += cron_events
+
+        # 5. Check stuck subagents/tasks (no LLM)
         stuck = await self._check_stuck_jobs()
         if stuck:
             events.append({
@@ -115,7 +132,11 @@ class HealthCheckService:
                 "message": stuck,
             })
 
-        # 5. Write noteworthy events to DB
+        # 6. Daily session reset (consolidate + clear user session)
+        reset_events = await self._check_daily_reset()
+        events += reset_events
+
+        # 7. Write noteworthy events to DB
         noteworthy = [e for e in events if e]
         if noteworthy:
             await self._write_events(noteworthy)
@@ -123,7 +144,7 @@ class HealthCheckService:
         duration_ms = int((time.time() - start) * 1000)
         await self._log(len(noteworthy), duration_ms)
 
-        # 6. Deliver to user ONLY if high-severity events exist
+        # 8. Deliver to user ONLY if high-severity events exist
         high = [e for e in noteworthy if e.get("severity") == "high"]
         if high and self._deliver and self._chat_id:
             summary = "\n".join(f"- {e['message'][:200]}" for e in high)
@@ -133,6 +154,89 @@ class HealthCheckService:
                 logger.warning(f"Health check delivery failed: {e}")
 
         self.last_tick_at = now
+
+    # --- Cron timer health ---
+
+    async def _check_cron(self) -> list[dict]:
+        """Check cron timer task is alive when there are active jobs."""
+        if not self._cron_service:
+            return []
+        try:
+            status = self._cron_service.status()
+            if not status.get("enabled") or status.get("jobs", 0) == 0:
+                return []
+            timer_task = self._cron_service._timer_task
+            has_next_wake = status.get("next_wake_at_ms") is not None
+            if has_next_wake and (timer_task is None or timer_task.done()):
+                logger.warning("Cron timer task dead with active jobs — re-arming")
+                self._cron_service._arm_timer()
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert(
+                    "cron", "high",
+                    "Cron timer task found dead with active jobs — re-armed automatically",
+                    "timer_dead_rearmed",
+                )
+                return [{
+                    "type": "health_error",
+                    "severity": "high",
+                    "message": "Cron timer was dead with active jobs — re-armed automatically",
+                }]
+        except Exception as e:
+            logger.warning(f"Cron health check failed: {e}")
+        return []
+
+    # --- Daily session reset ---
+
+    async def _check_daily_reset(self) -> list[dict]:
+        """Trigger session reset once daily when user is idle."""
+        if not self._daily_reset_enabled or not self._reset_session_fn:
+            return []
+        now = datetime.datetime.now()
+        if now.hour < self._daily_reset_hour:
+            return []  # Too early
+        today = now.strftime("%Y-%m-%d")
+        if self._last_reset_date == today:
+            return []  # Already reset today
+
+        # Check idle time via session updated_at
+        if self._session_manager and self._chat_id:
+            user_key = f"{self._channel}:{self._chat_id}"
+            user_session = self._session_manager.get_or_create(user_key)
+            if not user_session.messages:
+                self._last_reset_date = today
+                return []  # Nothing to clear
+            if user_session.updated_at:
+                idle_minutes = (now - user_session.updated_at).total_seconds() / 60
+                if idle_minutes < self._daily_reset_quiet_minutes:
+                    return []  # User active, retry next tick
+
+        # Fire the reset (uses same code path as /new)
+        user_key = f"{self._channel}:{self._chat_id}"
+        try:
+            await self._reset_session_fn(user_key)
+        except Exception as e:
+            logger.error(f"Daily session reset failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("health_check", "medium",
+                f"Daily session reset failed: {e}", "daily_reset_failed")
+            return []
+
+        self._last_reset_date = today
+        logger.info(f"Daily reset: session '{user_key}' refreshed")
+
+        # Send brief notification to user
+        if self._deliver and self._chat_id:
+            try:
+                await self._deliver(self._channel, self._chat_id,
+                    "Good morning — session refreshed.")
+            except Exception:
+                pass  # Non-critical
+
+        return [{
+            "type": "session_reset",
+            "severity": "info",
+            "message": f"Daily session reset completed for {user_key}",
+        }]
 
     # --- Local changelog detection ---
 

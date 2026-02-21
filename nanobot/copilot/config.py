@@ -265,6 +265,11 @@ class CopilotConfig(BaseModel):
     monitor_channel: str = "whatsapp"
     monitor_chat_id: str = ""
 
+    # Daily session reset (clears user session once daily after idle period)
+    daily_session_reset: bool = True
+    daily_reset_hour: int = 6        # Hour to reset (local time, 24h)
+    daily_reset_quiet_minutes: int = 60  # Skip if user messaged within this window
+
     # ── Resolved Accessors ──────────────────────────────────────────────
     # These resolve empty-string overrides back to their defaults so callers
     # don't have to handle the fallback logic themselves.

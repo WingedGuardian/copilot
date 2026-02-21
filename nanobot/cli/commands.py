@@ -1032,6 +1032,14 @@ def gateway(
                 chat_id=job.payload.to,
                 content=response or ""
             ))
+            # Inject reminder context into user session so replies have context
+            user_key = f"{job.payload.channel or 'cli'}:{job.payload.to}"
+            user_session = agent.sessions.get_or_create(user_key)
+            user_session.add_message(
+                "assistant",
+                f"[Scheduled reminder delivered: {job.payload.message}]"
+            )
+            agent.sessions.save(user_session)
         return response
     cron.on_job = on_cron_job
 
@@ -1152,6 +1160,12 @@ def gateway(
                 subagent_manager=getattr(agent, '_subagent_manager', None),
                 task_manager=getattr(agent, '_task_manager', None),
                 qdrant_url=config.copilot.qdrant_url,
+                cron_service=cron,
+                session_manager=session_manager,
+                reset_session_fn=agent.reset_session,
+                daily_reset_enabled=config.copilot.daily_session_reset,
+                daily_reset_hour=config.copilot.daily_reset_hour,
+                daily_reset_quiet_minutes=config.copilot.daily_reset_quiet_minutes,
             )
             if status_aggregator:
                 status_aggregator._health_check = health_check

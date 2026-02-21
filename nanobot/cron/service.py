@@ -235,17 +235,24 @@ class CronService:
         if not self._store:
             return
 
-        now = _now_ms()
-        due_jobs = [
-            j for j in self._store.jobs
-            if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
-        ]
+        try:
+            now = _now_ms()
+            due_jobs = [
+                j for j in self._store.jobs
+                if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
+            ]
 
-        for job in due_jobs:
-            await self._execute_job(job)
+            for job in due_jobs:
+                await self._execute_job(job)
 
-        self._save_store()
-        self._arm_timer()
+            self._save_store()
+        except Exception as e:
+            logger.error(f"Cron timer tick failed: {e}")
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert("cron", "high", f"Cron timer tick failed: {e}", "timer_tick_failed")
+        finally:
+            # ALWAYS re-arm, even after errors
+            self._arm_timer()
 
     async def _execute_job(self, job: CronJob) -> None:
         """Execute a single job."""

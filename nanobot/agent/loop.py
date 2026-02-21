@@ -414,9 +414,7 @@ class AgentLoop:
         # Handle slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
-            await self._consolidate_memory(session, archive_all=True)
-            session.clear()
-            self.sessions.save(session)
+            await self.reset_session(key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 New session started. Memory consolidated.")
         if cmd == "/help" or cmd.startswith("/help "):
@@ -832,7 +830,7 @@ class AgentLoop:
             # Call LLM — pass router-specific params when available
             chat_kwargs: dict[str, Any] = dict(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=self.tools.get_definitions() if iteration < self.max_iterations else [],
                 model=self.model,
             )
             if is_router:
@@ -884,11 +882,9 @@ class AgentLoop:
                         messages, tool_call.id, tool_call.name, result
                     )
 
-                # Interleaved CoT: reflect before next action
+                # Nudge toward completion in final iterations
                 if iteration >= self.max_iterations - 3:
                     messages.append({"role": "user", "content": "Summarize your findings and respond to the user."})
-                else:
-                    messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:
                 # No tool calls, we're done
                 final_content = response.content
@@ -897,6 +893,12 @@ class AgentLoop:
         if final_content is None:
             if iteration >= self.max_iterations:
                 final_content = f"Reached {self.max_iterations} iterations without completion."
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert(
+                    "agent", "medium",
+                    f"Agent exhausted {self.max_iterations} iterations for session {key}",
+                    "iteration_exhausted",
+                )
             else:
                 final_content = "I've completed processing but have no response to give."
 
@@ -1002,7 +1004,7 @@ class AgentLoop:
                 response = await asyncio.wait_for(
                     self.provider.chat(
                         messages=messages,
-                        tools=self.tools.get_definitions(),
+                        tools=self.tools.get_definitions() if iteration < self.max_iterations else [],
                         model=self.model
                     ),
                     timeout=self._llm_timeout,
@@ -1038,17 +1040,21 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
-                # Interleaved CoT: reflect before next action
+                # Nudge toward completion in final iterations
                 if iteration >= self.max_iterations - 3:
                     messages.append({"role": "user", "content": "Summarize your findings and respond to the user."})
-                else:
-                    messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:
                 final_content = response.content
                 break
 
         if final_content is None:
             final_content = "Background task completed."
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert(
+                "agent", "medium",
+                f"System message loop exhausted {self.max_iterations} iterations from {msg.sender_id}",
+                "iteration_exhausted",
+            )
 
         # Save to session (mark as system message in history)
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
@@ -1060,6 +1066,16 @@ class AgentLoop:
             chat_id=origin_chat_id,
             content=final_content
         )
+
+    async def reset_session(self, session_key: str) -> str:
+        """Consolidate and clear a session. Returns confirmation message."""
+        session = self.sessions.get_or_create(session_key)
+        if not session.messages:
+            return "Session already empty."
+        await self._consolidate_memory(session, archive_all=True)
+        session.clear()
+        self.sessions.save(session)
+        return "Session refreshed. Memory consolidated."
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
         """Consolidate old messages into searchable memory, then trim session."""
