@@ -1229,9 +1229,17 @@ def gateway(
             console.print("[green]v[/green] Process supervisor started")
 
             # --- Web UI ---
+            from types import SimpleNamespace
+
             from aiohttp import web as _web
 
+            # Register WebChatChannel so browser users share the same bus
+            # routing as Telegram/Discord/etc.  No config key required — the
+            # web UI is always available when the server is running.
+            from nanobot.channels.web_chat import WebChatChannel
             from nanobot.web import create_web_app
+            web_chat = WebChatChannel(config=SimpleNamespace(allow_from=[]), bus=bus)
+            channels.channels["web_chat"] = web_chat
 
             _web_app = create_web_app(
                 config=config,
@@ -1239,6 +1247,7 @@ def gateway(
                 status_aggregator=status_aggregator,
                 bus=bus,
                 channel_manager=channels,
+                web_chat_channel=web_chat,
             )
             _web_runner = _web.AppRunner(_web_app)
             await _web_runner.setup()

@@ -19,6 +19,8 @@ def create_web_app(**ctx) -> web.Application:
         **ctx: Runtime context passed through to request handlers via
                ``app["ctx"]``.  Expected keys when running in copilot mode:
                ``status_aggregator``, ``session_manager``, etc.
+               Pass ``web_chat_channel=<WebChatChannel>`` to enable the
+               WebSocket chat endpoint.
 
     Returns:
         Configured :class:`aiohttp.web.Application`.
@@ -37,6 +39,7 @@ def create_web_app(**ctx) -> web.Application:
     from nanobot.web.routes import (
         alerts,
         autonomy,
+        chat,
         config,
         costs,
         dashboard,
@@ -58,6 +61,7 @@ def create_web_app(**ctx) -> web.Application:
     costs.setup(app)
     alerts.setup(app)
     autonomy.setup(app)
+    chat.setup(app)
     config.setup(app)
     models.setup(app)
     heartbeat.setup(app)
