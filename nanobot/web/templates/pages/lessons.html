@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Lessons — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Lessons</h1>
+    <span class="text-nb-muted text-xs">{{ lessons | length }} lesson{% if lessons | length != 1 %}s{% endif %}</span>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs items-center">
+
+    <!-- Active filter -->
+    <div class="flex gap-1 items-center">
+      <span class="text-nb-muted mr-1">Active:</span>
+      {% set base = "" %}
+      {% if category_filter %}{% set base = "category=" ~ category_filter ~ "&" %}{% endif %}
+      {% if min_conf %}{% set base = base ~ "min_conf=" ~ min_conf ~ "&" %}{% endif %}
+      <a href="/lessons?{{ base }}"
+         class="px-2 py-1 rounded border {% if active_filter == '' %}border-nb-accent text-nb-accent bg-nb-border{% else %}border-nb-border text-nb-muted hover:border-nb-accent/50 hover:text-nb-text{% endif %}">All</a>
+      <a href="/lessons?{{ base }}active=1"
+         class="px-2 py-1 rounded border {% if active_filter == '1' %}border-nb-green text-nb-green bg-nb-border{% else %}border-nb-border text-nb-muted hover:border-nb-green/50 hover:text-nb-text{% endif %}">Active</a>
+      <a href="/lessons?{{ base }}active=0"
+         class="px-2 py-1 rounded border {% if active_filter == '0' %}border-nb-red text-nb-red bg-nb-border{% else %}border-nb-border text-nb-muted hover:border-nb-red/50 hover:text-nb-text{% endif %}">Inactive</a>
+    </div>
+
+    <!-- Min confidence -->
+    <div class="flex gap-1 items-center">
+      <span class="text-nb-muted mr-1">Min conf:</span>
+      {% set abase = "" %}
+      {% if active_filter %}{% set abase = "active=" ~ active_filter ~ "&" %}{% endif %}
+      {% if category_filter %}{% set abase = abase ~ "category=" ~ category_filter ~ "&" %}{% endif %}
+      {% for cv in ["0.0", "0.3", "0.5", "0.7", "0.9"] %}
+      <a href="/lessons?{{ abase }}min_conf={{ cv }}"
+         class="px-2 py-1 rounded border {% if min_conf | string == cv %}border-nb-accent text-nb-accent bg-nb-border{% else %}border-nb-border text-nb-muted hover:border-nb-accent/50 hover:text-nb-text{% endif %}">{{ cv }}</a>
+      {% endfor %}
+    </div>
+
+    <!-- Category filter -->
+    {% if categories %}
+    <div class="flex flex-wrap gap-1 items-center">
+      <span class="text-nb-muted mr-1">Category:</span>
+      {% set cbase = "" %}
+      {% if active_filter %}{% set cbase = "active=" ~ active_filter ~ "&" %}{% endif %}
+      {% if min_conf %}{% set cbase = cbase ~ "min_conf=" ~ min_conf ~ "&" %}{% endif %}
+      <a href="/lessons?{{ cbase }}"
+         class="px-2 py-1 rounded border {% if not category_filter %}border-nb-accent text-nb-accent bg-nb-border{% else %}border-nb-border text-nb-muted hover:border-nb-accent/50{% endif %}">All</a>
+      {% for cat in categories %}
+      <a href="/lessons?{{ cbase }}category={{ cat }}"
+         class="px-2 py-1 rounded border {% if category_filter == cat %}border-nb-accent text-nb-accent bg-nb-border{% else %}border-nb-border text-nb-muted hover:border-nb-accent/50{% endif %}">{{ cat }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- Lessons table -->
+  <!-- columns: id, trigger_pattern, lesson_text, confidence, reinforcement_count,
+                active, created_at, last_applied, source, category, applied_count, helpful_count -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    {% if lessons %}
+    <table class="w-full">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Trigger</th>
+          <th class="text-left pb-2 font-normal">Lesson</th>
+          <th class="text-right pb-2 font-normal">Conf</th>
+          <th class="text-center pb-2 font-normal">Active</th>
+          <th class="text-left pb-2 font-normal">Category</th>
+          <th class="text-left pb-2 font-normal">Source</th>
+          <th class="text-right pb-2 font-normal">Applied</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for lesson in lessons %}
+        <tr class="{% if not lesson.active %}opacity-50{% endif %}">
+          <td class="py-2 text-nb-muted text-xs font-mono max-w-[130px] truncate">
+            {% set tp = lesson.trigger_pattern or "" %}
+            {{ tp[:55] }}{% if tp | length > 55 %}…{% endif %}
+          </td>
+          <td class="py-2 text-nb-text text-xs max-w-sm">
+            {% set lt = lesson.lesson_text or "" %}
+            {{ lt[:120] }}{% if lt | length > 120 %}…{% endif %}
+          </td>
+          <td class="py-2 text-xs text-right font-mono
+            {% if lesson.confidence and lesson.confidence | float >= 0.7 %}text-nb-green
+            {% elif lesson.confidence and lesson.confidence | float >= 0.4 %}text-nb-text
+            {% else %}text-nb-muted{% endif %}">
+            {{ "%.2f" | format((lesson.confidence or 0) | float) }}
+          </td>
+          <td class="py-2 text-center">
+            {% if lesson.active %}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-nb-green/10 text-nb-green border border-nb-green/20">on</span>
+            {% else %}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-nb-border text-nb-muted border border-nb-border">off</span>
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs">{{ lesson.category or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs">{{ lesson.source or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs text-right">
+            {{ lesson.applied_count or 0 }}{% if lesson.helpful_count %}/{{ lesson.helpful_count }}{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No lessons found{% if active_filter or category_filter or min_conf %} with current filters{% endif %}. Lessons are created during the dream cycle and from user feedback.</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

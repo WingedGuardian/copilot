@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% set active = "tasks" %}
+
+{% block title %}Tasks — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Tasks</h1>
+
+  <!-- Status filter tabs -->
+  <div class="flex flex-wrap gap-1">
+    {% set statuses = [("", "All"), ("pending", "Pending"), ("planning", "Planning"), ("awaiting", "Awaiting"), ("active", "Active"), ("completed", "Completed"), ("failed", "Failed")] %}
+    {% for val, label in statuses %}
+    <a href="/tasks{% if val %}?status={{ val }}{% endif %}"
+       class="px-3 py-1 rounded text-xs border
+         {% if status_filter == val %}bg-nb-accent/10 text-nb-accent border-nb-accent/30
+         {% else %}bg-nb-surface text-nb-muted border-nb-border hover:border-nb-accent/30 hover:text-nb-text{% endif %}">
+      {{ label }}
+    </a>
+    {% endfor %}
+  </div>
+
+  <!-- Task table -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    {% if tasks %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Title</th>
+          <th class="text-left pb-2 font-normal">Status</th>
+          <th class="text-left pb-2 font-normal">Priority</th>
+          <th class="text-left pb-2 font-normal">Steps</th>
+          <th class="text-left pb-2 font-normal">Assignee</th>
+          <th class="text-left pb-2 font-normal">Created</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for t in tasks %}
+        <tr class="hover:bg-nb-border/30 cursor-pointer" onclick="window.location='/tasks/{{ t.id }}'">
+          <td class="py-2 text-nb-text text-xs max-w-xs">
+            <a href="/tasks/{{ t.id }}" class="hover:text-nb-accent">
+              {{ t.title or t.id }}
+              {% if t.parent_id %}
+              <span class="ml-1 text-nb-muted text-[10px]">sub</span>
+              {% endif %}
+            </a>
+            {% if t.description %}
+            <div class="text-nb-muted text-[10px] truncate max-w-[240px]">{{ t.description[:80] }}{% if t.description|length > 80 %}…{% endif %}</div>
+            {% endif %}
+          </td>
+          <td class="py-2 text-xs whitespace-nowrap">
+            {% set s = t.status or 'pending' %}
+            {% if s == 'active' %}
+            <span class="px-2 py-0.5 rounded bg-nb-accent/10 text-nb-accent border border-nb-accent/20">active</span>
+            {% elif s == 'completed' %}
+            <span class="px-2 py-0.5 rounded bg-nb-green/10 text-nb-green border border-nb-green/20">completed</span>
+            {% elif s == 'failed' %}
+            <span class="px-2 py-0.5 rounded bg-nb-red/10 text-nb-red border border-nb-red/20">failed</span>
+            {% elif s == 'planning' %}
+            <span class="px-2 py-0.5 rounded bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20">planning</span>
+            {% elif s == 'awaiting' %}
+            <span class="px-2 py-0.5 rounded bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20">awaiting</span>
+            {% else %}
+            <span class="px-2 py-0.5 rounded bg-nb-border text-nb-muted border border-nb-border">{{ s }}</span>
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs">{{ t.priority or 3 }}</td>
+          <td class="py-2 text-nb-muted text-xs">
+            {% if t.step_count %}{{ t.steps_completed or 0 }}/{{ t.step_count }}{% else %}—{% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs truncate max-w-[80px]">{{ t.current_assignee or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ t.created_at[:16] if t.created_at else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No tasks found{% if status_filter %} with status "{{ status_filter }}"{% endif %}.</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
