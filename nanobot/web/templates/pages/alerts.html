@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% set active = "alerts" %}
+
+{% block title %}Alerts — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Alerts</h1>
+    <span class="text-nb-muted text-xs">
+      {{ active_alerts | length }} active &middot; {{ resolved_alerts | length }} resolved (last 50)
+    </span>
+  </div>
+
+  <!-- Active Alerts -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Active</h2>
+
+    {% if active_alerts %}
+    <div class="space-y-2">
+      {% for alert in active_alerts %}
+      <div class="flex items-start gap-3 text-sm border-b border-nb-border last:border-0 pb-2 last:pb-0">
+        <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase
+          {% if alert.severity == 'high' %}bg-nb-red text-white
+          {% elif alert.severity == 'medium' %}bg-nb-yellow text-nb-bg
+          {% else %}bg-nb-muted text-white{% endif %}">
+          {{ alert.severity }}
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-baseline gap-2">
+            <span class="text-nb-muted text-xs shrink-0">{{ alert.subsystem }}</span>
+            <span class="text-nb-muted text-xs shrink-0 font-mono">{{ alert.error_key }}</span>
+          </div>
+          <p class="text-nb-text text-xs mt-0.5">{{ alert.message }}</p>
+        </div>
+        <span class="text-nb-muted text-xs shrink-0 whitespace-nowrap">{{ alert.timestamp }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="flex items-center gap-2 text-nb-green text-sm">
+      <span>&#x25cf;</span>
+      <span>All clear — no active alerts</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Resolved Alerts -->
+  {% if resolved_alerts %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Resolved (last 50)</h2>
+    <div class="space-y-2">
+      {% for alert in resolved_alerts %}
+      <div class="flex items-start gap-3 text-sm border-b border-nb-border last:border-0 pb-2 last:pb-0 opacity-60">
+        <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase
+          {% if alert.severity == 'high' %}bg-nb-red text-white
+          {% elif alert.severity == 'medium' %}bg-nb-yellow text-nb-bg
+          {% else %}bg-nb-muted text-white{% endif %}">
+          {{ alert.severity }}
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-baseline gap-2">
+            <span class="text-nb-muted text-xs shrink-0">{{ alert.subsystem }}</span>
+            <span class="text-nb-muted text-xs shrink-0 font-mono">{{ alert.error_key }}</span>
+          </div>
+          <p class="text-nb-text text-xs mt-0.5">{{ alert.message }}</p>
+        </div>
+        <div class="text-right shrink-0">
+          <p class="text-nb-muted text-xs whitespace-nowrap">{{ alert.timestamp }}</p>
+          <p class="text-nb-green text-xs whitespace-nowrap">resolved {{ alert.resolved_at }}</p>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -34,7 +34,10 @@ def create_web_app(**ctx) -> web.Application:
 
     app["ctx"] = ctx
 
-    from nanobot.web.routes import dashboard
+    from nanobot.web.routes import alerts, costs, dashboard, services
     dashboard.setup(app)
+    services.setup(app)
+    costs.setup(app)
+    alerts.setup(app)
 
     return app
