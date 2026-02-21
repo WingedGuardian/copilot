@@ -579,6 +579,7 @@ async def migrate_webui(db_path: str | Path) -> None:
                 ON llm_traces(service, created_at);
         """)
         await db.commit()
+    logger.info(f"WebUI migration complete in {db_path}")
 
 
 async def log_llm_trace(
