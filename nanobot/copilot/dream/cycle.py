@@ -605,15 +605,15 @@ class DreamCycle:
                 )
                 proposals = await cur.fetchall()
         except Exception:
-            return
+            return {"_skipped": True, "reason": "proposal query failed"}
 
         if not proposals:
-            return
+            return {"_skipped": True, "reason": "no proposals"}
 
         if mode == "notify":
             # Proposals already exist in dream_observations — heartbeat will surface them
             logger.info(f"Identity evolution: {len(proposals)} proposals pending (notify mode)")
-            return
+            return {"_skipped": True, "reason": "notify mode"}
 
         # mode == "autonomous": apply the top proposal
         # Safety: verify no recent user activity (30 min)
@@ -626,13 +626,13 @@ class DreamCycle:
                 recent_activity = (await cur.fetchone())[0]
                 if recent_activity > 0:
                     logger.info("Identity evolution: skipping — recent user activity detected")
-                    return
+                    return {"_skipped": True, "reason": "recent user activity"}
         except Exception:
             pass  # Can't check, proceed cautiously
 
         # Apply top proposal via LLM
         if not self._execute_fn:
-            return
+            return {"_skipped": True, "reason": "no execute_fn"}
 
         top_id, top_content = proposals[0]
         try:
@@ -667,6 +667,15 @@ class DreamCycle:
             logger.info(f"Identity evolution: applied proposal {top_id}")
         except Exception as e:
             logger.warning(f"Identity evolution failed: {e}")
+            try:
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert(
+                    "dream", "medium",
+                    f"Identity evolution failed (possible double-apply risk): {e}",
+                    "identity_evolution_failed",
+                )
+            except Exception:
+                pass
 
     async def _cleanup_observations(self) -> dict | None:
         """Job 12: Expire old unacted observations and prune old acted ones."""
