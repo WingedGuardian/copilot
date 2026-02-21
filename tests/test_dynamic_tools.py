@@ -1,12 +1,12 @@
 """Tests for dynamic tool builder (Phase 4A)."""
 
 import json
+
 import pytest
 
-from nanobot.agent.tools.dynamic import DynamicTool, validate_code, IMPORT_ALLOWLIST
 from nanobot.agent.tools.builder import ToolBuilderTool
+from nanobot.agent.tools.dynamic import IMPORT_ALLOWLIST, DynamicTool, validate_code
 from nanobot.agent.tools.registry import ToolRegistry
-
 
 # --- Code validation ---
 

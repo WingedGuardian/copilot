@@ -1,10 +1,9 @@
 """Phase 4 tests: Message UX (ack, coalescing, queue notification)."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # 4A. Processing Acknowledgment

@@ -1,6 +1,5 @@
 """Tests for SecretsProvider credential isolation."""
 
-import os
 import pytest
 
 from nanobot.agent.tools.secrets import SecretsProvider

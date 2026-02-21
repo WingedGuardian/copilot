@@ -1,8 +1,7 @@
 """Tests for HTTP endpoint protection (SSRF defense)."""
 
-import pytest
 
-from nanobot.agent.tools.web import _validate_url, DEFAULT_HTTP_DENY
+from nanobot.agent.tools.web import _validate_url
 
 
 def test_normal_url_allowed():

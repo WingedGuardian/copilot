@@ -2,7 +2,7 @@
 
 import pytest
 
-from nanobot.agent.safety.sanitizer import OutputSanitizer, SanitizeResult
+from nanobot.agent.safety.sanitizer import OutputSanitizer
 from nanobot.agent.tools.secrets import SecretsProvider
 
 

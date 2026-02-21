@@ -1,6 +1,5 @@
 """Test extraction schemas."""
 
-import pytest
 
 from nanobot.copilot.extraction.schemas import ExtractionResult
 

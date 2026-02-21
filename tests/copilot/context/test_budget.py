@@ -1,6 +1,5 @@
 """Test token budget calculator."""
 
-import pytest
 
 from nanobot.copilot.context.budget import TokenBudget
 
