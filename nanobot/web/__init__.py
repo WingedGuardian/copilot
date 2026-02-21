@@ -36,6 +36,7 @@ def create_web_app(**ctx) -> web.Application:
 
     from nanobot.web.routes import (
         alerts,
+        autonomy,
         config,
         costs,
         dashboard,
@@ -55,6 +56,7 @@ def create_web_app(**ctx) -> web.Application:
     services.setup(app)
     costs.setup(app)
     alerts.setup(app)
+    autonomy.setup(app)
     config.setup(app)
     models.setup(app)
     heartbeat.setup(app)
