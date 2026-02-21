@@ -522,6 +522,7 @@ def gateway(
 
     # --- Copilot: initialise cost logger if enabled ---
     cost_logger = None
+    db_path = None
     if config.copilot.enabled:
         import asyncio as _aio
         from pathlib import Path
@@ -1225,6 +1226,24 @@ def gateway(
             await supervisor.start()
             console.print("[green]v[/green] Process supervisor started")
 
+            # --- Web UI ---
+            from aiohttp import web as _web
+
+            from nanobot.web import create_web_app
+
+            _web_app = create_web_app(
+                config=config,
+                db_path=str(db_path) if db_path is not None else "",
+                status_aggregator=status_aggregator,
+                bus=bus,
+                channel_manager=channels,
+            )
+            _web_runner = _web.AppRunner(_web_app)
+            await _web_runner.setup()
+            _web_site = _web.TCPSite(_web_runner, "0.0.0.0", port)
+            await _web_site.start()
+            console.print(f"[green]\u2713[/green] Web UI: http://localhost:{port}")
+
             # Schedule dream cycle via croniter
             _dream_task = None
             _dream_cancel_event = asyncio.Event()
@@ -1342,6 +1361,7 @@ def gateway(
             pass  # Handled by signal handler above
         finally:
             console.print("\nShutting down...")
+            await _web_runner.cleanup()
             await supervisor.stop()
             if slm_drainer:
                 await slm_drainer.stop()
