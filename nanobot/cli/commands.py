@@ -522,6 +522,7 @@ def gateway(
 
     # --- Copilot: initialise cost logger if enabled ---
     cost_logger = None
+    db_path = None
     if config.copilot.enabled:
         import asyncio as _aio
         from pathlib import Path
@@ -534,6 +535,7 @@ def gateway(
             migrate_navigator,
             migrate_routing_preferences,
             migrate_sentience,
+            migrate_webui,
         )
         from nanobot.copilot.cost.logger import CostLogger
 
@@ -545,6 +547,7 @@ def gateway(
         _aio.run(migrate_alert_resolution(db_path))
         _aio.run(migrate_sentience(db_path))
         _aio.run(migrate_navigator(db_path))
+        _aio.run(migrate_webui(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
         # Normalize monitor_chat_id for WhatsApp (must be JID format)
@@ -1225,6 +1228,33 @@ def gateway(
             await supervisor.start()
             console.print("[green]v[/green] Process supervisor started")
 
+            # --- Web UI ---
+            from types import SimpleNamespace
+
+            from aiohttp import web as _web
+
+            # Register WebChatChannel so browser users share the same bus
+            # routing as Telegram/Discord/etc.  No config key required — the
+            # web UI is always available when the server is running.
+            from nanobot.channels.web_chat import WebChatChannel
+            from nanobot.web import create_web_app
+            web_chat = WebChatChannel(config=SimpleNamespace(allow_from=[]), bus=bus)
+            channels.channels["web_chat"] = web_chat
+
+            _web_app = create_web_app(
+                config=config,
+                db_path=str(db_path) if db_path is not None else "",
+                status_aggregator=status_aggregator,
+                bus=bus,
+                channel_manager=channels,
+                web_chat_channel=web_chat,
+            )
+            _web_runner = _web.AppRunner(_web_app)
+            await _web_runner.setup()
+            _web_site = _web.TCPSite(_web_runner, "0.0.0.0", port)
+            await _web_site.start()
+            console.print(f"[green]\u2713[/green] Web UI: http://localhost:{port}")
+
             # Schedule dream cycle via croniter
             _dream_task = None
             _dream_cancel_event = asyncio.Event()
@@ -1342,6 +1372,7 @@ def gateway(
             pass  # Handled by signal handler above
         finally:
             console.print("\nShutting down...")
+            await _web_runner.cleanup()
             await supervisor.stop()
             if slm_drainer:
                 await slm_drainer.stop()

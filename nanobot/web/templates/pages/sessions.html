@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% set active = "sessions" %}
+
+{% block title %}Sessions — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Sessions</h1>
+
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    {% if not sessions %}
+    <p class="text-nb-muted text-sm">No active sessions.</p>
+    {% else %}
+    <p class="text-nb-muted text-xs mb-3">{{ sessions|length }} session{{ "s" if sessions|length != 1 else "" }}</p>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Key</th>
+          <th class="text-left pb-2 font-normal">Created</th>
+          <th class="text-left pb-2 font-normal">Last Updated</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for s in sessions %}
+        <tr>
+          <td class="py-2 text-nb-text text-xs font-mono">{{ s.key }}</td>
+          <td class="py-2 text-nb-muted text-xs">{{ s.created_at or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs">{{ s.updated_at or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

@@ -91,7 +91,24 @@ class CopilotHeartbeatService(HeartbeatService):
 
         if self.on_heartbeat:
             try:
+                import time as _t
+                _trace_start = _t.monotonic()
                 response = await self.on_heartbeat(prompt)
+                _trace_ms = int((_t.monotonic() - _trace_start) * 1000)
+                if self._db_path:
+                    try:
+                        from nanobot.copilot.cost.db import log_llm_trace
+                        await log_llm_trace(
+                            self._db_path,
+                            service="heartbeat",
+                            job_name="",
+                            prompt_text=(prompt or "")[:10000],
+                            response_text=(response or "")[:10000],
+                            model=getattr(self, "_model", "") or "",
+                            latency_ms=_trace_ms,
+                        )
+                    except Exception:
+                        pass  # Tracing is best-effort
                 await self._process_response(response)
                 checklist.append("LLM execution: ok")
                 logger.info("Heartbeat: cognitive tick complete")

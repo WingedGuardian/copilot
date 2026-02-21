@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Autonomy — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Autonomy</h1>
+    <span class="text-nb-muted text-xs">{{ permissions | length }} categories &middot; {{ observations | length }} pending</span>
+  </div>
+
+  <!-- Permission Matrix -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-text text-sm font-semibold mb-4">Permission Matrix</h2>
+    {% if permissions %}
+    <table class="w-full">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Category</th>
+          <th class="text-left pb-2 font-normal">Current Mode</th>
+          <th class="text-left pb-2 font-normal">Granted By</th>
+          <th class="text-right pb-2 font-normal">Change</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for perm in permissions %}
+        <tr>
+          <td class="py-3 text-nb-text text-sm font-mono">{{ perm.category }}</td>
+          <td class="py-3">
+            {% if perm.mode == "autonomous" %}
+            <span class="px-2 py-0.5 rounded text-xs bg-nb-green/10 text-nb-green border border-nb-green/20">autonomous</span>
+            {% elif perm.mode == "notify" %}
+            <span class="px-2 py-0.5 rounded text-xs bg-yellow-900/20 text-yellow-400 border border-yellow-700/30">notify</span>
+            {% else %}
+            <span class="px-2 py-0.5 rounded text-xs bg-nb-border text-nb-muted border border-nb-border">disabled</span>
+            {% endif %}
+          </td>
+          <td class="py-3 text-nb-muted text-xs">{{ perm.granted_by or "system" }}</td>
+          <td class="py-3 text-right">
+            <form method="post" action="/autonomy/permission" class="inline-flex items-center gap-2">
+              <input type="hidden" name="category" value="{{ perm.category }}">
+              <select name="mode"
+                class="bg-nb-bg border border-nb-border text-nb-text text-xs rounded px-2 py-1 focus:outline-none focus:border-nb-accent">
+                {% for m in modes %}
+                <option value="{{ m }}" {% if perm.mode == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit"
+                class="px-3 py-1 rounded border border-nb-accent/50 text-nb-accent text-xs hover:bg-nb-accent/10 transition-colors">
+                Save
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No permissions configured. Run the sentience migration to seed defaults.</p>
+    {% endif %}
+  </div>
+
+  <!-- Pending Observations -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-text text-sm font-semibold mb-4">Pending Observations</h2>
+    {% if observations %}
+    <table class="w-full">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-right pb-2 font-normal w-10">ID</th>
+          <th class="text-left pb-2 font-normal">Created</th>
+          <th class="text-left pb-2 font-normal">Type</th>
+          <th class="text-center pb-2 font-normal">Priority</th>
+          <th class="text-left pb-2 font-normal">Content</th>
+          <th class="text-right pb-2 font-normal">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for obs in observations %}
+        <tr>
+          <td class="py-2 text-nb-muted text-xs text-right font-mono">{{ obs.id }}</td>
+          <td class="py-2 text-nb-muted text-xs whitespace-nowrap">
+            {{ (obs.created_at or "")[:16] }}
+          </td>
+          <td class="py-2 text-nb-muted text-xs font-mono">{{ obs.observation_type or obs.source or "—" }}</td>
+          <td class="py-2 text-center">
+            {% set p = obs.priority or "medium" %}
+            {% if p == "high" or p == "critical" %}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-nb-red/10 text-nb-red border border-nb-red/20">{{ p }}</span>
+            {% elif p == "low" %}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-nb-border text-nb-muted border border-nb-border">{{ p }}</span>
+            {% else %}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-900/20 text-yellow-400 border border-yellow-700/30">{{ p }}</span>
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-text text-xs max-w-sm">
+            {% set c = obs.content or "" %}
+            {{ c[:150] }}{% if c | length > 150 %}&hellip;{% endif %}
+          </td>
+          <td class="py-2 text-right">
+            <div class="inline-flex gap-1">
+              <form method="post" action="/autonomy/observation/{{ obs.id }}/approve" class="inline">
+                <button type="submit"
+                  class="px-2 py-1 rounded border border-nb-green/50 text-nb-green text-xs hover:bg-nb-green/10 transition-colors">
+                  Approve
+                </button>
+              </form>
+              <form method="post" action="/autonomy/observation/{{ obs.id }}/reject" class="inline">
+                <button type="submit"
+                  class="px-2 py-1 rounded border border-nb-red/50 text-nb-red text-xs hover:bg-nb-red/10 transition-colors">
+                  Reject
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No pending observations.</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

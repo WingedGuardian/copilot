@@ -554,3 +554,64 @@ async def migrate_alert_resolution(db_path: str | Path) -> None:
             )
             await db.commit()
     logger.info(f"Alert resolution migration complete in {db_path}")
+
+
+async def migrate_webui(db_path: str | Path) -> None:
+    """Add llm_traces table for Langfuse-style trace view in the web UI."""
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS llm_traces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                service TEXT NOT NULL,
+                job_name TEXT,
+                prompt_text TEXT,
+                response_text TEXT,
+                tokens_input INTEGER,
+                tokens_output INTEGER,
+                cost_usd REAL,
+                model TEXT,
+                latency_ms INTEGER,
+                success INTEGER DEFAULT 1,
+                metadata_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_llm_traces_service
+                ON llm_traces(service, created_at);
+        """)
+        await db.commit()
+    logger.info(f"WebUI migration complete in {db_path}")
+
+
+async def log_llm_trace(
+    db_path: str | Path,
+    *,
+    service: str,
+    job_name: str = "",
+    prompt_text: str = "",
+    response_text: str = "",
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+    cost_usd: float = 0.0,
+    model: str = "",
+    latency_ms: int = 0,
+    success: bool = True,
+    metadata: dict | None = None,
+) -> None:
+    """Log an LLM trace for the web UI trace view. Best-effort -- swallows all errors."""
+    import json as _json
+    try:
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute(
+                """INSERT INTO llm_traces
+                   (service, job_name, prompt_text, response_text,
+                    tokens_input, tokens_output, cost_usd, model,
+                    latency_ms, success, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (service, job_name, prompt_text, response_text,
+                 tokens_input, tokens_output, cost_usd, model,
+                 latency_ms, int(success),
+                 _json.dumps(metadata) if metadata else None),
+            )
+            await db.commit()
+    except Exception:
+        pass  # Tracing is best-effort; never interrupt the calling service

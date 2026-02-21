@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Files — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Files</h1>
+    <span class="text-nb-muted text-xs">MD file browser</span>
+  </div>
+
+  {% if groups %}
+    {% for group in groups %}
+    <div class="bg-nb-surface border border-nb-border rounded p-4">
+      <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">{{ group.label }}</h2>
+      <ul class="space-y-1">
+        {% for file in group.files %}
+        <li>
+          <a href="/files/{{ file.path | urlencode }}"
+             class="block px-3 py-2 rounded text-nb-text text-xs font-mono hover:bg-nb-border hover:text-nb-accent transition-colors">
+            {{ file.name }}
+            <span class="text-nb-muted text-[10px] ml-2">{{ file.path }}</span>
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="bg-nb-surface border border-nb-border rounded p-6 text-center">
+      <p class="text-nb-muted text-sm">No markdown files found in allowed directories.</p>
+    </div>
+  {% endif %}
+
+</div>
+{% endblock %}
