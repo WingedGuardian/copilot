@@ -41,6 +41,7 @@ def create_web_app(**ctx) -> web.Application:
         costs,
         dashboard,
         dream,
+        files,
         heartbeat,
         lessons,
         logs,
@@ -61,6 +62,7 @@ def create_web_app(**ctx) -> web.Application:
     models.setup(app)
     heartbeat.setup(app)
     dream.setup(app)
+    files.setup(app)
     tasks.setup(app)
     memory.setup(app)
     lessons.setup(app)
