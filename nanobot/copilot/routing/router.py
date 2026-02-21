@@ -302,6 +302,8 @@ class RouterProvider(LLMProvider):
             from nanobot.providers.registry import find_by_model as _find_by_model
             native_spec = _find_by_model(self._escalation_model)
             native_name = native_spec.name if native_spec else None
+            if not native_spec:
+                logger.warning(f"Native provider lookup failed for model '{self._escalation_model}' — falling back to all cloud providers")
             if native_name and native_name in self._cloud:
                 chain.append(ProviderTier(native_name, self._cloud[native_name], self._escalation_model))
             for name, provider in self._cloud.items():
@@ -328,6 +330,8 @@ class RouterProvider(LLMProvider):
             from nanobot.providers.registry import find_by_model as _find_by_model
             native_spec = _find_by_model(self._default_model)
             native_name = native_spec.name if native_spec else None
+            if not native_spec:
+                logger.warning(f"Native provider lookup failed for model '{self._default_model}' — falling back to all cloud providers")
             if native_name and native_name in self._cloud:
                 chain.append(ProviderTier(native_name, self._cloud[native_name], self._default_model))
             for name, provider in self._cloud.items():

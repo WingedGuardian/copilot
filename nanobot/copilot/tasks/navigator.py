@@ -164,7 +164,7 @@ async def review_plan(
     except Exception as e:
         logger.error(f"Navigator plan review failed: {e}")
         verdict = NavigatorVerdict(
-            approved=True, needs_user=False,
+            approved=False, needs_user=True,
             critique=f"Navigator unavailable: {e}", themes=["navigator_error"],
         )
     logger.info(
