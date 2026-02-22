@@ -87,16 +87,20 @@ def test_manual_override_puts_provider_first():
 
 
 def test_escalation_chain_uses_escalation_model():
-    """Escalation builds a separate chain with escalation model."""
+    """Escalation builds a chain with escalation model + safety net."""
     router = make_router()
     decision = RouteDecision("escalation", "escalation", "anthropic/claude-sonnet-4-6")
 
     with patch_native("minimax"):
         chain = router._build_chain(decision)
 
-    # All entries should use the escalation model
-    for tier in chain:
+    # Primary entries should use the escalation model
+    primary = [t for t in chain if not t.name.startswith(("safety:", "emergency:"))]
+    for tier in primary:
         assert tier.model == "anthropic/claude-sonnet-4-6"
+    # Safety net should also be appended
+    safety = [t for t in chain if t.name.startswith(("safety:", "emergency:"))]
+    assert len(safety) > 0, "Escalation chain should include safety net"
 
 
 def test_local_chain_starts_with_lm_studio():
