@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -111,13 +111,13 @@ class MonitorService:
 
     async def _morning_nag(self) -> None:
         """Once per day, summarize all unresolved issues."""
-        import datetime
-        now = datetime.datetime.now()
+        from nanobot.copilot import tz as _tz
+        now = _tz.local_now()
         today = now.date().isoformat()
 
         if today == self._last_nag_date:
             return
-        if now.hour != 7:  # Only nag at 7 AM
+        if now.hour != 7:  # Only nag at 7 AM (local time)
             return
         nag_items = {k: v for k, v in self._unresolved.items() if k not in self._silent}
         if not nag_items:

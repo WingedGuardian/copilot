@@ -11,6 +11,8 @@ from typing import Any, Callable
 import aiosqlite
 from loguru import logger
 
+from nanobot.copilot import tz as _tz
+
 
 class HealthCheckService:
     """Programmatic health checker with event-driven news feed.
@@ -95,7 +97,7 @@ class HealthCheckService:
 
     async def _tick(self) -> None:
         """Execute one health check cycle — purely programmatic."""
-        now = datetime.datetime.now()
+        now = _tz.local_now()
         if not (self._active_hours[0] <= now.hour < self._active_hours[1]):
             return  # Outside active hours
 
@@ -191,7 +193,7 @@ class HealthCheckService:
         """Trigger session reset once daily when user is idle."""
         if not self._daily_reset_enabled or not self._reset_session_fn:
             return []
-        now = datetime.datetime.now()
+        now = _tz.local_now()
         if now.hour < self._daily_reset_hour:
             return []  # Too early
         today = now.strftime("%Y-%m-%d")
@@ -206,7 +208,7 @@ class HealthCheckService:
                 self._last_reset_date = today
                 return []  # Nothing to clear
             if user_session.updated_at:
-                idle_minutes = (now - user_session.updated_at).total_seconds() / 60
+                idle_minutes = (now.replace(tzinfo=None) - user_session.updated_at).total_seconds() / 60
                 if idle_minutes < self._daily_reset_quiet_minutes:
                     return []  # User active, retry next tick
 
