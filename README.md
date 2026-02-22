@@ -96,7 +96,7 @@ nanobot/
     routing/      #   RouterProvider V2
     slm_queue/    #   Durable async work queue
     status/       #   System health dashboard
-    tasks/        #   Task management + navigator duo
+    tasks/        #   Task management
     tools/        #   Extended tool definitions
   providers/      # LLM provider integrations (upstream)
   web/            # Web UI routes and templates
