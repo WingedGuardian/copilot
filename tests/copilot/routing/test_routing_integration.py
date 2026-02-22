@@ -392,6 +392,30 @@ class TestSelfEscalation:
         safety = [t for t in chain if t.name.startswith(("safety:", "emergency:"))]
         assert len(safety) > 0
 
+    @pytest.mark.asyncio
+    async def test_escalation_with_dead_api_falls_to_safety_net(self):
+        """When escalation triggers but all cloud APIs are dead, safety net catches."""
+        escalate_resp = ok_response("[ESCALATE] Need stronger model")
+        router = make_router(local_succeed=True)
+
+        # First call (default): minimax returns [ESCALATE]
+        # All subsequent calls (escalation chain cloud providers): dead
+        for name, p in router._cloud.items():
+            if name == "minimax":
+                p.chat = AsyncMock(side_effect=[escalate_resp, RuntimeError("Provider down")])
+            else:
+                p.chat = AsyncMock(side_effect=RuntimeError("Provider down"))
+
+        with patch_native("minimax"), \
+             patch("nanobot.copilot.alerting.bus.get_alert_bus") as mock_bus:
+            mock_bus.return_value.alert = AsyncMock()
+            response = await router.chat(messages=SIMPLE_MESSAGES)
+
+        # Should have fallen through to LM Studio safety net
+        assert response.content is not None
+        assert response.finish_reason != "error"
+        assert router._last_winning_provider == "safety:lm_studio"
+
 
 # ===================================================================
 # 6. Safety net and failover tracking

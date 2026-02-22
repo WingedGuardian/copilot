@@ -1223,6 +1223,8 @@ def gateway(
     supervisor = ProcessSupervisor(check_interval=30.0, max_restarts=5)
     if status_aggregator:
         status_aggregator._supervisor = supervisor
+    if status_aggregator and mcp_manager:
+        status_aggregator._mcp_manager = mcp_manager
 
     async def run():
         try:
