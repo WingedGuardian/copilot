@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import aiosqlite
 from loguru import logger
@@ -124,7 +123,7 @@ class TaskManager:
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                """SELECT * FROM tasks WHERE status IN ('pending', 'active')
+                """SELECT * FROM tasks WHERE status = 'pending'
                    ORDER BY priority ASC, rowid ASC LIMIT 1"""
             )
             row = await cur.fetchone()
