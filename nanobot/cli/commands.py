@@ -355,6 +355,7 @@ def _make_provider(config, cost_logger=None):
         big_model=copilot.big_model,
         default_model=copilot.default_conversation_model,
         escalation_model=copilot.escalation_model,
+        strongest_model=copilot.strongest_model,
         emergency_cloud_model=copilot.emergency_cloud_model,
         escalation_enabled=copilot.escalation_enabled,
         escalation_marker=copilot.escalation_marker,
@@ -856,6 +857,13 @@ def gateway(
     if config.copilot.enabled:
         _register_copilot_tools(agent, config)
 
+    # --- MCP server integration (deferred to async run() for subprocess lifecycle) ---
+    mcp_manager = None
+    if config.copilot.enabled and config.copilot.mcp_servers:
+        from nanobot.agent.mcp.manager import McpManager
+        mcp_manager = McpManager(config.copilot.mcp_servers, agent.tools)
+        console.print(f"[dim]MCP: {len(config.copilot.mcp_servers)} server(s) configured (connecting at startup)[/dim]")
+
     # --- Copilot: set_preference tool ---
     pref_tool = None
     if config.copilot.enabled:
@@ -1232,6 +1240,17 @@ def gateway(
             await supervisor.start()
             console.print("[green]v[/green] Process supervisor started")
 
+            # Connect MCP servers (must happen inside the running event loop
+            # so subprocess handles remain valid for the gateway's lifetime)
+            if mcp_manager:
+                try:
+                    _mcp_results = await mcp_manager.connect_all()
+                    _mcp_total = sum(_mcp_results.values())
+                    console.print(f"[green]v[/green] MCP: {len(_mcp_results)} servers, {_mcp_total} tools registered")
+                    await mcp_manager.start_health_loop()
+                except Exception as e:
+                    console.print(f"[yellow]Warning: MCP connect failed: {e}[/yellow]")
+
             # --- Web UI ---
             from types import SimpleNamespace
 
@@ -1377,6 +1396,9 @@ def gateway(
         finally:
             console.print("\nShutting down...")
             await _web_runner.cleanup()
+            if mcp_manager:
+                await mcp_manager.stop_health_loop()
+                await mcp_manager.disconnect_all()
             await supervisor.stop()
             if slm_drainer:
                 await slm_drainer.stop()

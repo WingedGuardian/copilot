@@ -30,6 +30,7 @@ from nanobot.agent.tools.secrets import SecretsProvider
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.agent.tools.youtube import YouTubeTranscriptTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -276,6 +277,9 @@ class AgentLoop:
         # Web tools
         self.tools.register(WebSearchTool(api_key=self.brave_api_key, secrets=self.secrets))
         self.tools.register(WebFetchTool())
+
+        # YouTube transcript tool
+        self.tools.register(YouTubeTranscriptTool())
 
         # Message tool
         message_tool = MessageTool(send_callback=self.bus.publish_outbound)
