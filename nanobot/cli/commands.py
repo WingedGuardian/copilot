@@ -535,6 +535,7 @@ def gateway(
             migrate_alerts,
             migrate_heartbeat_events,
             migrate_navigator,
+            migrate_recon,
             migrate_routing_preferences,
             migrate_sentience,
             migrate_task_pause,
@@ -552,6 +553,7 @@ def gateway(
         _aio.run(migrate_navigator(db_path))
         _aio.run(migrate_webui(db_path))
         _aio.run(migrate_task_pause(db_path))
+        _aio.run(migrate_recon(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
         # Normalize monitor_chat_id for WhatsApp (must be JID format)
@@ -821,6 +823,13 @@ def gateway(
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
+        email_config=(
+            {"imap_host": config.copilot.email_imap_host,
+             "imap_port": config.copilot.email_imap_port,
+             "username": config.copilot.email_username,
+             "password": config.copilot.email_password}
+            if config.copilot.email_imap_host else None
+        ),
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
         extended_context=extended_context,

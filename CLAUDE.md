@@ -84,11 +84,13 @@ This file is read by nanobot's heartbeat to stay aware of external codebase chan
 | **Health check** | `HealthCheckService` | `nanobot/copilot/dream/health_check.py` | 30min | **NO** | Programmatic HTTP pings, DB queries, changelog diff, alert management |
 | **Monitor** | `MonitorService` | `nanobot/copilot/dream/monitor.py` | 5min | NO | State-transition alerting, self-heal |
 | **Dream cycle** | `DreamCycle` | `nanobot/copilot/dream/cycle.py` | Nightly (cron) | YES | 13 jobs: consolidation, cost, lessons, backup, monitor, reconcile, zero-vectors, routing cleanup, budget check, reflection, identity evolution, observation cleanup, codebase indexing |
-| **Weekly review** | `DreamCycle._run_weekly_review()` | `nanobot/copilot/dream/cycle.py` | Sunday (cron) | YES | MANAGER role — architecture, memory, models, costs |
-| **Monthly review** | `DreamCycle._run_monthly_review()` | `nanobot/copilot/dream/cycle.py` | 1st of month (cron) | YES | DIRECTOR role — audits weekly, adjusts budgets |
+| **Recon cron jobs** | `CronService` | `data/copilot/recon.md` | Various (cron) | YES | 5 jobs: email recon (daily 5AM), web source (Fri 6AM), GitHub (Sat 6AM), model pool (Sun 6AM), source discovery (28th 4AM). Write to `recon_findings` table. |
+| **Weekly review** | `DreamCycle._run_weekly_review()` | `nanobot/copilot/dream/cycle.py` | Sunday (cron) | YES | MANAGER role — architecture, memory, recon triage, costs |
+| **Monthly review** | `DreamCycle._run_monthly_review()` | `nanobot/copilot/dream/cycle.py` | 1st of month (cron) | YES | DIRECTOR role — audits weekly, adjusts budgets, recon system audit |
 
 **Rules:**
 - When copilot mode is enabled, `CopilotHeartbeatService` replaces `HeartbeatService` — same 2h interval, extended with cognitive context (dream observations, pending tasks, autonomy permissions). Upstream `HeartbeatService` is **never modified** — changes go in the subclass.
 - `HealthCheckService` is purely programmatic. If it needs intelligence, escalate to the heartbeat or dream cycle — never add an LLM call to it.
 - Config key `heartbeat_model` is for heartbeat LLM calls. Config key `health_check_interval` is for `HealthCheckService`. Don't confuse them.
 - Dream cycle `is_running` flag is checked by `CopilotHeartbeatService` before executing — if dream is running, tick is skipped (avoids concurrent `process_direct()` calls).
+- Recon cron jobs are config-driven (created via `CronService` at runtime, not hardcoded). They read `data/copilot/recon.md` as their identity/watch list. All scheduled before the 7AM dream cycle with 1h gaps to avoid `process_direct()` contention. Weekly review triages recon findings; monthly review audits recon quality.

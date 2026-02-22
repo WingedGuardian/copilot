@@ -23,6 +23,7 @@ from nanobot.agent.memory import MemoryStore
 from nanobot.agent.safety.sanitizer import OutputSanitizer
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.tools.email_read import EmailReadTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -178,6 +179,7 @@ class AgentLoop:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
+        email_config: dict | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         # --- Copilot extensions (None = disabled) ---
@@ -204,6 +206,7 @@ class AgentLoop:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
+        self.email_config = email_config
         self.restrict_to_workspace = restrict_to_workspace
         self.secrets = SecretsProvider()
         self.sanitizer = OutputSanitizer(secrets=self.secrets)
@@ -288,6 +291,10 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Email tool (for reading IMAP inbox)
+        if self.email_config:
+            self.tools.register(EmailReadTool(**self.email_config))
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""

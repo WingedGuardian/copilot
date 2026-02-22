@@ -1207,14 +1207,12 @@ Rules:
         start = time.time()
         checklist: list[str] = []
 
-        pool_path = Path(self._docs_dir) / "models.md"
-        pool_content = pool_path.read_text() if pool_path.exists() else "(no model pool file found)"
-        checklist.append(f"[+] Model pool loaded ({len(pool_content)} chars)")
-
         weekly_stats = await self._get_weekly_stats()
         checklist.append("[+] Weekly cost stats gathered")
         dream_health = await self._get_dream_errors()
         checklist.append("[+] Dream health queried")
+        recon_findings = await self._get_weekly_recon_findings()
+        checklist.append(f"[+] Recon findings: {'found' if recon_findings else 'none'}")
 
         # Read monthly findings if they exist
         import json as _json
@@ -1268,8 +1266,8 @@ optimize costs, implement monthly findings, synthesize capability gaps, and prop
 ## Navigator Duo Performance (7d)
 {duo_stats or "No navigator duo data this week (navigator may be disabled)."}
 
-## Current Model Pool
-{pool_content}
+## Recon Intelligence (from ecosystem scanning cron jobs)
+{recon_findings or "No recon findings this week. Recon cron jobs may not have run yet."}
 
 ## EMERGENCY FALLBACK (DO NOT MODIFY)
 `{self._emergency_cloud_model}` is the hardcoded emergency fallback model. Never change it.
@@ -1296,9 +1294,9 @@ Review the dream cycle health data above.
 - Check MEMORY.md specifically — is it a lean scratchpad or bloated with resolved items?
 
 ### 4. Model Pool & Routing
-a) Verify routing config in `~/.nanobot/config.json` (fast_model, big_model), `nanobot/agent/loop.py` (MODEL_ALIASES), and `nanobot/copilot/tools/use_model.py` (_ALIASES).
-b) Use `web_search` to check for deprecated or renamed model IDs.
-c) Audit `data/copilot/models.md` for obsolete models or better alternatives.
+a) Review model-related recon findings above (finding_type = 'model_capability').
+b) If recon found new models, pricing changes, or deprecations, update `data/copilot/models.md` accordingly.
+c) Verify routing config in `~/.nanobot/config.json` (fast_model, big_model) matches models.md.
 d) Check free tier usage — can any paid calls shift to free options?
 
 ### 5. Cost Trends
@@ -1325,6 +1323,15 @@ Review the task failures above. What keeps failing? Are there systemic fixes?
 - What should nanobot focus on this week? Any priorities that need shifting?
 - Set direction for the coming week's dream cycles.
 
+### 11. Recon Intelligence Triage
+Review the recon findings above (from ecosystem scanning cron jobs).
+For each finding:
+- If actionable: describe the specific change (file to modify, tool to add, pattern to adopt).
+  For model findings: update models.md and/or routing config.
+  For new_source findings: decide whether to add the source to `data/copilot/recon.md`.
+- If not actionable now: explain why and whether to keep watching.
+- Update each finding's status in the recon_findings table to 'triaged' with your triage_notes.
+
 ## After Making Changes
 - Commit all file changes to git with a descriptive message.
 - Append to `~/.nanobot/CHANGELOG.local`:
@@ -1345,6 +1352,7 @@ Analyze everything above. Provide detailed findings for each checklist item.
   "failure_patterns": ["pattern1", "pattern2"],
   "proposed_roadmap": ["item1", "item2"],
   "evolution_proposals": [{{"target_file": "SOUL.md", "change": "...", "reasoning": "..."}}],
+  "recon_proposals": [{{"finding_id": 42, "action": "description of change", "target": "file or config", "priority": "high|medium|low"}}],
   "priorities_next_week": ["p1", "p2", "p3"]
 }}
 ```
@@ -1652,6 +1660,89 @@ The full analysis is stored internally. Only the user_summary is sent to the use
         except Exception as e:
             return f"Monthly stats query failed: {e}"
 
+    async def _get_weekly_recon_findings(self) -> str:
+        """Query recon_findings for new findings from the past 7 days."""
+        if not self._db_path:
+            return ""
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                cur = await db.execute(
+                    """SELECT id, source_type, source_name, finding_type, title,
+                              summary, relevance, proposed_action
+                       FROM recon_findings
+                       WHERE status = 'new'
+                         AND created_at >= datetime('now', '-7 days')
+                       ORDER BY
+                         CASE relevance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                         created_at DESC
+                       LIMIT 30"""
+                )
+                rows = await cur.fetchall()
+                if not rows:
+                    return ""
+                lines = []
+                for r in rows:
+                    line = f"- [#{r[0]}] [{r[6]}] [{r[3]}] {r[4]} (source: {r[2]})"
+                    if r[5]:
+                        line += f"\n  Summary: {r[5][:300]}"
+                    if r[7]:
+                        line += f"\n  Proposed action: {r[7][:200]}"
+                    lines.append(line)
+                return "\n".join(lines)
+        except Exception:
+            return ""
+
+    async def _get_monthly_recon_stats(self) -> str:
+        """Query recon_findings for 30-day stats and untriaged source discoveries."""
+        if not self._db_path:
+            return ""
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                # Overall stats
+                cur = await db.execute(
+                    """SELECT status, COUNT(*) FROM recon_findings
+                       WHERE created_at >= datetime('now', '-30 days')
+                       GROUP BY status"""
+                )
+                status_rows = await cur.fetchall()
+                # By finding type
+                cur2 = await db.execute(
+                    """SELECT finding_type, COUNT(*) FROM recon_findings
+                       WHERE created_at >= datetime('now', '-30 days')
+                       GROUP BY finding_type ORDER BY COUNT(*) DESC"""
+                )
+                type_rows = await cur2.fetchall()
+                # Source discovery findings (for monthly to triage)
+                cur3 = await db.execute(
+                    """SELECT id, title, summary, proposed_action FROM recon_findings
+                       WHERE finding_type = 'new_source'
+                         AND status = 'new'
+                         AND created_at >= datetime('now', '-30 days')
+                       ORDER BY created_at DESC LIMIT 10"""
+                )
+                source_rows = await cur3.fetchall()
+
+                if not status_rows and not type_rows:
+                    return ""
+
+                lines = ["Recon findings (30 days):"]
+                if status_rows:
+                    for status, count in status_rows:
+                        lines.append(f"  {status}: {count}")
+                if type_rows:
+                    lines.append("By type:")
+                    for ftype, count in type_rows:
+                        lines.append(f"  {ftype}: {count}")
+                if source_rows:
+                    lines.append("\nNew source discoveries (pending triage):")
+                    for r in source_rows:
+                        lines.append(f"  - [#{r[0]}] {r[1]}: {(r[2] or '')[:200]}")
+                        if r[3]:
+                            lines.append(f"    Proposed: {r[3][:150]}")
+                return "\n".join(lines)
+        except Exception:
+            return ""
+
     async def run_monthly(self) -> str:
         """Monthly comprehensive audit (Director role).
 
@@ -1687,6 +1778,8 @@ The full analysis is stored internally. Only the user_summary is sent to the use
 
         monthly_stats = await self._get_monthly_stats()
         checklist.append("[+] Monthly cost stats gathered")
+        recon_stats = await self._get_monthly_recon_stats()
+        checklist.append(f"[+] Recon stats: {'found' if recon_stats else 'none'}")
 
         # Gather weekly review summaries from the past 30 days
         weekly_summaries = ""
@@ -1726,6 +1819,9 @@ Current budgets.json: {json.dumps(budgets, indent=2) if budgets else "(missing)"
 
 ## Cost Data (30 days)
 {monthly_stats}
+
+## Recon System Stats (30 days)
+{recon_stats or "No recon findings in the past 30 days. Recon cron jobs may not be configured yet."}
 
 ## Audit Checklist
 
@@ -1769,6 +1865,15 @@ This is NOT about trends (weekly handles that). Assess:
 - Is the weekly review moving nanobot in the right direction?
 - Are the automated cycles (dream/weekly/heartbeat) serving the user well?
 - What would you change about how this system operates?
+
+### 7. Recon System Audit
+Review the recon stats above for the past 30 days.
+- Adoption rate: how many findings were triaged vs dismissed vs adopted?
+- Signal quality: are the recon cron jobs finding useful things or producing noise?
+- Triage any pending 'new_source' findings: should these sources be added to `data/copilot/recon.md`?
+- Use `web_search` to check for major sources/repos we're NOT watching that we should be.
+  Search for: new MCP registries, trending AI agent frameworks, new AI newsletters worth subscribing to.
+- Propose additions or removals to `data/copilot/recon.md` (weekly will implement the changes).
 
 ## Writing Findings for Weekly
 After your audit, write actionable findings to `~/.nanobot/workspace/monthly_review_findings.json`:

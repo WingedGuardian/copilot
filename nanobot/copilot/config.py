@@ -231,6 +231,12 @@ class CopilotConfig(BaseModel):
     n8n_url: str = "http://localhost:5678"
     browser_headless: bool = True
 
+    # Email (IMAP reading)
+    email_imap_host: str = ""
+    email_imap_port: int = 993
+    email_username: str = ""
+    email_password: str = ""  # populated from secrets.json
+
     # Security: HTTP endpoint protection
     http_deny_list: list[str] = Field(
         default_factory=lambda: ["169.254.169.254", "metadata.google.internal"],

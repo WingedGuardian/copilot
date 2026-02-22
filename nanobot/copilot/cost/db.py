@@ -646,6 +646,43 @@ async def migrate_task_pause(db_path: str | Path) -> None:
     logger.info(f"Task pause migration complete in {db_path}")
 
 
+async def migrate_recon(db_path: str | Path) -> None:
+    """Recon system schema: recon_findings table for AI landscape intelligence.
+
+    Safe to call repeatedly — all operations are idempotent.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS recon_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source_type TEXT NOT NULL CHECK(source_type IN ('github', 'web', 'email', 'manual')),
+                source_url TEXT,
+                source_name TEXT,
+                finding_type TEXT NOT NULL CHECK(finding_type IN (
+                    'new_release', 'new_tool', 'architecture_pattern',
+                    'model_capability', 'upstream_change', 'competing_project',
+                    'mcp_advancement', 'breaking_change', 'opportunity',
+                    'new_source'
+                )),
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                relevance TEXT NOT NULL CHECK(relevance IN ('high', 'medium', 'low')),
+                proposed_action TEXT,
+                status TEXT DEFAULT 'new' CHECK(status IN ('new', 'triaged', 'adopted', 'dismissed')),
+                triaged_by TEXT,
+                triage_notes TEXT,
+                raw_content TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_recon_findings_status ON recon_findings(status);
+            CREATE INDEX IF NOT EXISTS idx_recon_findings_created ON recon_findings(created_at);
+            CREATE INDEX IF NOT EXISTS idx_recon_findings_type ON recon_findings(finding_type);
+        """)
+        await db.commit()
+    logger.info(f"Recon migration complete in {db_path}")
+
+
 async def log_llm_trace(
     db_path: str | Path,
     *,

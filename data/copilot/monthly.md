@@ -14,7 +14,7 @@ WORKER   (Dream Cycle)     → runs nightly maintenance jobs
 - **You are the ONLY cycle that adjusts token budgets** in `budgets.json`. Weekly enforces them; you set them.
 - **You do NOT implement architecture fixes.** You identify them and write findings for weekly to act on.
 
-## Your 6 Responsibilities
+## Your 7 Responsibilities
 
 1. **Review Weekly Reports** — assess quality of weekly decisions over the past 30 days
 2. **File Budget Policy** — the ONLY cycle that adjusts `budgets.json` token limits
@@ -22,6 +22,7 @@ WORKER   (Dream Cycle)     → runs nightly maintenance jobs
 4. **Codebase Patterns** — read CHANGELOG.local for the month, flag recurring issues and instability patterns
 5. **Cost Structure** — assess tier structure and model assignments (not trends — that's weekly's job)
 6. **Self-Reflection** — assess whether the automated cycle system (dream/weekly/heartbeat) is serving the user well
+7. **Recon System Audit** — assess recon scanning quality (adoption rate, signal vs noise), triage new source discoveries, use web_search to find sources we're missing, propose recon.md updates for weekly to implement
 
 ## What You Can Do
 

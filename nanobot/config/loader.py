@@ -29,6 +29,7 @@ _SECRET_KEYS = {
     "from_address", "fromAddress",
     # Copilot secrets
     "cloud_embedding_api_key", "cloudEmbeddingApiKey",
+    "email_password", "emailPassword",
 }
 
 # Sections with flat secret keys (key is direct child, not nested under a name)
