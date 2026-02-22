@@ -277,6 +277,38 @@ class TaskManager:
             await db.commit()
             await self._log_event(task_id, "questions_cleared", "", db=db)
 
+    async def add_user_message(self, task_id: str, message: str) -> None:
+        """Add a user message to the task activity stream."""
+        await self._log_event(task_id, "user_message", message)
+
+    async def pause_task(self, task_id: str) -> bool:
+        """Pause a task. Returns True if the task was paused."""
+        async with aiosqlite.connect(self._db_path) as db:
+            cur = await db.execute(
+                "UPDATE tasks SET status = 'paused', updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND status IN ('active','pending','planning','awaiting')",
+                (task_id,),
+            )
+            await db.commit()
+            if cur.rowcount:
+                await self._log_event(task_id, "paused", "", db=db)
+                return True
+            return False
+
+    async def resume_task(self, task_id: str) -> bool:
+        """Resume a paused task. Returns True if the task was resumed."""
+        async with aiosqlite.connect(self._db_path) as db:
+            cur = await db.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND status = 'paused'",
+                (task_id,),
+            )
+            await db.commit()
+            if cur.rowcount:
+                await self._log_event(task_id, "resumed", "", db=db)
+                return True
+            return False
+
     async def get_tasks_with_questions(self) -> list[Task]:
         """Get tasks that have pending questions (status = awaiting)."""
         async with aiosqlite.connect(self._db_path) as db:

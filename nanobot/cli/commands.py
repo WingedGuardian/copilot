@@ -537,6 +537,7 @@ def gateway(
             migrate_navigator,
             migrate_routing_preferences,
             migrate_sentience,
+            migrate_task_pause,
             migrate_webui,
         )
         from nanobot.copilot.cost.logger import CostLogger
@@ -550,6 +551,7 @@ def gateway(
         _aio.run(migrate_sentience(db_path))
         _aio.run(migrate_navigator(db_path))
         _aio.run(migrate_webui(db_path))
+        _aio.run(migrate_task_pause(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
         # Normalize monitor_chat_id for WhatsApp (must be JID format)

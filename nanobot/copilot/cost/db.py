@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS lessons (
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     user_id TEXT DEFAULT 'user',
-    status TEXT CHECK(status IN ('pending','planning','awaiting','active','completed','failed'))
+    status TEXT CHECK(status IN ('pending','planning','awaiting','active','completed','failed','paused'))
         DEFAULT 'pending',
     checkpoint_tier TEXT CHECK(checkpoint_tier IN ('trivial','operational','strategic','commitment'))
         DEFAULT 'strategic',
@@ -580,6 +580,51 @@ async def migrate_webui(db_path: str | Path) -> None:
         """)
         await db.commit()
     logger.info(f"WebUI migration complete in {db_path}")
+
+
+async def migrate_task_pause(db_path: str | Path) -> None:
+    """Add 'paused' to tasks status CHECK constraint. Safe to call repeatedly."""
+    async with aiosqlite.connect(str(db_path)) as db:
+        # Test if 'paused' is already valid
+        try:
+            await db.execute(
+                "INSERT INTO tasks (id, status) VALUES ('__pause_test__', 'paused')"
+            )
+            await db.execute("DELETE FROM tasks WHERE id = '__pause_test__'")
+            await db.commit()
+            return  # Already supports paused
+        except Exception:
+            await db.rollback()
+
+        # Recreate table with expanded CHECK constraint
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tasks_new (
+                id TEXT PRIMARY KEY,
+                user_id TEXT DEFAULT 'user',
+                status TEXT CHECK(status IN ('pending','planning','awaiting','active','completed','failed','paused'))
+                    DEFAULT 'pending',
+                checkpoint_tier TEXT CHECK(checkpoint_tier IN ('trivial','operational','strategic','commitment'))
+                    DEFAULT 'strategic',
+                current_assignee TEXT,
+                context_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                title TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                parent_id TEXT,
+                priority INTEGER DEFAULT 3,
+                deadline TEXT,
+                session_key TEXT DEFAULT '',
+                step_count INTEGER DEFAULT 0,
+                steps_completed INTEGER DEFAULT 0,
+                pending_questions TEXT
+            )
+        """)
+        await db.execute("INSERT OR IGNORE INTO tasks_new SELECT * FROM tasks")
+        await db.execute("DROP TABLE tasks")
+        await db.execute("ALTER TABLE tasks_new RENAME TO tasks")
+        await db.commit()
+    logger.info(f"Task pause migration complete in {db_path}")
 
 
 async def log_llm_trace(
