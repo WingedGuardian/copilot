@@ -380,7 +380,7 @@ class TaskWorker:
 
                 cur = await db.execute(
                     "SELECT details FROM task_log "
-                    "WHERE task_id = ? AND event = 'user_message' AND timestamp > ? "
+                    "WHERE task_id = ? AND event = 'user_message' AND timestamp >= ? "
                     "ORDER BY timestamp ASC",
                     (task_id, since),
                 )
