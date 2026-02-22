@@ -63,6 +63,67 @@ async def task_detail(request: web.Request) -> dict:
     return {"active": "tasks", "task": task, "steps": steps, "logs": logs}
 
 
+async def send_message(request: web.Request) -> web.Response:
+    """Post a user message to an active task's activity stream."""
+    task_id = request.match_info["id"]
+    data = await request.post()
+    message = data.get("message", "").strip()
+    ctx = request.app.get("ctx", {})
+    db_path = ctx.get("db_path", "")
+
+    if message and db_path:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "INSERT INTO task_log (task_id, event, details) VALUES (?, 'user_message', ?)",
+                (task_id, message),
+            )
+            await db.commit()
+
+    raise web.HTTPSeeOther(f"/tasks/{task_id}")
+
+
+async def pause_task(request: web.Request) -> web.Response:
+    """Pause an active task."""
+    task_id = request.match_info["id"]
+    ctx = request.app.get("ctx", {})
+    db_path = ctx.get("db_path", "")
+    if db_path:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET status = 'paused', updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND status IN ('active','pending','planning','awaiting')",
+                (task_id,),
+            )
+            if db.total_changes:
+                await db.execute(
+                    "INSERT INTO task_log (task_id, event, details) VALUES (?, 'paused', '')",
+                    (task_id,),
+                )
+            await db.commit()
+    raise web.HTTPSeeOther(f"/tasks/{task_id}")
+
+
+async def resume_task(request: web.Request) -> web.Response:
+    """Resume a paused task."""
+    task_id = request.match_info["id"]
+    ctx = request.app.get("ctx", {})
+    db_path = ctx.get("db_path", "")
+    if db_path:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND status = 'paused'",
+                (task_id,),
+            )
+            if db.total_changes:
+                await db.execute(
+                    "INSERT INTO task_log (task_id, event, details) VALUES (?, 'resumed', '')",
+                    (task_id,),
+                )
+            await db.commit()
+    raise web.HTTPSeeOther(f"/tasks/{task_id}")
+
+
 async def cancel_task(request: web.Request) -> web.Response:
     """Cancel an in-progress or pending task."""
     task_id = request.match_info["id"]
@@ -78,7 +139,32 @@ async def cancel_task(request: web.Request) -> web.Response:
     raise web.HTTPSeeOther("/tasks")
 
 
+async def task_events(request: web.Request) -> web.Response:
+    """Return task_log events since a timestamp for live polling."""
+    task_id = request.match_info["id"]
+    since = request.rel_url.query.get("since", "1970-01-01T00:00:00")
+    ctx = request.app.get("ctx", {})
+    db_path = ctx.get("db_path", "")
+    events: list[dict] = []
+
+    if db_path:
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT * FROM task_log WHERE task_id = ? AND timestamp > ? "
+                "ORDER BY timestamp ASC LIMIT 50",
+                (task_id, since),
+            )
+            events = [dict(r) for r in await cur.fetchall()]
+
+    return web.json_response(events)
+
+
 def setup(app: web.Application) -> None:
     app.router.add_get("/tasks", index)
     app.router.add_get("/tasks/{id}", task_detail)
+    app.router.add_get("/tasks/{id}/events", task_events)
+    app.router.add_post("/tasks/{id}/message", send_message)
+    app.router.add_post("/tasks/{id}/pause", pause_task)
+    app.router.add_post("/tasks/{id}/resume", resume_task)
     app.router.add_post("/tasks/{id}/cancel", cancel_task)
