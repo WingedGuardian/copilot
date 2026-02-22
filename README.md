@@ -2,7 +2,7 @@
 
 **Executive AI copilot extensions for the [nanobot](https://github.com/HKUDS/nanobot) framework.**
 
-A fork of nanobot that adds autonomous cognitive capabilities: hybrid memory (Qdrant + SQLite FTS5), intelligent model routing with failover, a nightly dream cycle for self-maintenance, task management with peer review, cost tracking, and more.
+This is a fork of nanobot (v0.1.4) that adds autonomous cognitive capabilities: hybrid memory (Qdrant + SQLite FTS5), intelligent model routing with failover, a nightly dream cycle for self-maintenance, task management with peer review, cost tracking, and more.
 
 ---
 
