@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% set active = "observations" %}
+
+{% block title %}Observations — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Observations</h1>
+    <div class="flex items-center gap-3">
+      <select onchange="window.location.search='category='+this.value"
+              class="bg-nb-bg border border-nb-border rounded text-xs text-nb-muted px-2 py-1">
+        <option value="" {% if not category_filter %}selected{% endif %}>All categories</option>
+        <option value="operational" {% if category_filter == 'operational' %}selected{% endif %}>Operational</option>
+        <option value="infrastructure" {% if category_filter == 'infrastructure' %}selected{% endif %}>Infrastructure</option>
+        <option value="performance" {% if category_filter == 'performance' %}selected{% endif %}>Performance</option>
+      </select>
+      <span class="text-nb-muted text-xs">
+        {{ open_obs | length }} open &middot; {{ resolved_obs | length }} resolved (last 50)
+      </span>
+    </div>
+  </div>
+
+  <!-- Open Observations -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Open</h2>
+
+    {% if open_obs %}
+    <div class="space-y-3">
+      {% for obs in open_obs %}
+      <div class="border-b border-nb-border last:border-0 pb-3 last:pb-0">
+        <div class="flex items-start gap-3 text-sm">
+          <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase
+            {% if obs.priority == 'high' %}bg-nb-red text-white
+            {% elif obs.priority == 'medium' %}bg-nb-yellow text-nb-bg
+            {% else %}bg-nb-muted text-white{% endif %}">
+            {{ obs.priority }}
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-baseline gap-2 flex-wrap">
+              <span class="text-nb-accent text-xs font-mono">{{ obs.observation_type }}</span>
+              <span class="text-nb-muted text-xs">{{ obs.category }}</span>
+              <span class="text-nb-muted text-xs">via {{ obs.source }}</span>
+            </div>
+            <p class="text-nb-text text-xs mt-1">{{ obs.content }}</p>
+          </div>
+          <div class="shrink-0 text-right">
+            <p class="text-nb-muted text-xs whitespace-nowrap">{{ obs.created_at }}</p>
+            {% if obs.expires_at %}
+            <p class="text-nb-yellow text-xs whitespace-nowrap">hint: {{ obs.expires_at }}</p>
+            {% endif %}
+          </div>
+        </div>
+        <div class="flex items-center gap-2 mt-2 ml-8">
+          <form method="POST" action="/observations/{{ obs.id }}/resolve" class="flex items-center gap-1">
+            <input type="text" name="note" placeholder="Resolution note..."
+                   class="bg-nb-bg border border-nb-border rounded text-xs text-nb-text px-2 py-0.5 w-48">
+            <button class="text-[10px] px-2 py-0.5 rounded bg-nb-green/20 text-nb-green hover:bg-nb-green/30">
+              Resolve
+            </button>
+          </form>
+          <form method="POST" action="/observations/{{ obs.id }}/wont_fix">
+            <input type="hidden" name="note" value="">
+            <button class="text-[10px] text-nb-muted hover:text-nb-yellow hover:underline">Won't fix</button>
+          </form>
+          <form method="POST" action="/observations/{{ obs.id }}/duplicate">
+            <input type="hidden" name="note" value="">
+            <button class="text-[10px] text-nb-muted hover:text-nb-yellow hover:underline">Duplicate</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="flex items-center gap-2 text-nb-green text-sm">
+      <span>&#x25cf;</span>
+      <span>No open observations</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Resolved Observations -->
+  {% if resolved_obs %}
+  <details class="bg-nb-surface border border-nb-border rounded">
+    <summary class="p-4 cursor-pointer text-nb-muted text-xs uppercase tracking-widest hover:text-nb-text">
+      Resolved ({{ resolved_obs | length }})
+    </summary>
+    <div class="p-4 pt-0 space-y-2">
+      {% for obs in resolved_obs %}
+      <div class="flex items-start gap-3 text-sm border-b border-nb-border last:border-0 pb-2 last:pb-0 opacity-60">
+        <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase
+          {% if obs.status == 'resolved' %}bg-nb-green/30 text-nb-green
+          {% elif obs.status == 'wont_fix' %}bg-nb-yellow/30 text-nb-yellow
+          {% else %}bg-nb-muted/30 text-nb-muted{% endif %}">
+          {{ obs.status | replace('_', ' ') }}
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-baseline gap-2 flex-wrap">
+            <span class="text-nb-accent text-xs font-mono">{{ obs.observation_type }}</span>
+            <span class="text-nb-muted text-xs">{{ obs.category }}</span>
+          </div>
+          <p class="text-nb-text text-xs mt-0.5">{{ obs.content }}</p>
+          {% if obs.resolution_note %}
+          <p class="text-nb-green text-xs mt-0.5 italic">{{ obs.resolution_note }}</p>
+          {% endif %}
+        </div>
+        <div class="text-right shrink-0">
+          <p class="text-nb-muted text-xs whitespace-nowrap">{{ obs.created_at }}</p>
+          <p class="text-nb-green text-xs whitespace-nowrap">{{ obs.status }} by {{ obs.resolved_by }} — {{ obs.resolved_at }}</p>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -411,17 +411,19 @@ async def migrate_sentience(db_path: str | Path) -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 source TEXT NOT NULL DEFAULT 'dream_cycle',
                 observation_type TEXT NOT NULL,
+                category TEXT DEFAULT 'operational',
                 content TEXT NOT NULL,
                 priority TEXT DEFAULT 'medium',
-                actionable INTEGER DEFAULT 1,
-                acted_on INTEGER DEFAULT 0,
-                acted_on_at TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'open',
                 expires_at TIMESTAMP,
+                resolved_at TIMESTAMP,
+                resolved_by TEXT,
+                resolution_note TEXT,
                 related_task_id TEXT,
                 metadata_json TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_dream_obs_unacted
-                ON dream_observations(acted_on, created_at);
+            CREATE INDEX IF NOT EXISTS idx_dream_obs_status
+                ON dream_observations(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_dream_obs_source
                 ON dream_observations(source, observation_type);
 

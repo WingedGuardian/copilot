@@ -50,6 +50,7 @@ def create_web_app(**ctx) -> web.Application:
         logs,
         memory,
         models,
+        observations,
         routing,
         secrets,
         services,
@@ -60,6 +61,7 @@ def create_web_app(**ctx) -> web.Application:
     services.setup(app)
     costs.setup(app)
     alerts.setup(app)
+    observations.setup(app)
     autonomy.setup(app)
     chat.setup(app)
     config.setup(app)

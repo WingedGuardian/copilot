@@ -109,7 +109,7 @@
           <th class="text-left pb-2 font-normal">Type</th>
           <th class="text-left pb-2 font-normal">Priority</th>
           <th class="text-left pb-2 font-normal">Content</th>
-          <th class="text-center pb-2 font-normal">Acted</th>
+          <th class="text-center pb-2 font-normal">Status</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-nb-border">
@@ -129,10 +129,14 @@
           </td>
           <td class="py-2 text-nb-muted text-xs truncate max-w-xs">{{ obs.content[:100] if obs.content else "—" }}{% if obs.content and obs.content|length > 100 %}…{% endif %}</td>
           <td class="py-2 text-center">
-            {% if obs.acted_on %}
-            <span class="text-nb-green text-xs">✓</span>
+            {% if obs.status == 'resolved' %}
+            <span class="text-nb-green text-xs">resolved</span>
+            {% elif obs.status == 'wont_fix' %}
+            <span class="text-nb-yellow text-xs">won't fix</span>
+            {% elif obs.status == 'duplicate' %}
+            <span class="text-nb-muted text-xs">dup</span>
             {% else %}
-            <span class="text-nb-muted text-xs">—</span>
+            <span class="text-nb-accent text-xs">open</span>
             {% endif %}
           </td>
         </tr>

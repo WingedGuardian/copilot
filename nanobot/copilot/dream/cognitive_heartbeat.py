@@ -53,7 +53,7 @@ class CopilotHeartbeatService(HeartbeatService):
 
         # Gather all context in parallel
         heartbeat_md = self._read_heartbeat_file()
-        observations = await self._get_unacted_observations()
+        observations = await self._get_open_observations()
         pending_tasks = await self._get_pending_tasks()
         permissions = await self._get_autonomy_permissions()
         active_lessons = await self._get_active_lessons()
@@ -149,18 +149,17 @@ class CopilotHeartbeatService(HeartbeatService):
     # Context gathering
     # ------------------------------------------------------------------
 
-    async def _get_unacted_observations(self) -> list[dict]:
-        """Query dream_observations WHERE acted_on = 0, LIMIT 10."""
+    async def _get_open_observations(self) -> list[dict]:
+        """Query dream_observations WHERE status = 'open', LIMIT 10."""
         if not self._db_path:
             return []
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 db.row_factory = aiosqlite.Row
                 cur = await db.execute(
-                    """SELECT id, observation_type, content, priority, source
+                    """SELECT id, observation_type, category, content, priority, source
                        FROM dream_observations
-                       WHERE acted_on = 0
-                         AND (expires_at IS NULL OR expires_at > datetime('now'))
+                       WHERE status = 'open'
                        ORDER BY
                          CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                          created_at DESC
@@ -325,7 +324,7 @@ class CopilotHeartbeatService(HeartbeatService):
 - Execute HEARTBEAT.md tasks as usual
 - Write observations (things you notice, patterns, capability gaps)
 - Flag something for the user's next conversation
-- Mark observations as acted_on if you've addressed them
+- Mark observations as resolved if you've addressed them
 - Note capability gaps for the dream cycle to process
 
 ## Output
@@ -385,9 +384,10 @@ If nothing needs attention beyond HEARTBEAT.md tasks, skip the JSON block entire
                     for obs in observations:
                         await db.execute(
                             """INSERT INTO dream_observations
-                               (source, observation_type, content, priority)
-                               VALUES (?, ?, ?, ?)""",
+                               (source, observation_type, category, content, priority)
+                               VALUES (?, ?, ?, ?, ?)""",
                             ("cognitive_heartbeat", obs["observation_type"],
+                             obs.get("category", "operational"),
                              obs["content"], obs["priority"]),
                         )
                     await db.commit()

@@ -564,13 +564,16 @@ class DreamCycle:
                 for obs in observations:
                     await db.execute(
                         """INSERT INTO dream_observations
-                           (source, observation_type, content, priority, related_task_id, metadata_json)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
+                           (source, observation_type, category, content, priority,
+                            expires_at, related_task_id, metadata_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             source,
                             obs.get("observation_type", "pattern"),
+                            obs.get("category", "operational"),
                             obs.get("content", ""),
                             obs.get("priority", "medium"),
+                            obs.get("expires_at"),
                             obs.get("related_task_id"),
                             obs.get("metadata_json"),
                         ),
@@ -616,7 +619,7 @@ class DreamCycle:
                 cur = await db.execute(
                     """SELECT id, content FROM dream_observations
                        WHERE observation_type = 'evolution_proposal'
-                         AND acted_on = 0
+                         AND status = 'open'
                        ORDER BY created_at DESC LIMIT 5"""
                 )
                 proposals = await cur.fetchall()
@@ -690,9 +693,9 @@ class DreamCycle:
                        VALUES (?, ?, ?, ?)""",
                     (file_path, "autonomous_evolution", (result or "")[:500], "dream_cycle"),
                 )
-                # Mark proposal as acted_on
+                # Mark proposal as resolved
                 await db.execute(
-                    "UPDATE dream_observations SET acted_on = 1, acted_on_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    "UPDATE dream_observations SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolved_by = 'identity_evolution' WHERE id = ?",
                     (top_id,),
                 )
                 await db.commit()
@@ -711,34 +714,34 @@ class DreamCycle:
                 pass
 
     async def _cleanup_observations(self) -> dict | None:
-        """Job 12: Expire old unacted observations and prune old acted ones."""
+        """Job 12: Log observation stats. No deletion — permanent audit trail."""
         if not self._db_path:
             return {"_skipped": True, "reason": "no DB configured"}
         try:
             async with aiosqlite.connect(self._db_path) as db:
-                # Expire unacted observations older than 14 days
                 cur = await db.execute(
-                    """UPDATE dream_observations
-                       SET acted_on = -1
-                       WHERE acted_on = 0
-                         AND created_at < datetime('now', '-14 days')"""
+                    "SELECT status, COUNT(*) FROM dream_observations GROUP BY status"
                 )
-                expired = cur.rowcount
+                stats = {r[0]: r[1] for r in await cur.fetchall()}
 
-                # Delete acted observations older than 90 days
+                # Flag observations past soft expiry (log only, no status change)
                 cur = await db.execute(
-                    """DELETE FROM dream_observations
-                       WHERE acted_on = 1
-                         AND created_at < datetime('now', '-90 days')"""
+                    """SELECT COUNT(*) FROM dream_observations
+                       WHERE status = 'open'
+                         AND expires_at IS NOT NULL
+                         AND expires_at < CURRENT_TIMESTAMP"""
                 )
-                pruned = cur.rowcount
+                past_expiry = (await cur.fetchone())[0]
 
-                await db.commit()
-
-                if expired or pruned:
-                    logger.info(f"Observation cleanup: {expired} expired, {pruned} pruned")
+                if stats:
+                    logger.info(f"Observation stats: {stats}")
+                if past_expiry:
+                    logger.info(
+                        f"Observations past soft expiry: {past_expiry} (not auto-resolved)"
+                    )
+                return {"stats": stats, "past_expiry": past_expiry}
         except Exception as e:
-            logger.warning(f"Observation cleanup failed: {e}")
+            logger.warning(f"Observation stats failed: {e}")
 
     async def _index_codebase(self) -> dict | None:
         """Job 13: Update the codebase-map skill with current project structure."""
@@ -864,6 +867,7 @@ Rules:
                     if isinstance(gap, dict) and gap.get("gap"):
                         observations.append({
                             "observation_type": "capability_gap",
+                            "category": "operational",
                             "content": f"{gap['gap']} (impact: {gap.get('impact', 'medium')})",
                             "priority": gap.get("impact", "medium"),
                         })
@@ -872,19 +876,24 @@ Rules:
                     if pattern:
                         observations.append({
                             "observation_type": "pattern",
+                            "category": "operational",
                             "content": str(pattern),
                             "priority": "low",
                         })
 
                 for diag in parsed.get("failure_diagnoses", []):
                     if isinstance(diag, dict) and diag.get("what_failed"):
+                        _diag_content = (
+                            f"Failed: {diag['what_failed']}. "
+                            f"Why: {diag.get('why', 'unknown')}. "
+                            f"Fix: {diag.get('proposed_fix', 'unknown')}"
+                        )
+                        _infra_keywords = ("provider", "api key", "circuit", "timeout", "connection")
+                        _diag_cat = "infrastructure" if any(k in _diag_content.lower() for k in _infra_keywords) else "operational"
                         observations.append({
                             "observation_type": "failure_diagnosis",
-                            "content": (
-                                f"Failed: {diag['what_failed']}. "
-                                f"Why: {diag.get('why', 'unknown')}. "
-                                f"Fix: {diag.get('proposed_fix', 'unknown')}"
-                            ),
+                            "category": _diag_cat,
+                            "content": _diag_content,
                             "priority": "high",
                         })
 
@@ -893,6 +902,7 @@ Rules:
                         import json as _json
                         observations.append({
                             "observation_type": "evolution_proposal",
+                            "category": "operational",
                             "content": f"[{sug.get('target_file', '?')}] {sug['suggested_change']}",
                             "priority": "medium",
                             "metadata_json": _json.dumps({"reasoning": sug.get("reasoning", "")}),
@@ -908,6 +918,7 @@ Rules:
                         import json as _json
                         observations.append({
                             "observation_type": "duo_assessment",
+                            "category": "operational",
                             "content": (
                                 f"Navigator effectiveness: {effectiveness}. "
                                 f"Sycophancy risk: {sycophancy}. "
@@ -926,6 +937,7 @@ Rules:
                 logger.warning("Dream reflection: JSON parse failed, storing raw text")
                 await self._write_dream_observations([{
                     "observation_type": "parse_failure",
+                    "category": "infrastructure",
                     "content": raw_text[:2000],
                     "priority": "low",
                 }])
@@ -975,6 +987,28 @@ Rules:
         except Exception:
             pass
 
+        # Today's observations (so reflection avoids re-flagging)
+        if self._db_path:
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute(
+                        """SELECT observation_type, category, status, content
+                           FROM dream_observations
+                           WHERE DATE(created_at) = DATE('now')
+                           ORDER BY created_at DESC LIMIT 20"""
+                    )
+                    obs_rows = await cur.fetchall()
+                    if obs_rows:
+                        obs_lines = [
+                            f"  - [{r[2]}] ({r[0]}/{r[1]}) {r[3][:120]}"
+                            for r in obs_rows
+                        ]
+                        sections.append(
+                            "Today\'s observations:\n" + "\n".join(obs_lines)
+                        )
+            except Exception:
+                pass
+
         # Recent conversations (last 24h from episodes)
         if self._db_path:
             try:
@@ -999,6 +1033,7 @@ Rules:
                            WHERE timestamp > datetime('now', '-1 day')
                              AND message NOT LIKE '%lm_studio%'
                              AND message NOT LIKE '%LM Studio%'
+                             AND error_key NOT LIKE 'provider_failed:%'
                            ORDER BY timestamp DESC LIMIT 5"""
                     )
                     alert_rows = await cur.fetchall()
@@ -1418,15 +1453,17 @@ The full analysis is stored internally. Only the user_summary is sent to the use
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 cur = await db.execute(
-                    """SELECT content, source, created_at FROM dream_observations
+                    """SELECT content, source, created_at, status FROM dream_observations
                        WHERE observation_type = 'capability_gap'
-                         AND created_at >= datetime('now', '-7 days')
+                         AND (status = 'open'
+                              OR (status IN ('resolved', 'wont_fix', 'duplicate')
+                                  AND resolved_at >= datetime('now', '-7 days')))
                        ORDER BY created_at DESC LIMIT 20"""
                 )
                 rows = await cur.fetchall()
                 if not rows:
                     return ""
-                lines = [f"- [{r[1]}] {r[0]}" for r in rows]
+                lines = [f"- [{r[1]}] [{r[3]}] {r[0]}" for r in rows]
                 return "\n".join(lines)
         except Exception:
             return ""
