@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% set active = "services" %}
+
+{% block title %}Services — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Services</h1>
+
+  {% if not report %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4 text-nb-muted text-sm">
+    StatusAggregator unavailable — no context injected.
+  </div>
+  {% else %}
+
+  <!-- Subsystem Health -->
+  {% if report.subsystems %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Subsystem Health</h2>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Subsystem</th>
+          <th class="text-left pb-2 font-normal">Status</th>
+          <th class="text-left pb-2 font-normal">Latency</th>
+          <th class="text-left pb-2 font-normal">Details</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for s in report.subsystems %}
+        <tr>
+          <td class="py-2 text-nb-text">{{ s.name }}</td>
+          <td class="py-2">
+            <span class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full {% if s.healthy %}bg-nb-green{% else %}bg-nb-red{% endif %} shrink-0"></span>
+              <span class="{% if s.healthy %}text-nb-green{% else %}text-nb-red{% endif %}">
+                {% if s.healthy %}OK{% else %}DOWN{% endif %}
+              </span>
+            </span>
+          </td>
+          <td class="py-2 text-nb-muted text-xs">{% if s.latency_ms %}{{ s.latency_ms }}ms{% else %}—{% endif %}</td>
+          <td class="py-2 text-nb-muted text-xs truncate max-w-xs">{{ s.details or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- Periodic Services (ProcessSupervisor) -->
+  {% if report.services %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Periodic Services</h2>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Service</th>
+          <th class="text-left pb-2 font-normal">Status</th>
+          <th class="text-left pb-2 font-normal">Restarts</th>
+          <th class="text-left pb-2 font-normal">Details</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for svc_name, svc_info in report.services.items() %}
+        {% set alive = svc_info.get('alive', False) %}
+        {% set restarts = svc_info.get('restarts', 0) %}
+        <tr>
+          <td class="py-2 text-nb-text">{{ svc_name }}</td>
+          <td class="py-2">
+            <span class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full {% if alive %}bg-nb-green{% else %}bg-nb-red{% endif %} shrink-0"></span>
+              <span class="{% if alive %}text-nb-green{% else %}text-nb-red{% endif %}">
+                {% if alive %}running{% else %}dead{% endif %}
+              </span>
+            </span>
+          </td>
+          <td class="py-2 text-nb-muted text-xs">
+            {% if restarts > 0 %}
+            <span class="text-nb-yellow">{{ restarts }}</span>
+            {% else %}
+            0
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs">{{ svc_info.get('details', '') or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4 text-nb-muted text-sm">
+    No supervised services registered (ProcessSupervisor not attached).
+  </div>
+  {% endif %}
+
+  <!-- Models -->
+  {% if report.models %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Model Tiers</h2>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Tier</th>
+          <th class="text-left pb-2 font-normal">Provider</th>
+          <th class="text-left pb-2 font-normal">Model</th>
+          <th class="text-left pb-2 font-normal">Status</th>
+          <th class="text-left pb-2 font-normal">Latency</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for m in report.models %}
+        <tr>
+          <td class="py-2 text-nb-muted text-xs uppercase">{{ m.tier }}</td>
+          <td class="py-2 text-nb-text">{{ m.provider or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs truncate max-w-xs">{{ m.model or "—" }}</td>
+          <td class="py-2">
+            {% if m.healthy is none %}
+            <span class="text-nb-muted text-xs">unknown</span>
+            {% elif m.healthy %}
+            <span class="text-nb-green text-xs">OK</span>
+            {% else %}
+            <span class="text-nb-red text-xs">DOWN</span>
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs">{% if m.latency_ms %}{{ m.latency_ms }}ms{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- Last Operations -->
+  {% if report.ops_summary %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Last Operations</h2>
+    <div class="grid grid-cols-2 gap-x-8 gap-y-1 text-xs">
+      {% set ops = report.ops_summary %}
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Dream cycle</span>
+        <span class="text-nb-text">{{ ops.dream_ago if ops.dream_ago is defined and ops.dream_ago else 'never' }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Health check</span>
+        <span class="text-nb-text">{{ ops.health_check_ago if ops.health_check_ago is defined and ops.health_check_ago else 'not yet' }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Heartbeat</span>
+        <span class="text-nb-text">{{ ops.heartbeat_ago if ops.heartbeat_ago is defined and ops.heartbeat_ago else 'not yet' }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-nb-muted">Weekly review</span>
+        <span class="text-nb-text">{{ ops.weekly_ago if ops.weekly_ago is defined and ops.weekly_ago else 'never' }}</span>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% endif %}{# end if report #}
+
+</div>
+{% endblock %}

@@ -184,7 +184,14 @@ class DashboardReport:
                 lines.append(f"  Extractions today: {ext['extractions_today']}")
             if ext.get("last_extraction_ago"):
                 lines.append(f"  Last extraction: {ext['last_extraction_ago']}")
-            embed_src = "local" if ext.get("embedding_local") else "cloud" if ext.get("embedding_cloud") else "down"
+            lm_studio_up = any(
+                s.healthy for s in self.subsystems if s.name == "LM Studio"
+            )
+            embed_src = (
+                "local" if (ext.get("embedding_local") and lm_studio_up)
+                else "cloud" if ext.get("embedding_cloud")
+                else "down"
+            )
             lines.append(f"  Embedding: {embed_src}")
 
         # Active Alerts (unresolved only)
@@ -302,7 +309,7 @@ class StatusAggregator:
 
         # Routing state from session + router
         if self._router:
-            report.routing = self._build_routing_state(session_metadata)
+            report.routing = await self._build_routing_state(session_metadata)
 
         checks = await asyncio.gather(
             self._check_lm_studio(),
@@ -631,12 +638,29 @@ class StatusAggregator:
                     result["health_check_ago"] = _format_ago(
                         self._health_check.last_tick_at.strftime("%Y-%m-%d %H:%M:%S")
                     )
+                else:
+                    # Fallback: last persisted health check log (survives restarts)
+                    cur = await db.execute(
+                        "SELECT run_at FROM heartbeat_log ORDER BY run_at DESC LIMIT 1"
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        result["health_check_ago"] = _format_ago(row[0])
 
                 # Nanobot heartbeat (HEARTBEAT.md agent check-in, 2h interval)
                 if self._heartbeat and self._heartbeat.last_tick_at:
                     result["heartbeat_ago"] = _format_ago(
                         self._heartbeat.last_tick_at.strftime("%Y-%m-%d %H:%M:%S")
                     )
+                else:
+                    # Fallback: last persisted heartbeat_checklist event (survives restarts)
+                    cur = await db.execute(
+                        "SELECT created_at FROM heartbeat_events "
+                        "WHERE event_type = 'heartbeat_checklist' ORDER BY created_at DESC LIMIT 1"
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        result["heartbeat_ago"] = _format_ago(row[0])
 
                 # Last weekly review
                 cur = await db.execute(
@@ -663,7 +687,7 @@ class StatusAggregator:
             logger.debug(f"Ops summary query failed: {e}")
         return result
 
-    def _build_routing_state(self, session_metadata: dict | None) -> RoutingState:
+    async def _build_routing_state(self, session_metadata: dict | None) -> RoutingState:
         """Determine current routing mode from session metadata and router."""
         router = self._router
         meta = session_metadata or {}
@@ -715,12 +739,12 @@ class StatusAggregator:
         # No in-memory decision (e.g. after restart) — check routing_log DB
         if self._db_path:
             try:
-                import sqlite3 as _sqlite3
-                with _sqlite3.connect(self._db_path) as db:
-                    row = db.execute(
+                async with aiosqlite.connect(self._db_path) as db:
+                    cur = await db.execute(
                         "SELECT routed_to, provider, model_used FROM routing_log "
                         "ORDER BY timestamp DESC LIMIT 1"
-                    ).fetchone()
+                    )
+                    row = await cur.fetchone()
                     if row:
                         return RoutingState(
                             mode="auto", active_tier=row[0] or "",

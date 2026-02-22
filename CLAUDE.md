@@ -1,3 +1,15 @@
+# Project: Genesis
+
+**Genesis** is the project name for this system. Built on the [nanobot](https://github.com/HKUDS/nanobot) framework (upstream fork), with extensive copilot/executive extensions. GitHub repo: `WingedGuardian/Genesis`.
+
+**Current naming (pre-v2 — do not rename these yet):**
+- Local directory: `~/executive-copilot/nanobot/` (rename to `~/genesis/` is post-v2)
+- Python package: `nanobot` (upstream name, kept permanently)
+- Runtime data: `~/.nanobot/` (kept permanently)
+- Internal code references to "nanobot" and "copilot" remain unchanged
+
+**Post-v2 rename scope:** local directory, venv paths, systemd service, hook scripts, settings.json, config.py backup_dir, Claude projects directory. See POST-V2-UPSTREAM-MERGE.md.
+
 # Communication Style
 
 Act like gravity for this idea. Your job is to pull it back to reality. Attack the weakest points in my reasoning, challenge my assumptions, and expose what I might be missing. Be tough, specific, and do not sugarcoat your feedback.

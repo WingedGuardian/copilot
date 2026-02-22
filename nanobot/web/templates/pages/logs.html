@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% set active = "logs" %}
+
+{% block title %}Logs — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Logs</h1>
+    <form method="get" action="/logs" class="flex gap-2 flex-wrap">
+      <input type="text" name="q" value="{{ q }}" placeholder="Search…"
+             class="bg-nb-bg border border-nb-border rounded px-2 py-1 text-xs text-nb-text placeholder-nb-muted focus:outline-none focus:border-nb-accent">
+      <select name="level"
+              class="bg-nb-bg border border-nb-border rounded px-2 py-1 text-xs text-nb-text focus:outline-none focus:border-nb-accent">
+        <option value="" {% if not level %}selected{% endif %}>All levels</option>
+        <option value="DEBUG"   {% if level == "DEBUG"   %}selected{% endif %}>DEBUG</option>
+        <option value="INFO"    {% if level == "INFO"    %}selected{% endif %}>INFO</option>
+        <option value="WARNING" {% if level == "WARNING" %}selected{% endif %}>WARNING</option>
+        <option value="ERROR"   {% if level == "ERROR"   %}selected{% endif %}>ERROR</option>
+      </select>
+      <button type="submit"
+              class="border border-nb-border rounded px-3 py-1 text-xs text-nb-muted hover:border-nb-accent hover:text-nb-accent">
+        Filter
+      </button>
+      {% if q or level %}
+      <a href="/logs" class="border border-nb-border rounded px-3 py-1 text-xs text-nb-muted hover:border-nb-accent hover:text-nb-accent">
+        Clear
+      </a>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    {% if not log_exists %}
+    <p class="text-nb-muted text-sm">Log file not found at <code class="text-nb-text">~/.nanobot/logs/gateway.log</code>.</p>
+    {% elif not lines %}
+    <p class="text-nb-muted text-sm">No log lines match the current filter.</p>
+    {% else %}
+    <p class="text-nb-muted text-xs mb-3">Showing {{ lines|length }} line{{ "s" if lines|length != 1 else "" }} (newest first)</p>
+    <div class="font-mono text-xs space-y-px overflow-x-auto">
+      {% for line in lines %}
+        {% if " ERROR " in line or "ERROR:" in line %}
+        <div class="text-nb-red whitespace-pre-wrap break-all">{{ line }}</div>
+        {% elif " WARNING " in line or "WARNING:" in line %}
+        <div class="text-nb-yellow whitespace-pre-wrap break-all">{{ line }}</div>
+        {% elif " DEBUG " in line or "DEBUG:" in line %}
+        <div class="text-nb-muted opacity-50 whitespace-pre-wrap break-all">{{ line }}</div>
+        {% else %}
+        <div class="text-nb-muted whitespace-pre-wrap break-all">{{ line }}</div>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
