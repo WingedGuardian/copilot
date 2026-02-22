@@ -371,7 +371,7 @@ class TestSelfEscalation:
 
     @pytest.mark.asyncio
     async def test_escalation_chain_is_separate(self):
-        """Escalation chain uses escalation model, not plan entries."""
+        """Escalation chain uses escalation model (primary) + safety net."""
         plan = [{"provider": "gemini", "model": "gemini-3-flash-preview"}]
         router = make_router(routing_plan=plan)
 
@@ -379,12 +379,42 @@ class TestSelfEscalation:
         with patch_native("minimax"):
             chain = router._build_chain(esc)
 
-        for tier in chain:
+        # Primary entries should use escalation model
+        primary = [t for t in chain if not t.name.startswith(("safety:", "emergency:"))]
+        for tier in primary:
             assert tier.model == "anthropic/claude-sonnet-4-6"
 
         # Plan entries should NOT appear in escalation chain
         plan_tiers = [t for t in chain if t.name.startswith("plan:")]
         assert plan_tiers == []
+
+        # Safety net should be appended
+        safety = [t for t in chain if t.name.startswith(("safety:", "emergency:"))]
+        assert len(safety) > 0
+
+    @pytest.mark.asyncio
+    async def test_escalation_with_dead_api_falls_to_safety_net(self):
+        """When escalation triggers but all cloud APIs are dead, safety net catches."""
+        escalate_resp = ok_response("[ESCALATE] Need stronger model")
+        router = make_router(local_succeed=True)
+
+        # First call (default): minimax returns [ESCALATE]
+        # All subsequent calls (escalation chain cloud providers): dead
+        for name, p in router._cloud.items():
+            if name == "minimax":
+                p.chat = AsyncMock(side_effect=[escalate_resp, RuntimeError("Provider down")])
+            else:
+                p.chat = AsyncMock(side_effect=RuntimeError("Provider down"))
+
+        with patch_native("minimax"), \
+             patch("nanobot.copilot.alerting.bus.get_alert_bus") as mock_bus:
+            mock_bus.return_value.alert = AsyncMock()
+            response = await router.chat(messages=SIMPLE_MESSAGES)
+
+        # Should have fallen through to LM Studio safety net
+        assert response.content is not None
+        assert response.finish_reason != "error"
+        assert router._last_winning_provider == "safety:lm_studio"
 
 
 # ===================================================================

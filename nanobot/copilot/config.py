@@ -225,6 +225,12 @@ class CopilotConfig(BaseModel):
     memory_recall_limit: int = 5
     memory_min_score: float = 0.35
 
+    # MCP servers (keyed by server name, e.g. {"playwright": {"transport": "stdio", "command": "npx", "args": [...]}})
+    mcp_servers: dict[str, dict] = Field(default_factory=dict)
+
+    # Self-escalation tier-2 ceiling (empty = no tier-2)
+    strongest_model: str = ""
+
     # Tools
     aws_region: str = "us-east-1"
     aws_profile: str | None = None

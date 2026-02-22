@@ -92,6 +92,7 @@ class DashboardReport:
     extraction_stats: dict = field(default_factory=dict)  # last extraction info
     queue_breakdown: dict = field(default_factory=dict)  # by work_type
     services: dict = field(default_factory=dict)  # from ProcessSupervisor.get_status()
+    mcp_servers: dict = field(default_factory=dict)  # from McpManager.get_server_status()
 
     def to_text(self) -> str:
         """Format as readable text."""
@@ -274,6 +275,15 @@ class DashboardReport:
         else:
             lines.append("  Empty (local SLM handling extractions directly)")
 
+        # MCP Servers
+        if self.mcp_servers:
+            lines.append("")
+            lines.append("MCP Servers:")
+            for name, info in self.mcp_servers.items():
+                status = "OK" if info.get("connected") else "DOWN"
+                tool_count = len(info.get("tools", []))
+                lines.append(f"  {name}: {status} ({info.get('transport', '?')}, {tool_count} tools)")
+
         return "\n".join(lines)
 
 
@@ -302,6 +312,7 @@ class StatusAggregator:
         self._router = router
         self._heartbeat = None  # Set externally: HeartbeatService instance
         self._supervisor = None  # Set externally: ProcessSupervisor instance
+        self._mcp_manager = None  # Set externally: McpManager instance
 
     async def collect(self, session_metadata: dict | None = None, session=None, session_manager=None) -> DashboardReport:
         """Run all checks in parallel and assemble report."""
@@ -396,6 +407,13 @@ class StatusAggregator:
 
         # Extraction & embedding stats
         report.extraction_stats = await self._get_extraction_stats()
+
+        # MCP server status
+        if self._mcp_manager:
+            try:
+                report.mcp_servers = self._mcp_manager.get_server_status()
+            except Exception:
+                pass
 
         return report
 

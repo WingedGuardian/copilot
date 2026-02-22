@@ -11,15 +11,21 @@ from nanobot.copilot.routing.failover import FailoverChain, ProviderTier
 from nanobot.copilot.routing.heuristics import RouteDecision
 from nanobot.providers.base import LLMProvider, LLMResponse
 
-# Instruction injected into the system prompt when routing to the local model.
+# Instruction injected into the system prompt for models that can self-escalate.
 _ESCALATION_INSTRUCTION = (
     "\n\n---\n\n## Self-Escalation\n"
-    "If this task is beyond your capabilities (complex reasoning, code generation, "
-    "creative writing, multi-step analysis, or anything you are not confident about), "
-    "begin your response with exactly `[ESCALATE]` followed by a brief reason. "
-    "The system will automatically retry with a more powerful model.\n"
-    "Only escalate when genuinely needed — most conversational and simple tasks "
-    "are well within your abilities."
+    "You can escalate to a more powerful model when needed. "
+    "Begin your response with exactly `[ESCALATE]` followed by a brief reason.\n\n"
+    "**Escalate when:**\n"
+    "- A tool call failed and you cannot determine why\n"
+    "- The task requires chaining 3+ tool calls with conditional logic\n"
+    "- You are about to present 'options' back to the user because you are stuck\n"
+    "- The user asks for debugging, code analysis, or multi-step technical reasoning\n"
+    "- You are not confident your response is correct\n\n"
+    "**Do NOT escalate for:** simple questions, greetings, status checks, "
+    "single-tool tasks, or anything you can handle confidently.\n"
+    "Escalation is free — the user prefers a correct answer from a stronger model "
+    "over a wrong answer from you."
 )
 
 
@@ -49,6 +55,7 @@ class RouterProvider(LLMProvider):
         big_model: str = "anthropic/claude-sonnet-4-6",
         default_model: str = "MiniMax-M2.5",
         escalation_model: str = "anthropic/claude-sonnet-4-6",
+        strongest_model: str = "",
         emergency_cloud_model: str = "openai/gpt-4o-mini",
         escalation_enabled: bool = True,
         escalation_marker: str = "[ESCALATE]",
@@ -69,6 +76,7 @@ class RouterProvider(LLMProvider):
         self._big_model = big_model            # kept for backward compat (model_override)
         self._default_model = default_model
         self._escalation_model = escalation_model
+        self._strongest_model = strongest_model
         self._emergency_cloud_model = emergency_cloud_model
         self._escalation_enabled = escalation_enabled
         self._escalation_marker = escalation_marker
@@ -195,10 +203,10 @@ class RouterProvider(LLMProvider):
             f"{decision.model} | tokens≈{token_estimate} images={has_images}"
         )
 
-        # If routing to local, inject escalation instruction
+        # Inject escalation instruction for any non-strongest model
         call_messages = messages
         escalation_active = self._escalation_enabled and not is_private
-        if decision.target == "local" and escalation_active:
+        if decision.target in ("local", "default", "plan") and escalation_active:
             call_messages = self._inject_escalation(messages)
 
         # Execute with failover
@@ -221,7 +229,7 @@ class RouterProvider(LLMProvider):
                 finish_reason="error", model_used="none",
             )
 
-        # --- Self-escalation check ---
+        # --- Self-escalation check (two-tier) ---
         if (
             escalation_active
             and decision.target in ("local", "default", "plan")
@@ -231,16 +239,46 @@ class RouterProvider(LLMProvider):
             reason_text = response.content.strip()[len(self._escalation_marker):].strip()
             logger.info(f"Self-escalation triggered: {reason_text[:120]} → retrying with escalation model")
 
+            # Tier-1: retry with escalation model (inject escalation for tier-2 if strongest is configured)
+            esc_messages = messages
+            if self._strongest_model:
+                esc_messages = self._inject_escalation(messages)
+
             esc_chain = self._build_chain(
                 RouteDecision("escalation", "escalation", self._escalation_model)
             )
             try:
                 response, tier, latency_ms = await self._failover.try_providers(
-                    chain=esc_chain, messages=messages, tools=tools,
+                    chain=esc_chain, messages=esc_messages, tools=tools,
                     max_tokens=max_tokens, temperature=temperature,
                 )
                 decision = RouteDecision("escalation", "escalation", self._escalation_model)
                 self._last_decision = decision
+
+                # Tier-2: if escalation model also escalates and strongest is configured
+                if (
+                    self._strongest_model
+                    and response.content
+                    and response.content.strip().startswith(self._escalation_marker)
+                ):
+                    tier2_reason = response.content.strip()[len(self._escalation_marker):].strip()
+                    logger.info(f"Tier-2 escalation: {tier2_reason[:120]} → retrying with strongest model")
+
+                    strongest_chain = self._build_chain(
+                        RouteDecision("strongest", "strongest", self._strongest_model)
+                    )
+                    try:
+                        response, tier, latency_ms = await self._failover.try_providers(
+                            chain=strongest_chain, messages=messages, tools=tools,
+                            max_tokens=max_tokens, temperature=temperature,
+                        )
+                        decision = RouteDecision("strongest", "strongest", self._strongest_model)
+                        self._last_decision = decision
+                    except RuntimeError as e:
+                        logger.error(f"Tier-2 escalation failed: {e}")
+                        # Fall through with the escalation model's response minus the marker
+                        response.content = tier2_reason or response.content
+
             except RuntimeError as e:
                 logger.error(f"Escalation retry failed: {e}")
                 from nanobot.copilot.alerting.bus import get_alert_bus
@@ -297,46 +335,50 @@ class RouterProvider(LLMProvider):
                     chain.append(ProviderTier(name, provider, decision.model))
             return chain
 
-        # Escalation — dedicated chain, native provider first
-        if decision.target == "escalation":
+        # Escalation / strongest — dedicated chain, native provider first
+        # Falls through to safety net (no early return)
+        if decision.target in ("escalation", "strongest"):
+            target_model = (
+                self._strongest_model if decision.target == "strongest"
+                else self._escalation_model
+            )
             from nanobot.providers.registry import find_by_model as _find_by_model
-            native_spec = _find_by_model(self._escalation_model)
+            native_spec = _find_by_model(target_model)
             native_name = native_spec.name if native_spec else None
             if not native_spec:
-                logger.warning(f"Native provider lookup failed for model '{self._escalation_model}' — falling back to all cloud providers")
+                logger.warning(f"Native provider lookup failed for model '{target_model}' — falling back to all cloud providers")
             if native_name and native_name in self._cloud:
-                chain.append(ProviderTier(native_name, self._cloud[native_name], self._escalation_model))
+                chain.append(ProviderTier(native_name, self._cloud[native_name], target_model))
             for name, provider in self._cloud.items():
                 if name != native_name:
-                    chain.append(ProviderTier(name, provider, self._escalation_model))
-            return chain
-
-        # Local (private mode)
-        if decision.target == "local":
+                    chain.append(ProviderTier(name, provider, target_model))
+            # Fall through to safety net below (not returning early)
+        elif decision.target == "local":
+            # Local (private mode)
             chain.append(
                 ProviderTier("lm_studio", self._local, self._local_model, is_local=True)
             )
-
-        # Plan entries — LLM-generated, user-approved order
-        if self._routing_plan:
-            for entry in self._routing_plan:
-                provider = self._cloud.get(entry.get("provider", ""))
-                if provider:
-                    chain.append(ProviderTier(
-                        f"plan:{entry['provider']}", provider, entry.get("model", self._default_model),
-                    ))
         else:
-            # No plan — try native provider first, then others as fallback
-            from nanobot.providers.registry import find_by_model as _find_by_model
-            native_spec = _find_by_model(self._default_model)
-            native_name = native_spec.name if native_spec else None
-            if not native_spec:
-                logger.warning(f"Native provider lookup failed for model '{self._default_model}' — falling back to all cloud providers")
-            if native_name and native_name in self._cloud:
-                chain.append(ProviderTier(native_name, self._cloud[native_name], self._default_model))
-            for name, provider in self._cloud.items():
-                if name != native_name:
-                    chain.append(ProviderTier(name, provider, self._default_model))
+            # Plan entries — LLM-generated, user-approved order
+            if self._routing_plan:
+                for entry in self._routing_plan:
+                    provider = self._cloud.get(entry.get("provider", ""))
+                    if provider:
+                        chain.append(ProviderTier(
+                            f"plan:{entry['provider']}", provider, entry.get("model", self._default_model),
+                        ))
+            else:
+                # No plan — try native provider first, then others as fallback
+                from nanobot.providers.registry import find_by_model as _find_by_model
+                native_spec = _find_by_model(self._default_model)
+                native_name = native_spec.name if native_spec else None
+                if not native_spec:
+                    logger.warning(f"Native provider lookup failed for model '{self._default_model}' — falling back to all cloud providers")
+                if native_name and native_name in self._cloud:
+                    chain.append(ProviderTier(native_name, self._cloud[native_name], self._default_model))
+                for name, provider in self._cloud.items():
+                    if name != native_name:
+                        chain.append(ProviderTier(name, provider, self._default_model))
 
         # ── Mandatory safety net (always appended by code) ──────────
         # 1. Last known working provider/model
@@ -517,6 +559,7 @@ class RouterProvider(LLMProvider):
             "default": "_default_model",
             "big": "_big_model",
             "escalation": "_escalation_model",
+            "strongest": "_strongest_model",
             "local": "_local_model",
         }
         attr = mapping.get(tier)
