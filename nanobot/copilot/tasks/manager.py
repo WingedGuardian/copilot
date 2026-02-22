@@ -9,6 +9,9 @@ from pathlib import Path
 import aiosqlite
 from loguru import logger
 
+from nanobot.copilot import tz as _tz
+from nanobot.copilot.db import SqlitePool
+
 
 @dataclass
 class TaskStep:
@@ -60,14 +63,14 @@ class TaskManager:
     ) -> Task:
         """Create a new task. Returns the created Task."""
         task_id = str(uuid.uuid4())[:8]
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             await db.execute(
                 """INSERT INTO tasks (id, title, description, status, priority,
                    session_key, parent_id, deadline)
                    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)""",
                 (task_id, title, description, priority, session_key, parent_id, deadline),
             )
-            await db.commit()
             await self._log_event(task_id, "created", title, db=db)
 
         logger.info(f"Created task {task_id}: {title}")
@@ -80,7 +83,8 @@ class TaskManager:
     async def add_steps(self, task_id: str, step_descriptions: list[str]) -> list[TaskStep]:
         """Decompose a task into steps."""
         steps = []
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             for i, desc in enumerate(step_descriptions):
                 await db.execute(
                     """INSERT OR IGNORE INTO task_steps (task_id, step_index, description)
@@ -93,12 +97,12 @@ class TaskManager:
                 "UPDATE tasks SET step_count = ? WHERE id = ?",
                 (len(step_descriptions), task_id),
             )
-            await db.commit()
         return steps
 
     async def get_task(self, task_id: str) -> Task | None:
         """Get a task with its steps."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
             row = await cur.fetchone()
@@ -120,7 +124,8 @@ class TaskManager:
 
     async def get_next_pending(self) -> Task | None:
         """Get the highest-priority pending task that's ready to execute."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """SELECT * FROM tasks WHERE status IN ('pending', 'active')
@@ -131,7 +136,8 @@ class TaskManager:
 
     async def get_next_step(self, task_id: str) -> TaskStep | None:
         """Get the next pending step for a task."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """SELECT * FROM task_steps WHERE task_id = ? AND status = 'pending'
@@ -146,7 +152,8 @@ class TaskManager:
 
     async def complete_step(self, task_id: str, step_index: int, result: str) -> None:
         """Mark a step as completed."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             await db.execute(
                 """UPDATE task_steps SET status = 'completed', result = ?,
                    completed_at = CURRENT_TIMESTAMP WHERE task_id = ? AND step_index = ?""",
@@ -156,17 +163,16 @@ class TaskManager:
                 "UPDATE tasks SET steps_completed = steps_completed + 1 WHERE id = ?",
                 (task_id,),
             )
-            await db.commit()
 
     async def fail_step(self, task_id: str, step_index: int, error: str) -> None:
         """Mark a step as failed."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             await db.execute(
                 """UPDATE task_steps SET status = 'failed', result = ?
                    WHERE task_id = ? AND step_index = ?""",
                 (error, task_id, step_index),
             )
-            await db.commit()
 
     async def complete_task(self, task_id: str) -> None:
         """Mark a task as completed."""
@@ -174,17 +180,18 @@ class TaskManager:
 
     async def update_status(self, task_id: str, status: str) -> None:
         """Update task status."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             await db.execute(
                 "UPDATE tasks SET status = ? WHERE id = ?",
                 (status, task_id),
             )
-            await db.commit()
             await self._log_event(task_id, "status_change", status, db=db)
 
     async def list_tasks(self, status: str | None = None, limit: int = 20) -> list[Task]:
         """List tasks, optionally filtered by status."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             db.row_factory = aiosqlite.Row
             if status:
                 cur = await db.execute(
@@ -210,19 +217,19 @@ class TaskManager:
 
     async def get_stuck_tasks(self, threshold_minutes: int = 30) -> list[Task]:
         """Get tasks that have been in_progress/active for longer than threshold."""
-        async with aiosqlite.connect(self._db_path) as db:
+        cutoff = _tz.local_datetime_str(offset_minutes=-threshold_minutes)
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             db.row_factory = aiosqlite.Row
-            # Look for tasks that have been active for too long
-            # Uses task_log to find when task entered active/in_progress state
             cur = await db.execute(
                 """SELECT t.* FROM tasks t
                    JOIN task_log tl ON t.id = tl.task_id
                    WHERE t.status IN ('active', 'in_progress')
                      AND tl.event = 'status_change'
                      AND tl.details IN ('active', 'in_progress')
-                     AND tl.timestamp <= datetime('now', ? || ' minutes')
+                     AND tl.timestamp <= ?
                    ORDER BY tl.timestamp ASC""",
-                (f"-{threshold_minutes}",),
+                (cutoff,),
             )
             rows = await cur.fetchall()
             return [self._row_to_task(dict(r)) for r in rows]
@@ -240,41 +247,40 @@ class TaskManager:
     async def _log_event(
         self, task_id: str, event: str, details: str, db: aiosqlite.Connection | None = None
     ) -> None:
-        """Write to task_log."""
-        async def _do(conn):
-            await conn.execute(
-                "INSERT INTO task_log (task_id, event, details) VALUES (?, ?, ?)",
-                (task_id, event, details),
-            )
-            await conn.commit()
-
+        """Write to task_log. If db= provided, caller's transaction handles commit."""
         try:
             if db:
-                await _do(db)
+                await db.execute(
+                    "INSERT INTO task_log (task_id, event, details) VALUES (?, ?, ?)",
+                    (task_id, event, details),
+                )
             else:
-                async with aiosqlite.connect(self._db_path) as conn:
-                    await _do(conn)
+                pool = SqlitePool(self._db_path)
+                await pool.execute_commit(
+                    "INSERT INTO task_log (task_id, event, details) VALUES (?, ?, ?)",
+                    (task_id, event, details),
+                )
         except Exception as e:
             logger.warning(f"Task log failed: {e}")
 
     async def set_pending_questions(self, task_id: str, questions: str) -> None:
         """Set pending questions and move task to awaiting status."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             await db.execute(
                 "UPDATE tasks SET pending_questions = ?, status = 'awaiting' WHERE id = ?",
                 (questions, task_id),
             )
-            await db.commit()
             await self._log_event(task_id, "questions_set", questions[:200], db=db)
 
     async def clear_pending_questions(self, task_id: str) -> None:
         """Clear pending questions and move task back to active."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             await db.execute(
                 "UPDATE tasks SET pending_questions = NULL, status = 'active' WHERE id = ?",
                 (task_id,),
             )
-            await db.commit()
             await self._log_event(task_id, "questions_cleared", "", db=db)
 
     async def add_user_message(self, task_id: str, message: str) -> None:
@@ -283,13 +289,13 @@ class TaskManager:
 
     async def pause_task(self, task_id: str) -> bool:
         """Pause a task. Returns True if the task was paused."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             cur = await db.execute(
                 "UPDATE tasks SET status = 'paused', updated_at = CURRENT_TIMESTAMP "
                 "WHERE id = ? AND status IN ('active','pending','planning','awaiting')",
                 (task_id,),
             )
-            await db.commit()
             if cur.rowcount:
                 await self._log_event(task_id, "paused", "", db=db)
                 return True
@@ -297,13 +303,13 @@ class TaskManager:
 
     async def resume_task(self, task_id: str) -> bool:
         """Resume a paused task. Returns True if the task was resumed."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             cur = await db.execute(
                 "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
                 "WHERE id = ? AND status = 'paused'",
                 (task_id,),
             )
-            await db.commit()
             if cur.rowcount:
                 await self._log_event(task_id, "resumed", "", db=db)
                 return True
@@ -311,7 +317,8 @@ class TaskManager:
 
     async def get_tasks_with_questions(self) -> list[Task]:
         """Get tasks that have pending questions (status = awaiting)."""
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT * FROM tasks WHERE pending_questions IS NOT NULL AND status = 'awaiting'"
@@ -322,7 +329,8 @@ class TaskManager:
     async def add_steps_v2(self, task_id: str, steps: list[dict]) -> list[TaskStep]:
         """Add steps with tool_type metadata. Each dict needs 'description', optional 'tool_type'."""
         result = []
-        async with aiosqlite.connect(self._db_path) as db:
+        pool = SqlitePool(self._db_path)
+        async with pool.transaction() as db:
             for i, step in enumerate(steps):
                 desc = step["description"]
                 tool_type = step.get("tool_type", "general")
@@ -336,7 +344,6 @@ class TaskManager:
             await db.execute(
                 "UPDATE tasks SET step_count = ? WHERE id = ?", (len(steps), task_id),
             )
-            await db.commit()
         return result
 
     @staticmethod
