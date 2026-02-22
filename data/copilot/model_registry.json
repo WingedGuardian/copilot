@@ -1,0 +1,48 @@
+{
+  "_comment": "Machine-readable model registry. Updated by weekly review. models.md is the LLM-readable companion.",
+  "models": {
+    "gemini-3-flash": {
+      "openrouter_id": "google/gemini-3-flash-preview",
+      "google_ai_id": "gemini-3-flash-preview",
+      "display_name": "Gemini 3 Flash (Thinking)",
+      "context_tokens": 1000000,
+      "cost_input_mtok": 0.50,
+      "cost_output_mtok": 3.00,
+      "free_tier": "Google AI Studio: 1500 RPD, 15 RPM (data may be used for training)",
+      "thinking": true
+    },
+    "claude-haiku-4.5": {
+      "openrouter_id": "anthropic/claude-haiku-4-5-20251001",
+      "display_name": "Claude 4.5 Haiku",
+      "context_tokens": 200000,
+      "cost_input_mtok": 1.00,
+      "cost_output_mtok": 5.00,
+      "free_tier": null
+    },
+    "claude-opus-4.6": {
+      "openrouter_id": "anthropic/claude-opus-4-6",
+      "display_name": "Claude 4.6 Opus",
+      "context_tokens": 1000000,
+      "cost_input_mtok": 5.00,
+      "cost_output_mtok": 25.00,
+      "free_tier": null,
+      "notes": "Reserved for weekly reviews and high-stakes decisions per V2 architecture"
+    },
+    "gpt-4o-mini": {
+      "openrouter_id": "openai/gpt-4o-mini",
+      "display_name": "GPT-4o Mini",
+      "context_tokens": 128000,
+      "cost_input_mtok": 0.15,
+      "cost_output_mtok": 0.60,
+      "free_tier": null,
+      "notes": "Emergency fallback — stable, widely available"
+    }
+  },
+  "tiers": {
+    "fast": "claude-haiku-4.5",
+    "big": "claude-opus-4.6",
+    "dream": "gemini-3-flash",
+    "extraction_cloud": "claude-haiku-4.5",
+    "emergency": "gpt-4o-mini"
+  }
+}

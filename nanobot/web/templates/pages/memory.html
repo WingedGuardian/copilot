@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Memory — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Memory</h1>
+    <span class="text-nb-muted text-xs">{{ items | length }} item{% if items | length != 1 %}s{% endif %}{% if query %} matching "{{ query }}"{% endif %}</span>
+  </div>
+
+  <!-- Search bar -->
+  <form method="GET" action="/memory" class="flex gap-2">
+    <input
+      type="text"
+      name="q"
+      value="{{ query }}"
+      placeholder="Search episodic memory…"
+      class="flex-1 bg-nb-surface border border-nb-border rounded px-3 py-1.5 text-nb-text text-xs font-mono placeholder-nb-muted focus:outline-none focus:border-nb-accent"
+    />
+    <button type="submit"
+      class="px-4 py-1.5 bg-nb-border border border-nb-border rounded text-nb-text text-xs hover:border-nb-accent hover:text-nb-accent transition-colors">
+      Search
+    </button>
+    {% if query %}
+    <a href="/memory"
+      class="px-3 py-1.5 bg-nb-surface border border-nb-border rounded text-nb-muted text-xs hover:text-nb-text transition-colors">
+      Clear
+    </a>
+    {% endif %}
+  </form>
+
+  <!-- Last consolidation stats -->
+  {% if stats %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Last Consolidation</h2>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+      <div>
+        <div class="text-nb-muted mb-0.5">Run at</div>
+        <div class="text-nb-text font-mono">{{ (stats.run_at or "—")[:19] }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted mb-0.5">Episodes</div>
+        <div class="text-nb-text">{{ stats.episodes_processed or 0 }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted mb-0.5">Created</div>
+        <div class="text-nb-green">+{{ stats.items_created or 0 }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted mb-0.5">Updated</div>
+        <div class="text-nb-text">~{{ stats.items_updated or 0 }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted mb-0.5">Pruned</div>
+        <div class="text-nb-red">-{{ stats.items_pruned or 0 }}</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Results -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+
+    {% if query %}
+    <!-- Episodic FTS results: id, text, session_key, timestamp, importance -->
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Episodic Search Results</h2>
+    {% if items %}
+    <table class="w-full">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Text</th>
+          <th class="text-left pb-2 font-normal">Session</th>
+          <th class="text-right pb-2 font-normal">Importance</th>
+          <th class="text-left pb-2 font-normal">Timestamp</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for item in items %}
+        <tr>
+          <td class="py-2 text-nb-text text-xs max-w-sm">
+            {% set txt = item.text or "" %}
+            {{ txt[:120] }}{% if txt | length > 120 %}…{% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs font-mono">{{ item.session_key or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs text-right font-mono">
+            {% if item.importance is not none %}{{ "%.2f" | format(item.importance | float) }}{% else %}—{% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ (item.timestamp or "—")[:19] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No episodic memories match "{{ query }}".</p>
+    {% endif %}
+
+    {% else %}
+    <!-- Structured memory_items: category, key, value, confidence, access_count, updated_at -->
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">
+      Memory Items <span class="normal-case text-[10px]">(last 100, by updated)</span>
+    </h2>
+    {% if items %}
+    <table class="w-full">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Category</th>
+          <th class="text-left pb-2 font-normal">Key</th>
+          <th class="text-left pb-2 font-normal">Value</th>
+          <th class="text-right pb-2 font-normal">Conf</th>
+          <th class="text-right pb-2 font-normal">Hits</th>
+          <th class="text-left pb-2 font-normal">Updated</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for item in items %}
+        <tr>
+          <td class="py-2 text-xs whitespace-nowrap">
+            <span class="px-1.5 py-0.5 rounded bg-nb-border text-nb-muted font-mono text-[10px]">{{ item.category or "—" }}</span>
+          </td>
+          <td class="py-2 text-nb-text text-xs font-mono max-w-[140px] truncate">{{ item.key or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs max-w-xs">
+            {% set val = item.value or "" %}
+            {{ val[:100] }}{% if val | length > 100 %}…{% endif %}
+          </td>
+          <td class="py-2 text-xs text-right font-mono
+            {% if item.confidence and item.confidence | float >= 0.7 %}text-nb-green
+            {% elif item.confidence and item.confidence | float >= 0.4 %}text-nb-text
+            {% else %}text-nb-muted{% endif %}">
+            {% if item.confidence is not none %}{{ "%.2f" | format(item.confidence | float) }}{% else %}—{% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs text-right">{{ item.access_count or 0 }}</td>
+          <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ (item.updated_at or "—")[:16] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No memory items yet. Memory consolidation runs nightly during the dream cycle.</p>
+    {% endif %}
+    {% endif %}
+
+  </div>
+</div>
+{% endblock %}

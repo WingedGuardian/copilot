@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% set active = "dream" %}
+
+{% block title %}Dream Timeline — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <h1 class="text-nb-accent text-lg font-semibold tracking-wide">Dream Timeline</h1>
+
+  <!-- Timeline -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Run History</h2>
+
+    {% if timeline %}
+    <div class="space-y-3">
+      {% for entry in timeline %}
+      <div class="border border-nb-border rounded p-3">
+        <div class="flex items-start justify-between gap-4 mb-2">
+          <div class="flex items-center gap-2">
+            {% if entry.type == 'nightly' %}
+            <span class="px-2 py-0.5 text-[10px] rounded bg-nb-accent/10 text-nb-accent border border-nb-accent/20 uppercase tracking-wide">Nightly</span>
+            {% else %}
+            <span class="px-2 py-0.5 text-[10px] rounded bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20 uppercase tracking-wide">Weekly</span>
+            {% endif %}
+            <span class="text-nb-text text-xs">{{ entry.run_at[:19] if entry.run_at else "—" }}</span>
+          </div>
+          <span class="text-nb-muted text-xs shrink-0">
+            {% if entry.duration_ms %}{{ (entry.duration_ms / 1000)|round(1) }}s{% else %}—{% endif %}
+          </span>
+        </div>
+
+        {% if entry.type == 'nightly' %}
+        <!-- Nightly: summary stats row -->
+        <div class="grid grid-cols-5 gap-2 text-xs mb-2">
+          <div class="text-center">
+            <div class="text-nb-muted">Episodes</div>
+            <div class="text-nb-text">{{ entry.episodes_consolidated or 0 }}</div>
+          </div>
+          <div class="text-center">
+            <div class="text-nb-muted">Items+</div>
+            <div class="text-nb-text">{{ entry.items_created or 0 }}</div>
+          </div>
+          <div class="text-center">
+            <div class="text-nb-muted">Pruned</div>
+            <div class="text-nb-text">{{ entry.items_pruned or 0 }}</div>
+          </div>
+          <div class="text-center">
+            <div class="text-nb-muted">Alerts</div>
+            <div class="text-nb-text">{{ entry.alerts_count or 0 }}</div>
+          </div>
+          <div class="text-center">
+            <div class="text-nb-muted">Fixes</div>
+            <div class="text-nb-text">{{ entry.remediations_count or 0 }}</div>
+          </div>
+        </div>
+
+        <!-- Job results grid -->
+        {% if entry.job_results %}
+        <div class="flex flex-wrap gap-1 mt-2">
+          {% for job in entry.job_results %}
+          {% set status = job.get('status', 'unknown') %}
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-mono
+            {% if status == 'ok' or status == 'pass' %}bg-nb-green/10 text-nb-green border border-nb-green/20
+            {% elif status == 'skip' or status == 'skipped' %}bg-nb-border text-nb-muted border border-nb-border
+            {% else %}bg-nb-red/10 text-nb-red border border-nb-red/20{% endif %}">
+            {{ job.get('name', job.get('job', '?')) }}: {{ status }}
+          </span>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if entry.errors %}
+        <div class="mt-2 text-nb-red text-xs truncate">Errors: {{ entry.errors }}</div>
+        {% endif %}
+
+        {% else %}
+        <!-- Weekly: show user_summary or truncated full_report -->
+        {% if entry.user_summary %}
+        <p class="text-nb-text text-xs leading-relaxed">{{ entry.user_summary }}</p>
+        {% elif entry.full_report %}
+        <pre class="text-nb-muted text-xs whitespace-pre-wrap overflow-x-auto max-h-32">{{ entry.full_report[:500] }}{% if entry.full_report|length > 500 %}…{% endif %}</pre>
+        {% else %}
+        <p class="text-nb-muted text-xs">No report text.</p>
+        {% endif %}
+        {% endif %}
+
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-nb-muted text-sm space-y-1">
+      <p>No dream cycle runs recorded yet.</p>
+      <p class="text-xs">Runs nightly at 3 AM (configurable via dream_cron_expr).</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Dream Observations -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Recent Observations</h2>
+
+    {% if observations %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Timestamp</th>
+          <th class="text-left pb-2 font-normal">Source</th>
+          <th class="text-left pb-2 font-normal">Type</th>
+          <th class="text-left pb-2 font-normal">Priority</th>
+          <th class="text-left pb-2 font-normal">Content</th>
+          <th class="text-center pb-2 font-normal">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for obs in observations %}
+        <tr>
+          <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ obs.created_at[:19] if obs.created_at else "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs">{{ obs.source or "—" }}</td>
+          <td class="py-2 text-nb-text text-xs">{{ obs.observation_type or "—" }}</td>
+          <td class="py-2 text-xs">
+            {% if obs.priority == 'high' %}
+            <span class="text-nb-red">high</span>
+            {% elif obs.priority == 'medium' %}
+            <span class="text-nb-yellow">medium</span>
+            {% else %}
+            <span class="text-nb-muted">{{ obs.priority or "low" }}</span>
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs truncate max-w-xs">{{ obs.content[:100] if obs.content else "—" }}{% if obs.content and obs.content|length > 100 %}…{% endif %}</td>
+          <td class="py-2 text-center">
+            {% if obs.status == 'resolved' %}
+            <span class="text-nb-green text-xs">resolved</span>
+            {% elif obs.status == 'wont_fix' %}
+            <span class="text-nb-yellow text-xs">won't fix</span>
+            {% elif obs.status == 'duplicate' %}
+            <span class="text-nb-muted text-xs">dup</span>
+            {% else %}
+            <span class="text-nb-accent text-xs">open</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No observations recorded yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- Evolution Log -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Identity Evolution Log</h2>
+
+    {% if evolution_log %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Timestamp</th>
+          <th class="text-left pb-2 font-normal">File</th>
+          <th class="text-left pb-2 font-normal">Change Type</th>
+          <th class="text-left pb-2 font-normal">Description</th>
+          <th class="text-left pb-2 font-normal">Triggered By</th>
+          <th class="text-center pb-2 font-normal">Rolled Back</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for ev in evolution_log %}
+        <tr>
+          <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ ev.created_at[:19] if ev.created_at else "—" }}</td>
+          <td class="py-2 text-nb-text text-xs font-mono truncate max-w-[120px]">{{ ev.file_path or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs">{{ ev.change_type or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs truncate max-w-xs">{{ ev.change_description or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs">{{ ev.triggered_by or "—" }}</td>
+          <td class="py-2 text-center">
+            {% if ev.rolled_back %}
+            <span class="text-nb-yellow text-xs">yes</span>
+            {% else %}
+            <span class="text-nb-muted text-xs">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No evolution events recorded yet.</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

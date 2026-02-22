@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+{% set active = "tasks" %}
+
+{% block title %}{% if task %}{{ task.title or task.id }}{% else %}Task Not Found{% endif %} — Nanobot{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Back link -->
+  <a href="/tasks" class="text-nb-muted text-xs hover:text-nb-accent">&larr; Back to Tasks</a>
+
+  {% if task %}
+
+  <!-- Task header -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4 space-y-3">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <h1 class="text-nb-text text-base font-semibold">{{ task.title or task.id }}</h1>
+        <div class="text-nb-muted text-xs font-mono mt-0.5">id: {{ task.id }}</div>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <!-- Status badge -->
+        {% set s = task.status or 'pending' %}
+        {% if s == 'active' %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-accent/10 text-nb-accent border border-nb-accent/20">active</span>
+        {% elif s == 'completed' %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-green/10 text-nb-green border border-nb-green/20">completed</span>
+        {% elif s == 'failed' %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-red/10 text-nb-red border border-nb-red/20">failed</span>
+        {% elif s == 'planning' %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20">planning</span>
+        {% elif s == 'awaiting' %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20">awaiting</span>
+        {% elif s == 'paused' %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-muted/10 text-nb-muted border border-nb-muted/20">paused</span>
+        {% else %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-border text-nb-muted border border-nb-border">{{ s }}</span>
+        {% endif %}
+
+        <!-- Pause/Resume controls -->
+        {% if s in ('active', 'pending', 'planning', 'awaiting') %}
+        <form method="POST" action="/tasks/{{ task.id }}/pause" class="inline">
+          <button type="submit"
+                  class="px-2 py-0.5 rounded text-xs bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20
+                         hover:bg-nb-yellow/20 transition-colors">
+            Pause
+          </button>
+        </form>
+        {% elif s == 'paused' %}
+        <form method="POST" action="/tasks/{{ task.id }}/resume" class="inline">
+          <button type="submit"
+                  class="px-2 py-0.5 rounded text-xs bg-nb-accent/10 text-nb-accent border border-nb-accent/20
+                         hover:bg-nb-accent/20 transition-colors">
+            Resume
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Metadata grid -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+      <div>
+        <div class="text-nb-muted">Priority</div>
+        <div class="text-nb-text">{{ task.priority or 3 }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted">Tier</div>
+        <div class="text-nb-text">{{ task.checkpoint_tier or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted">Assignee</div>
+        <div class="text-nb-text">{{ task.current_assignee or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted">Steps</div>
+        <div class="text-nb-text">
+          {% if task.step_count %}{{ task.steps_completed or 0 }}/{{ task.step_count }}{% else %}—{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="text-nb-muted">Created</div>
+        <div class="text-nb-text">{{ task.created_at[:19] if task.created_at else "—" }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted">Updated</div>
+        <div class="text-nb-text">{{ task.updated_at[:19] if task.updated_at else "—" }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted">Deadline</div>
+        <div class="text-nb-text">{{ task.deadline or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-nb-muted">Session</div>
+        <div class="text-nb-text font-mono truncate">{{ task.session_key or "—" }}</div>
+      </div>
+    </div>
+
+    {% if task.description %}
+    <div>
+      <div class="text-nb-muted text-xs uppercase tracking-widest mb-1">Description</div>
+      <p class="text-nb-text text-xs leading-relaxed whitespace-pre-wrap">{{ task.description }}</p>
+    </div>
+    {% endif %}
+
+    {% if task.pending_questions %}
+    <div>
+      <div class="text-nb-muted text-xs uppercase tracking-widest mb-1">Pending Questions</div>
+      <p class="text-nb-yellow text-xs whitespace-pre-wrap">{{ task.pending_questions }}</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Steps -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Steps</h2>
+    {% if steps %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal w-8">#</th>
+          <th class="text-left pb-2 font-normal">Description</th>
+          <th class="text-left pb-2 font-normal">Status</th>
+          <th class="text-left pb-2 font-normal">Type</th>
+          <th class="text-left pb-2 font-normal">Result</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-nb-border">
+        {% for step in steps %}
+        <tr>
+          <td class="py-2 text-nb-muted text-xs">{{ step.step_index }}</td>
+          <td class="py-2 text-nb-text text-xs">{{ step.description or "—" }}</td>
+          <td class="py-2 text-xs">
+            {% set ss = step.status or 'pending' %}
+            {% if ss == 'completed' %}
+            <span class="text-nb-green">completed</span>
+            {% elif ss == 'active' %}
+            <span class="text-nb-accent">active</span>
+            {% elif ss == 'failed' %}
+            <span class="text-nb-red">failed</span>
+            {% elif ss == 'skipped' %}
+            <span class="text-nb-muted">skipped</span>
+            {% else %}
+            <span class="text-nb-muted">{{ ss }}</span>
+            {% endif %}
+          </td>
+          <td class="py-2 text-nb-muted text-xs">{{ step.tool_type or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs truncate max-w-xs">
+            {% if step.result %}{{ step.result[:80] }}{% if step.result|length > 80 %}…{% endif %}{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No steps recorded.</p>
+    {% endif %}
+  </div>
+
+  <!-- Task log -->
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Event Log</h2>
+    {% if logs %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-nb-muted text-xs border-b border-nb-border">
+          <th class="text-left pb-2 font-normal">Timestamp</th>
+          <th class="text-left pb-2 font-normal">Event</th>
+          <th class="text-left pb-2 font-normal">Details</th>
+        </tr>
+      </thead>
+      <tbody id="event-log-tbody" class="divide-y divide-nb-border">
+        {% for log in logs %}
+        <tr>
+          <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ log.timestamp[:19] if log.timestamp else "—" }}</td>
+          <td class="py-2 text-xs whitespace-nowrap
+            {%- set ev = log.event or '' -%}
+            {%- if ev in ('step_completed', 'decomposition_complete') %} text-nb-green
+            {%- elif ev == 'step_failed' %} text-nb-red
+            {%- elif ev in ('plan_review', 'execution_review') %} text-nb-yellow
+            {%- elif ev == 'user_message' %} text-nb-accent
+            {%- else %} text-nb-text{%- endif %}">{{ ev or "—" }}</td>
+          <td class="py-2 text-nb-muted text-xs truncate max-w-sm">{{ log.details or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-nb-muted text-sm">No events logged.</p>
+    {% endif %}
+  </div>
+
+  <!-- User message input -->
+  {% if task.status in ('active', 'awaiting', 'pending', 'planning') %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Send Message to Task</h2>
+    <form method="POST" action="/tasks/{{ task.id }}/message" class="flex gap-2">
+      <input type="text" name="message" placeholder="Send input to active task..."
+             class="flex-1 bg-nb-bg border border-nb-border rounded px-3 py-1.5 text-nb-text text-xs
+                    focus:outline-none focus:border-nb-accent placeholder-nb-muted"
+             required>
+      <button type="submit"
+              class="px-3 py-1.5 bg-nb-accent/10 text-nb-accent border border-nb-accent/20 rounded text-xs
+                     hover:bg-nb-accent/20 transition-colors">
+        Send
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
+  {% else %}
+  <!-- Task not found -->
+  <div class="bg-nb-surface border border-nb-border rounded p-6 text-center">
+    <p class="text-nb-muted text-sm">Task not found.</p>
+  </div>
+  {% endif %}
+
+{% if task and task.status in ('active', 'pending', 'planning', 'awaiting', 'paused') %}
+<script>
+(function() {
+  const taskId = {{ task.id | tojson }};
+  const tbody = document.getElementById('event-log-tbody');
+  if (!tbody) return;
+
+  const EVENT_COLORS = {
+    step_completed: 'text-nb-green', decomposition_complete: 'text-nb-green',
+    step_failed: 'text-nb-red',
+    plan_review: 'text-nb-yellow', execution_review: 'text-nb-yellow',
+    user_message: 'text-nb-accent',
+  };
+
+  let lastTs = '1970-01-01T00:00:00';
+  const rows = tbody.querySelectorAll('tr');
+  if (rows.length > 0) {
+    const first = rows[0].querySelector('td');
+    if (first && first.textContent.trim() !== '—') lastTs = first.textContent.trim();
+  }
+
+  function makeCell(text, classes) {
+    const td = document.createElement('td');
+    td.textContent = text;
+    td.className = classes;
+    return td;
+  }
+
+  async function poll() {
+    try {
+      const resp = await fetch('/tasks/' + encodeURIComponent(taskId) + '/events?since=' + encodeURIComponent(lastTs));
+      if (!resp.ok) return;
+      const events = await resp.json();
+      if (!events.length) return;
+
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        const tr = document.createElement('tr');
+        const ts = (ev.timestamp || '').substring(0, 19) || '—';
+        const evName = ev.event || '—';
+        const colorClass = EVENT_COLORS[evName] || 'text-nb-text';
+
+        tr.appendChild(makeCell(ts, 'py-2 text-nb-muted text-xs whitespace-nowrap'));
+        tr.appendChild(makeCell(evName, 'py-2 text-xs whitespace-nowrap ' + colorClass));
+        tr.appendChild(makeCell(ev.details || '—', 'py-2 text-nb-muted text-xs truncate max-w-sm'));
+        tbody.insertBefore(tr, tbody.firstChild);
+      }
+      lastTs = events[events.length - 1].timestamp || lastTs;
+    } catch (e) { /* silent */ }
+  }
+
+  setInterval(poll, 5000);
+})();
+</script>
+{% endif %}
+
+</div>
+{% endblock %}

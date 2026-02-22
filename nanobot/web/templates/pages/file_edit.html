@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ file_name }} — Nanobot{% endblock %}
+
+{% block content %}
+<div class="flex gap-4 h-[calc(100vh-3rem)]">
+
+  <!-- Left sidebar: file list -->
+  <div class="w-56 flex-shrink-0 overflow-y-auto space-y-4">
+    <div class="flex items-center justify-between">
+      <a href="/files" class="text-nb-muted text-xs hover:text-nb-accent transition-colors">&larr; All files</a>
+    </div>
+    {% for group in groups %}
+    <div class="bg-nb-surface border border-nb-border rounded p-3">
+      <h3 class="text-nb-muted text-[10px] uppercase tracking-widest mb-2">{{ group.label }}</h3>
+      <ul class="space-y-0.5">
+        {% for file in group.files %}
+        <li>
+          <a href="/files/{{ file.path | urlencode }}"
+             class="block px-2 py-1.5 rounded text-xs font-mono truncate transition-colors
+               {% if file.path == file_path %}
+                 bg-nb-border text-nb-accent
+               {% else %}
+                 text-nb-text hover:bg-nb-border hover:text-nb-accent
+               {% endif %}">
+            {{ file.name }}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Right: editor -->
+  <div class="flex-1 flex flex-col min-w-0">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-3 flex-shrink-0">
+      <h1 class="text-nb-accent text-base font-semibold tracking-wide font-mono">{{ file_name }}</h1>
+      <div class="flex gap-2 items-center">
+        <button id="toggle-preview"
+          class="px-3 py-1.5 bg-nb-surface border border-nb-border rounded text-nb-muted text-xs hover:border-nb-accent hover:text-nb-accent transition-colors">
+          Preview
+        </button>
+        <button form="edit-form" type="submit"
+          class="px-4 py-1.5 bg-nb-accent text-nb-bg rounded text-xs font-semibold hover:opacity-90 transition-opacity">
+          Save
+        </button>
+      </div>
+    </div>
+
+    <!-- Success banner -->
+    {% if saved %}
+    <div id="save-banner"
+         class="mb-3 px-4 py-2 bg-nb-surface border border-nb-green rounded text-nb-green text-xs flex-shrink-0">
+      File saved successfully.
+    </div>
+    {% endif %}
+
+    <!-- Editor form -->
+    <form id="edit-form" method="POST" action="/files/{{ file_path | urlencode }}"
+          class="flex-1 flex flex-col min-h-0">
+      <textarea
+        id="editor"
+        name="content"
+        class="flex-1 w-full bg-nb-surface border border-nb-border rounded p-4 text-nb-text text-xs font-mono resize-none focus:outline-none focus:border-nb-accent leading-relaxed"
+        spellcheck="false">{{ content }}</textarea>
+    </form>
+
+    <!-- Preview pane (hidden by default) -->
+    <div id="preview"
+         class="hidden flex-1 overflow-y-auto bg-nb-surface border border-nb-border rounded p-4 prose-nb text-xs leading-relaxed">
+    </div>
+
+  </div>
+</div>
+
+<!-- marked.js for markdown preview -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+  const toggleBtn = document.getElementById('toggle-preview');
+  const editor = document.getElementById('editor');
+  const preview = document.getElementById('preview');
+  let previewing = false;
+
+  toggleBtn.addEventListener('click', function () {
+    previewing = !previewing;
+    if (previewing) {
+      preview.innerHTML = marked.parse(editor.value);
+      editor.classList.add('hidden');
+      preview.classList.remove('hidden');
+      toggleBtn.textContent = 'Edit';
+      toggleBtn.classList.add('border-nb-accent', 'text-nb-accent');
+    } else {
+      preview.classList.add('hidden');
+      editor.classList.remove('hidden');
+      toggleBtn.textContent = 'Preview';
+      toggleBtn.classList.remove('border-nb-accent', 'text-nb-accent');
+    }
+  });
+
+  // Auto-dismiss save banner after 3s
+  const banner = document.getElementById('save-banner');
+  if (banner) {
+    setTimeout(() => { banner.style.display = 'none'; }, 3000);
+  }
+</script>
+
+<style>
+  /* Basic markdown prose styling for preview pane */
+  #preview h1, #preview h2, #preview h3 { color: #58a6ff; margin: 1em 0 0.5em; font-weight: 600; }
+  #preview h1 { font-size: 1.2em; }
+  #preview h2 { font-size: 1.05em; }
+  #preview h3 { font-size: 0.95em; }
+  #preview p { margin: 0.6em 0; color: #c9d1d9; }
+  #preview ul, #preview ol { padding-left: 1.5em; margin: 0.5em 0; }
+  #preview li { margin: 0.2em 0; color: #c9d1d9; }
+  #preview code { background: #1e1e2e; padding: 0.1em 0.3em; border-radius: 3px; color: #58a6ff; }
+  #preview pre { background: #1e1e2e; padding: 1em; border-radius: 4px; overflow-x: auto; }
+  #preview pre code { background: none; padding: 0; color: #c9d1d9; }
+  #preview blockquote { border-left: 2px solid #6b7280; padding-left: 1em; color: #6b7280; margin: 0.5em 0; }
+  #preview a { color: #58a6ff; text-decoration: underline; }
+  #preview hr { border-color: #1e1e2e; margin: 1em 0; }
+  #preview strong { color: #c9d1d9; font-weight: 600; }
+</style>
+{% endblock %}

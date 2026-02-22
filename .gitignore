@@ -1,0 +1,47 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+__pycache__/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+poetry.lock
+
+# Runtime data (NEVER commit)
+secrets.json
+config.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+sessions/
+whatsapp-auth/
+CHANGELOG.local
+*.log
+.env
+
+# Build artifacts
+bridge/dist/
+
+# Claude Code (development tooling)
+.claude/
+
+# Nanobot internal
+.assets
+.worktrees/
+docs/
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.firecrawl/
