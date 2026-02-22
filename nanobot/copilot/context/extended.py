@@ -1,9 +1,9 @@
 """ExtendedContextBuilder — wraps nanobot's ContextBuilder with tiered assembly."""
 
-
-
+from pathlib import Path
 from typing import Any
 
+import aiosqlite
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
@@ -78,6 +78,7 @@ class ExtendedContextBuilder:
         memory_context: str | None = None,
         recent_events: str | None = None,
         core_facts: str | None = None,
+        situational_briefing: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build messages with tiered context injection.
 
@@ -86,6 +87,7 @@ class ExtendedContextBuilder:
         ``lessons`` is a list of active Lesson objects to inject.
         ``memory_context`` is pre-fetched episodic memory from proactive_recall.
         ``core_facts`` is a pre-fetched block of high-confidence facts.
+        ``situational_briefing`` is a pre-built summary of active tasks and spend.
         """
         # Start from the base builder's output
         messages = self._base.build_messages(
@@ -104,6 +106,10 @@ class ExtendedContextBuilder:
         # Inject heartbeat events (news feed from background monitoring)
         if recent_events:
             self._inject_into_system(messages, recent_events)
+
+        # Inject situational briefing (active tasks, pending questions, spend)
+        if situational_briefing:
+            self._inject_into_system(messages, situational_briefing)
 
         # Inject Tier 2: structured extractions into system prompt
         if session_metadata:
@@ -208,6 +214,94 @@ class ExtendedContextBuilder:
 
         parts.reverse()  # Chronological order
         return "## Conversation Context (extracted)\n\n" + "\n".join(parts)
+
+    @staticmethod
+    async def build_situational_briefing(db_path: str) -> str:
+        """Build a concise situational briefing from the task queue and spend.
+
+        Pure SQL — no LLM call.  Returns ``""`` when there is nothing to report.
+        """
+        try:
+            active_tasks: list[dict] = []
+            awaiting: list[dict] = []
+            completed_24h = 0
+            daily_spend = 0.0
+
+            async with aiosqlite.connect(Path(db_path)) as db:
+                db.row_factory = aiosqlite.Row
+
+                # 1. Active / awaiting / pending tasks (limit 5)
+                try:
+                    rows = await db.execute_fetchall(
+                        "SELECT id, title, status, priority FROM tasks "
+                        "WHERE status IN ('active','awaiting','pending','planning') "
+                        "ORDER BY priority ASC, created_at DESC LIMIT 5"
+                    )
+                    active_tasks = [dict(r) for r in rows] if rows else []
+                except Exception:
+                    pass
+
+                # 2. Tasks with pending questions
+                try:
+                    rows = await db.execute_fetchall(
+                        "SELECT id, title, pending_questions FROM tasks "
+                        "WHERE pending_questions IS NOT NULL AND status = 'awaiting' "
+                        "LIMIT 3"
+                    )
+                    awaiting = [dict(r) for r in rows] if rows else []
+                except Exception:
+                    pass
+
+                # 3. Completions in last 24h
+                try:
+                    cur = await db.execute(
+                        "SELECT COUNT(*) FROM tasks "
+                        "WHERE status = 'completed' "
+                        "AND updated_at > datetime('now', '-24 hours')"
+                    )
+                    completed_24h = (await cur.fetchone())[0]
+                except Exception:
+                    pass
+
+                # 4. Today's spend
+                try:
+                    cur = await db.execute(
+                        "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log "
+                        "WHERE date(timestamp) = date('now')"
+                    )
+                    daily_spend = (await cur.fetchone())[0]
+                except Exception:
+                    pass
+
+            # Format only if there's something to say
+            if not active_tasks and not awaiting and not completed_24h and not daily_spend:
+                return ""
+
+            parts: list[str] = ["## Current Situation\n"]
+
+            if active_tasks:
+                parts.append("**Active tasks:**")
+                for t in active_tasks:
+                    parts.append(f"- [{t['status']}] {t['title'][:80]} (id: {t['id'][:8]})")
+
+            if awaiting:
+                parts.append("\n**Awaiting your input:**")
+                for t in awaiting:
+                    q = (t["pending_questions"] or "")[:120]
+                    parts.append(f"- {t['title'][:60]}: {q}")
+
+            summary: list[str] = []
+            if completed_24h:
+                summary.append(f"{completed_24h} task(s) completed in last 24h")
+            if daily_spend:
+                summary.append(f"Today's LLM spend: ${daily_spend:.4f}")
+            if summary:
+                parts.append("\n" + " | ".join(summary))
+
+            return "\n".join(parts)
+        except Exception as e:
+            logger.debug(f"Situational briefing failed: {e}")
+            return ""
 
     @staticmethod
     def _inject_into_system(
