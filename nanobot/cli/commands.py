@@ -523,6 +523,8 @@ def gateway(
     # --- Copilot: initialise cost logger if enabled ---
     cost_logger = None
     if config.copilot.enabled:
+        from nanobot.copilot import tz as _tz_mod
+        _tz_mod.init(config.copilot.timezone)
         import asyncio as _aio
         from pathlib import Path
 
