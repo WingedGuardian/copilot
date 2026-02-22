@@ -404,6 +404,23 @@ async def migrate_sentience(db_path: str | Path) -> None:
     """
     db_path = Path(db_path)
     async with aiosqlite.connect(str(db_path)) as db:
+        # Migrate old dream_observations schema → new (add columns from schema redesign)
+        cur = await db.execute("PRAGMA table_info(dream_observations)")
+        existing_cols = {r[1] for r in await cur.fetchall()}
+        if existing_cols:  # table already exists — add any missing columns
+            for col, typedef in [
+                ("status", "TEXT NOT NULL DEFAULT 'open'"),
+                ("category", "TEXT DEFAULT 'operational'"),
+                ("resolved_at", "TIMESTAMP"),
+                ("resolved_by", "TEXT"),
+                ("resolution_note", "TEXT"),
+            ]:
+                if col not in existing_cols:
+                    await db.execute(
+                        f"ALTER TABLE dream_observations ADD COLUMN {col} {typedef}"
+                    )
+            await db.commit()
+
         await db.executescript("""
             -- Structured observations from dream/heartbeat/weekly/task failures
             CREATE TABLE IF NOT EXISTS dream_observations (
