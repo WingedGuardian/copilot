@@ -1,0 +1,52 @@
+NETWORKING SUMMARY FOR CLAUDE CODE
+Current Architecture
+1. Assistbot VM (zorror@assistbot)
+
+    IP: 192.168.50.123 (on your LAN, reachable from Windows PC)
+    Role: Incus host, port forward gateway
+    Port Forwards Active:
+        192.168.50.123:2222 → Container:22 (SSH/SFTP)
+        192.168.50.123:6333 → Container:6333 (QDrant)
+
+2. Claude-Agent Container (ubuntu@claude-agent)
+
+    Internal IP: 10.159.172.163 (Incus bridge incusbr0, NOT reachable directly from LAN)
+    Services:
+        SSH: Port 22 (localhost inside container)
+        QDrant: Port 6333 (localhost)
+        Redis: Port 6379 (localhost only, NOT forwarded)
+        Nanobot: Running in /home/ubuntu/executive-copilot/nanobot
+    External Access: Only via VM port forwards (2222 for SSH, 6333 for QDrant)
+
+3. Windows PC (5070ti)
+
+    IP: 192.168.50.100
+    LM Studio: http://192.168.50.100:1234/v1
+    Direction: Container reaches OUT to Windows PC for local LLM inference
+
+Connection Flows
+Table
+Copy
+From	To	Path
+Your PC (FileZilla)	Container SSH	192.168.50.123:2222 → 10.159.172.163:22
+Your PC (Browser)	QDrant Dashboard	192.168.50.123:6333 → 10.159.172.163:6333
+Container	LM Studio (local LLM)	10.159.172.163 → 192.168.50.100:1234
+Container	Cloud APIs (OpenRouter/etc)	10.159.172.163 → Internet
+Important Notes for Claude
+
+    Redis is NOT exposed externally - it's localhost-only inside the container (redis://localhost:6379)
+    QDrant can be accessed two ways:
+        From inside container: http://localhost:6333
+        From Windows PC: http://192.168.50.123:6333
+    LM Studio may be offline - Windows PC sleeps/reboots/gaming. Container code must handle 192.168.50.100:1234 timeouts (5s) and failover to cloud.
+    No password auth for SSH - Uses SSH keys (already set up).
+
+For .env Configuration
+bash
+Copy
+
+# Inside container (what Claude creates)
+LOCAL_LLM_URL=http://192.168.50.100:1234/v1  # Windows PC
+QDRANT_URL=http://localhost:6333             # Internal
+REDIS_URL=redis://localhost:6379             # Internal only
+DATABASE_URL=sqlite:///data/sqlite/copilot.db  # Local file

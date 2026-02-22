@@ -1,0 +1,237 @@
+EXECUTIVE CO-PILOT v1.0
+Final Technical Specification & Build Document
+Foundation: HKUDS/nanobot (Extended via Native Skills)
+Interface: Regular WhatsApp (Baileys Library)
+Architecture: Split - Windows 11 5070ti (GPU Inference) + Incus Container (Orchestration) On Proxmox VM (both on LAN)
+Status: Ready for Implementation
+1. EXECUTIVE SUMMARY
+An autonomous executive assistant extending nanobot via native and non native features with task persistence (multi-day workflows) and intelligent routing that fails cheaply. Uses LM Studio on Windows 5070 for intelligent routing and trivial queries, Cloud LLMs for complex work, with automatic fallback when the gaming PC is offline.  
+Infrastructure Split:
+
+    Windows PC (5070ti GPU): Runs LM Studio serving Phi-4/Llama 3.2 via OpenAI-compatible API on 192.168.50.100:1234
+    Incus Container (Ubuntu 24.04): Runs nanobot, QDrant, Redis, and all orchestration logic (ip: 192.168.50.123) Running on Proxmox VM
+
+Core Innovation: The Sentry Routing Protocol with overflow protection—inputs >4096 characters or containing images bypass local SLM immediately to prevent context window crashes, while structured JSON output ensures reliable intent classification.					   
+2. SYSTEM ARCHITECTURE
+plain
+Copy
+
+┌───────────────────────────────────────────────────────┐
+│  WINDOWS PC (5070ti) - LM Studio (:1234)             │
+│  llama-3.2-3b-instruct (4k context, temp 0.1)        │
+│  Structured JSON output                              │
+└──────────────┬────────────────────────────────────────┘
+               │ HTTP [WINDOWS_IP]:1234 (may be offline)
+┌──────────────▼────────────────────────────────────────┐
+│  INCUS CONTAINER (192.168.50.123)                    │
+│                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│  │    ROUTER    │  │ WORKER LOOP  │  │   STATUS   │ │
+│  │ (Sentry)     │  │ (30s poll)   │  │  (/status) │ │
+│  └──────┬───────┘  └──────┬───────┘  └────────────┘ │
+│         │                 │                          │
+│  ┌──────▼───────┐  ┌──────▼───────┐                 │
+│  │  Cloud LLM   │  │ SQLite Queue │                 │
+│  │  (OpenRouter │  │ (persistent) │                 │
+│  │   or Venice) │  │              │                 │
+│  └──────────────┘  └──────────────┘                 │
+│                                                      │
+│  ┌──────────────────────────────────────┐           │
+│  │  Memory: QDrant + Redis + SQLite     │           │
+│  └──────────────────────────────────────┘           │
+└──────────────────────────────────────────────────────┘
+
+3. CORE COMPONENTS
+3.1 Router (Sentry)
+Location: skills/sentry_router/router.py
+Pre-flight Checks:
+
+    Input >4096 characters → Cloud
+    Image attachment → Cloud
+    Context + input >3500 tokens → Cloud
+
+Local Attempt (LM Studio):
+
+    Timeout: 5 seconds
+    Confidence threshold: 0.70
+    Model: llama-3.2-3b-instruct (4k context)
+    Temperature: 0.1
+    Structured JSON output required
+
+Cloud Routing (OpenRouter/Venice):
+
+    Primary: Aggregator API (OpenRouter or Venice)
+    Secondary: MiniMax API (specific use cases)
+    Models available: GPT-4o, Claude 3.5 Sonnet, MiniMax-Text-01, or latest available
+    Automatic failover between providers if primary down
+
+Failover Chain:
+
+    LM Studio (local) - if timeout/failure →
+    OpenRouter/Venice (cloud) - if failure →
+    MiniMax (cloud backup)
+
+3.2 Task Queue
+Location: tasks/worker.py
+Python
+Copy
+
+class Task:
+    id: str
+    description: str
+    status: "pending" | "active" | "awaiting_approval" | "completed" | "failed"
+    route_attempted: str  # 'local' or 'cloud'
+    created_at: datetime
+    completed_at: datetime
+    thread_id: str
+    error_log: str
+
+# Worker loop: 30 second polling interval
+
+3.3 Memory
+
+    Working: Redis (localhost:6379)
+    Episodic: QDrant (localhost:6333, 1024-dim dense vectors)
+    Procedural: SQLite (data/sqlite/copilot.db)
+    Compression: Summarize >2000 token histories before storage
+
+3.4 Tool Layer (MCP)
+
+    AWS (boto3)
+    Browser (Playwright)
+    Git
+    Proxmox API
+
+3.5 Status Command
+WhatsApp command /status returns:
+
+    LM Studio reachability (Windows PC online?)
+    Tasks today (local count vs cloud count)
+    Pending queue size
+    Memory usage (QDrant/Redis health)
+    Current cloud provider latency
+
+4. DATA SCHEMA
+SQLite (data/sqlite/copilot.db):
+sql
+Copy
+
+CREATE TABLE tasks (
+    id TEXT PRIMARY KEY,
+    description TEXT,
+    status TEXT CHECK(status IN ('pending', 'active', 'awaiting_approval', 'completed', 'failed')),
+    route_attempted TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    thread_id TEXT,
+    error_log TEXT
+);
+
+CREATE TABLE routing_log (
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    input_length INTEGER,
+    routed_to TEXT,
+    provider TEXT,  -- 'lmstudio', 'openrouter', 'venice', 'minimax'
+    model_used TEXT,
+    confidence REAL,
+    success BOOLEAN,
+    latency_ms INTEGER,
+    failure_reason TEXT,
+    cost_usd REAL
+);
+
+CREATE TABLE approval_rules (
+    id INTEGER PRIMARY KEY,
+    pattern TEXT,
+    condition TEXT,
+    action TEXT CHECK(action IN ('auto_approve', 'require_approval')),
+    hit_count INTEGER DEFAULT 0,
+    created_by TEXT  -- 'user' or 'system'
+);
+
+CREATE TABLE cost_tracking (
+    timestamp TIMESTAMP,
+    provider TEXT,
+    model TEXT,
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    cost_usd REAL,
+    task_type TEXT
+);
+
+5. ENVIRONMENT VARIABLES
+bash
+Copy
+
+# Local LM Studio (Windows 5070ti)
+LOCAL_LLM_BASE_URL=http://192.168.50.100:1234/v1
+LOCAL_LLM_MODEL=llama-3.2-3b-instruct
+LOCAL_TIMEOUT=5
+CONFIDENCE_THRESHOLD=0.70
+
+# Cloud Aggregators (Primary)
+OPENROUTER_API_KEY=sk-or-...
+VENICE_API_KEY=venice-...
+
+# MiniMax (Secondary/Specific)
+MINIMAX_API_KEY=...
+MINIMAX_GROUP_ID=...  # if required
+
+# Database & Cache
+QDRANT_URL=http://localhost:6333
+REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=sqlite:///data/sqlite/copilot.db
+
+# Cost Controls
+DAILY_COST_ALERT_THRESHOLD=50.00  # Notification only, no hard cap
+
+# Network
+CONTAINER_IP=192.168.50.123
+
+6. IMPLEMENTATION TIMELINE
+Day 1: Router core with OpenRouter/Venice integration, 5s timeout logic
+Day 2: MiniMax failover integration, provider health checking
+Day 3: Task queue worker loop, SQLite persistence
+Day 4: Memory layer (QDrant + Redis)
+Day 5: Tool layer scaffolding (MCP definitions)
+Day 6: /status command, voice processing (Whisper)
+Day 7: Approval system, dynamic rules
+Day 8: Nightly review job, cost analytics, backup to local NAS
+7. API CONFIGURATION
+OpenRouter:
+
+    Base URL: https://openrouter.ai/api/v1
+    Headers: HTTP-Referer, X-Title (required)
+    Model selection: Dynamic based on capability/cost (Claude 3.5 Sonnet, GPT-4o, etc.)
+
+Venice:
+
+    Base URL: https://api.venice.ai/api/v1
+    Model selection: Venice-hosted equivalents
+
+MiniMax:
+
+    Base URL: https://api.minimax.chat/v1
+    Specific models: MiniMax-Text-01, abab6.5-chat
+    Use case: [TO BE SPECIFIED]
+8. ANTICIPATED CHALLENGES & MITIGATIONS
+Table
+Copy
+Challenge	Risk	Mitigation
+LM Studio Windows PC offline	High (gaming, sleep mode)	Implement 5s timeout, immediate failover to Clooud LLM, queue non-urgent tasks
+4096 Context Hard Limit	Medium (crashes if exceeded)	Strict pre-flight check, never send >3500 tokens to Windows PC
+Structured Output Parsing Failures	Medium (3B model hallucinates JSON)	Try/catch with regex fallback, route to cloud on parse error
+Image Handling	Low (user expects vision)	Immediate cloud route, implement vision in V2  
+Windows Firewall Changes	Low (IP changes, blocks)	Static DHCP reservation on router, ping monitoring in health check
+9. LM Studio Settings Checklist (Windows PC)
+Before Claude starts coding, verify:
+
+    [ ] Model loaded: llama-3.2-3b-instruct (or phi-4-mini-reasoning)
+    [ ] Local Server: Running, port 1234
+    [ ] Serve on Local Network: Enabled (toggle ON)
+    [ ] Context Length: 4096 (not higher)
+    [ ] Temperature: 0.1
+    [ ] GPU Offload: Max (all layers on 5070)
+    [ ] Structured Output: Enabled with JSON Schema (from Section 2.2)
+    [ ] Windows Firewall: Port 1234 allowed on Private network
+    [ ] Static IP: Router DHCP reservation for 192.168.50.100							 
