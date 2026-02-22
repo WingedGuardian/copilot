@@ -1,7 +1,8 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 from nanobot.copilot.config import CopilotConfig
@@ -197,6 +198,8 @@ class ProvidersConfig(BaseModel):
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
     moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
     minimax: ProviderConfig = Field(default_factory=ProviderConfig)
+    openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
+    github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
     aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
 
 
@@ -242,20 +245,39 @@ class Config(BaseSettings):
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
-    
+
     def _match_provider(self, model: str | None = None) -> tuple["ProviderConfig | None", str | None]:
         """Match provider config and its registry name. Returns (config, spec_name)."""
         from nanobot.providers.registry import PROVIDERS
+
         model_lower = (model or self.agents.defaults.model).lower()
+        model_normalized = model_lower.replace("-", "_")
+        model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
+        normalized_prefix = model_prefix.replace("-", "_")
+
+        def _kw_matches(kw: str) -> bool:
+            kw = kw.lower()
+            return kw in model_lower or kw.replace("-", "_") in model_normalized
+
+        # Explicit provider prefix wins — prevents github-copilot/...codex matching openai_codex.
+        for spec in PROVIDERS:
+            p = getattr(self.providers, spec.name, None)
+            if p and model_prefix and normalized_prefix == spec.name:
+                if spec.is_oauth or p.api_key:
+                    return p, spec.name
 
         # Match by keyword (order follows PROVIDERS registry)
         for spec in PROVIDERS:
             p = getattr(self.providers, spec.name, None)
-            if p and any(kw in model_lower for kw in spec.keywords) and p.api_key:
-                return p, spec.name
+            if p and any(_kw_matches(kw) for kw in spec.keywords):
+                if spec.is_oauth or p.api_key:
+                    return p, spec.name
 
         # Fallback: gateways first, then others (follows registry order)
+        # OAuth providers are NOT valid fallbacks — they require explicit model selection
         for spec in PROVIDERS:
+            if spec.is_oauth:
+                continue
             p = getattr(self.providers, spec.name, None)
             if p and p.api_key:
                 return p, spec.name
@@ -275,7 +297,7 @@ class Config(BaseSettings):
         """Get API key for the given model. Falls back to first available key."""
         p = self.get_provider(model)
         return p.api_key if p else None
-    
+
     def get_api_base(self, model: str | None = None) -> str | None:
         """Get API base URL for the given model. Applies default URLs for known gateways."""
         from nanobot.providers.registry import find_by_name
@@ -290,7 +312,7 @@ class Config(BaseSettings):
             if spec and spec.is_gateway and spec.default_api_base:
                 return spec.default_api_base
         return None
-    
+
     model_config = ConfigDict(
         env_prefix="NANOBOT_",
         env_nested_delimiter="__"

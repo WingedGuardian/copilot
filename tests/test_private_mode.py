@@ -1,7 +1,5 @@
 """Tests for private mode (session-level local-only routing)."""
 
-import time
-import pytest
 
 from nanobot.session.manager import Session, SessionManager
 

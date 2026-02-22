@@ -1,6 +1,7 @@
 """Tests for heartbeat self-repair: stuck subagent and task detection."""
 
 import time
+
 import pytest
 
 from nanobot.agent.subagent import SubagentInfo, SubagentManager
@@ -25,7 +26,6 @@ def test_subagent_info_touch():
 
 def test_get_stuck_subagents_empty():
     """No stuck subagents when none are running."""
-    from unittest.mock import MagicMock
     mgr = SubagentManager.__new__(SubagentManager)
     mgr._subagent_info = {}
     mgr._running_tasks = {}

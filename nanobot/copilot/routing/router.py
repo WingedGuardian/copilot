@@ -6,11 +6,10 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.copilot.cost.logger import CostLogger
 from nanobot.copilot.routing.failover import FailoverChain, ProviderTier
 from nanobot.copilot.routing.heuristics import RouteDecision
-
+from nanobot.providers.base import LLMProvider, LLMResponse
 
 # Instruction injected into the system prompt when routing to the local model.
 _ESCALATION_INSTRUCTION = (
@@ -298,10 +297,16 @@ class RouterProvider(LLMProvider):
                     chain.append(ProviderTier(name, provider, decision.model))
             return chain
 
-        # Escalation — dedicated chain, not part of the plan
+        # Escalation — dedicated chain, native provider first
         if decision.target == "escalation":
+            from nanobot.providers.registry import find_by_model as _find_by_model
+            native_spec = _find_by_model(self._escalation_model)
+            native_name = native_spec.name if native_spec else None
+            if native_name and native_name in self._cloud:
+                chain.append(ProviderTier(native_name, self._cloud[native_name], self._escalation_model))
             for name, provider in self._cloud.items():
-                chain.append(ProviderTier(name, provider, self._escalation_model))
+                if name != native_name:
+                    chain.append(ProviderTier(name, provider, self._escalation_model))
             return chain
 
         # Local (private mode)
@@ -319,9 +324,15 @@ class RouterProvider(LLMProvider):
                         f"plan:{entry['provider']}", provider, entry.get("model", self._default_model),
                     ))
         else:
-            # No plan — default model on all cloud providers
+            # No plan — try native provider first, then others as fallback
+            from nanobot.providers.registry import find_by_model as _find_by_model
+            native_spec = _find_by_model(self._default_model)
+            native_name = native_spec.name if native_spec else None
+            if native_name and native_name in self._cloud:
+                chain.append(ProviderTier(native_name, self._cloud[native_name], self._default_model))
             for name, provider in self._cloud.items():
-                chain.append(ProviderTier(name, provider, self._default_model))
+                if name != native_name:
+                    chain.append(ProviderTier(name, provider, self._default_model))
 
         # ── Mandatory safety net (always appended by code) ──────────
         # 1. Last known working provider/model

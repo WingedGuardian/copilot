@@ -3,27 +3,37 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from nanobot.config.schema import ExecToolConfig
+    from nanobot.copilot.config import CopilotConfig
+    from nanobot.copilot.context.extended import ExtendedContextBuilder
+    from nanobot.copilot.extraction.background import BackgroundExtractor
+    from nanobot.copilot.memory.manager import MemoryManager
+    from nanobot.copilot.metacognition.detector import SatisfactionDetector
+    from nanobot.copilot.metacognition.lessons import LessonManager
+    from nanobot.copilot.threading.tracker import ThreadTracker
+    from nanobot.cron.service import CronService
 
 from loguru import logger
 
+from nanobot.agent.context import ContextBuilder
+from nanobot.agent.memory import MemoryStore
+from nanobot.agent.safety.sanitizer import OutputSanitizer
+from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.message import MessageTool
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.secrets import SecretsProvider
+from nanobot.agent.tools.shell import ExecTool
+from nanobot.agent.tools.spawn import SpawnTool
+from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
-from nanobot.agent.context import ContextBuilder
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.safety.sanitizer import OutputSanitizer
-from nanobot.agent.tools.secrets import SecretsProvider
-from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
-from nanobot.agent.tools.message import MessageTool
-from nanobot.agent.tools.spawn import SpawnTool
-from nanobot.agent.tools.cron import CronTool
-from nanobot.agent.memory import MemoryStore
-from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import SessionManager
-
 
 # Short model names → full litellm identifiers
 MODEL_ALIASES: dict[str, str] = {
@@ -59,6 +69,8 @@ _HELP_COMMANDS = (
     "/tasks — List active tasks with status\n"
     "/task <id> — Detailed task view\n"
     "/cancel <id> — Cancel a running task\n"
+    "/dream — Trigger a dream cycle now\n"
+    "/review — Trigger a weekly review now\n"
     "/onboard — Start the getting-to-know-you interview\n"
     "/profile — Show your current profile\n"
     "/use <provider> [fast|<model>] — Switch LLM provider\n"
@@ -154,7 +166,7 @@ class AgentLoop:
     4. Executes tool calls
     5. Sends responses back
     """
-    
+
     def __init__(
         self,
         bus: MessageBus,
@@ -180,7 +192,6 @@ class AgentLoop:
         max_turn_time: int = 300,
     ):
         from nanobot.config.schema import ExecToolConfig
-        from nanobot.cron.service import CronService
         self._llm_timeout = llm_timeout
         self._max_turn_time = max_turn_time
         self._tracked_tasks: set[asyncio.Task] = set()
@@ -209,7 +220,7 @@ class AgentLoop:
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
-        
+
         # Copilot extensions
         self._extractor = extractor
         self._thread_tracker = thread_tracker
@@ -218,6 +229,7 @@ class AgentLoop:
         self._memory_manager = memory_manager
         self._copilot_config = copilot_config
         self._task_manager = None  # Set externally when copilot task queue is enabled
+        self._dream_cycle = None  # Set externally when dream cycle is enabled
 
         self._running = False
         # Phase 4: Message UX
@@ -244,7 +256,7 @@ class AgentLoop:
                     pass
         task.add_done_callback(_done)
         return task
-    
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         # File tools (restrict to workspace if configured)
@@ -253,35 +265,35 @@ class AgentLoop:
         self.tools.register(WriteFileTool(allowed_dir=allowed_dir))
         self.tools.register(EditFileTool(allowed_dir=allowed_dir))
         self.tools.register(ListDirTool(allowed_dir=allowed_dir))
-        
+
         # Shell tool
         self.tools.register(ExecTool(
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
             restrict_to_workspace=self.restrict_to_workspace,
         ))
-        
+
         # Web tools
         self.tools.register(WebSearchTool(api_key=self.brave_api_key, secrets=self.secrets))
         self.tools.register(WebFetchTool())
-        
+
         # Message tool
         message_tool = MessageTool(send_callback=self.bus.publish_outbound)
         self.tools.register(message_tool)
-        
+
         # Spawn tool (for subagents)
         spawn_tool = SpawnTool(manager=self.subagents)
         self.tools.register(spawn_tool)
-        
+
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
-    
+
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
         logger.info("Agent loop started")
-        
+
         while self._running:
             try:
                 # Wait for next message
@@ -289,7 +301,7 @@ class AgentLoop:
                     self.bus.consume_inbound(),
                     timeout=1.0
                 )
-                
+
                 # 4B: Message coalescing — wait briefly and combine messages from same session
                 await asyncio.sleep(self._coalesce_window)
                 extra_msgs = []
@@ -350,7 +362,7 @@ class AgentLoop:
                     self._notified_sessions.discard(session_key)
             except asyncio.TimeoutError:
                 continue
-    
+
     async def stop(self) -> None:
         """Stop the agent loop and cancel pending background tasks."""
         self._running = False
@@ -361,15 +373,20 @@ class AgentLoop:
             await asyncio.gather(*self._tracked_tasks, return_exceptions=True)
             self._tracked_tasks.clear()
         logger.info("Agent loop stopped")
-    
-    async def _process_message(self, msg: InboundMessage, session_key: str | None = None) -> OutboundMessage | None:
+
+    async def _process_message(self, msg: InboundMessage, session_key: str | None = None, skip_enrichment: bool = False) -> OutboundMessage | None:
         """
         Process a single inbound message.
-        
+
         Args:
             msg: The inbound message to process.
             session_key: Override session key (used by process_direct).
-        
+            skip_enrichment: If True, skip user-facing context enrichment
+                (lessons, episodic recall, events, extraction, memory storage).
+                Background services set this to avoid contaminating/being
+                contaminated by user conversation context. Core facts and
+                identity files (SOUL.md, USER.md, etc.) are still loaded.
+
         Returns:
             The response message, or None if no response needed.
         """
@@ -377,12 +394,12 @@ class AgentLoop:
         # The chat_id contains the original "channel:chat_id" to route back to
         if msg.channel == "system":
             return await self._process_system_message(msg)
-        
+
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
         # Copilot: quick satisfaction check on user message
-        if self._satisfaction_detector:
+        if self._satisfaction_detector and not skip_enrichment:
             signal = self._satisfaction_detector.detect_regex(msg.content)
             if signal:
                 self._track_task(
@@ -397,9 +414,7 @@ class AgentLoop:
         # Handle slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
-            await self._consolidate_memory(session, archive_all=True)
-            session.clear()
-            self.sessions.save(session)
+            await self.reset_session(key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 New session started. Memory consolidated.")
         if cmd == "/help" or cmd.startswith("/help "):
@@ -463,6 +478,16 @@ class AgentLoop:
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"Task {task_id} not found.")
             await self._task_manager.update_status(task_id, "failed")
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"Task [{task_id}] cancelled.")
+        elif cmd == "/dream" and self._dream_cycle:
+            import asyncio as _aio
+            _aio.create_task(self._dream_cycle.run(), name="dream_manual")
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                  content="Dream cycle started. Results will be delivered when complete.")
+        elif cmd == "/review" and self._dream_cycle:
+            import asyncio as _aio
+            _aio.create_task(self._dream_cycle.run_weekly(), name="weekly_manual")
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                                  content="Weekly review started. Results will be delivered when complete.")
         elif cmd == "/use" or cmd == "/model" or cmd.startswith("/use ") or cmd.startswith("/model "):
             parts = cmd.split(None, 2)  # /use provider [tier_or_model]
             args = parts[1:] if len(parts) > 1 else []
@@ -570,7 +595,7 @@ class AgentLoop:
                     cfg = ab.get_config()
                     status = f"Alert frequency: every {cfg['dedup_hours']}h"
                     if cfg["muted"]:
-                        status += f" (muted)"
+                        status += " (muted)"
                     return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                           content=status)
 
@@ -638,11 +663,11 @@ class AgentLoop:
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
             message_tool.set_context(msg.channel, msg.chat_id)
-        
+
         spawn_tool = self.tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(msg.channel, msg.chat_id)
-        
+
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(msg.channel, msg.chat_id)
@@ -662,9 +687,9 @@ class AgentLoop:
                 if not msg.content:
                     msg.content = f"(Topic set to: {forced_label})"
 
-        # Copilot: fetch relevant lessons for injection
+        # Copilot: fetch relevant lessons for injection (skip for background services)
         lessons_for_context = None
-        if self._lesson_manager:
+        if self._lesson_manager and not skip_enrichment:
             try:
                 _lim = self._copilot_config.lesson_injection_count if self._copilot_config else 3
                 _min_conf = self._copilot_config.lesson_min_confidence if self._copilot_config else 0.30
@@ -673,10 +698,10 @@ class AgentLoop:
                 )
                 if lessons_for_context and self._satisfaction_detector:
                     self._satisfaction_detector.note_applied_lessons(
-                        [l.id for l in lessons_for_context]
+                        [lesson.id for lesson in lessons_for_context]
                     )
-                    for l in lessons_for_context:
-                        await self._lesson_manager.mark_applied(l.id)
+                    for lesson in lessons_for_context:
+                        await self._lesson_manager.mark_applied(lesson.id)
             except Exception as e:
                 logger.warning(f"Lesson fetch failed: {e}")
 
@@ -694,37 +719,55 @@ class AgentLoop:
         if lessons_for_context and hasattr(self.context, '_base'):
             build_kwargs["lessons"] = lessons_for_context
 
-        # Proactive episodic memory recall + core facts (concurrent, gracefully degrades)
+        # Core facts + proactive episodic recall (concurrent, gracefully degrades)
+        # Background services get core facts only; episodic recall is skipped to
+        # prevent user conversation memories from contaminating background prompts.
         if self._memory_manager and hasattr(self.context, '_base'):
             try:
-                results = await asyncio.gather(
-                    asyncio.wait_for(
-                        self._memory_manager.get_core_facts_block(budget_tokens=200),
-                        timeout=2.0,
-                    ),
-                    asyncio.wait_for(
-                        self._memory_manager.proactive_recall(
-                            msg.content, session.key, limit=3
+                if skip_enrichment:
+                    # Background: core facts only (cheap, useful for identity grounding)
+                    try:
+                        core_facts = await asyncio.wait_for(
+                            self._memory_manager.get_core_facts_block(budget_tokens=200),
+                            timeout=2.0,
+                        )
+                    except Exception:
+                        core_facts = ""
+                    if core_facts:
+                        build_kwargs["core_facts"] = core_facts
+                else:
+                    # Interactive: core facts + proactive episodic recall
+                    results = await asyncio.gather(
+                        asyncio.wait_for(
+                            self._memory_manager.get_core_facts_block(budget_tokens=200),
+                            timeout=2.0,
                         ),
-                        timeout=2.0,
-                    ),
-                    return_exceptions=True,
-                )
-                core_facts = results[0] if not isinstance(results[0], Exception) else ""
-                memory_ctx = results[1] if not isinstance(results[1], Exception) else ""
-                if core_facts:
-                    build_kwargs["core_facts"] = core_facts
-                if memory_ctx:
-                    build_kwargs["memory_context"] = memory_ctx
+                        asyncio.wait_for(
+                            self._memory_manager.proactive_recall(
+                                msg.content, session.key, limit=3
+                            ),
+                            timeout=2.0,
+                        ),
+                        return_exceptions=True,
+                    )
+                    core_facts = results[0] if not isinstance(results[0], Exception) else ""
+                    memory_ctx = results[1] if not isinstance(results[1], Exception) else ""
+                    if core_facts:
+                        build_kwargs["core_facts"] = core_facts
+                    if memory_ctx:
+                        build_kwargs["memory_context"] = memory_ctx
             except Exception as e:
                 logger.debug(f"Memory recall skipped: {e}")
 
         # Heartbeat event injection (news feed from background monitoring)
-        if self._copilot_config and hasattr(self.context, '_base'):
+        # Skip for background services: get_unacknowledged_events has a destructive
+        # side effect (marks events acknowledged), and background services should not
+        # consume events meant for user sessions.
+        if self._copilot_config and hasattr(self.context, '_base') and not skip_enrichment:
             try:
                 from nanobot.copilot.context.events import (
-                    get_unacknowledged_events,
                     get_heartbeat_summary,
+                    get_unacknowledged_events,
                 )
                 # Detailed events (fire-and-forget, marked as acknowledged)
                 events_ctx = await get_unacknowledged_events(
@@ -741,7 +784,7 @@ class AgentLoop:
                 logger.debug(f"Event injection skipped: {e}")
 
         messages = self.context.build_messages(**build_kwargs)
-        
+
         # Check routing preferences for conversation continuity
         if (
             self._copilot_config
@@ -787,7 +830,7 @@ class AgentLoop:
             # Call LLM — pass router-specific params when available
             chat_kwargs: dict[str, Any] = dict(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=self.tools.get_definitions() if iteration < self.max_iterations else [],
                 model=self.model,
             )
             if is_router:
@@ -839,11 +882,9 @@ class AgentLoop:
                         messages, tool_call.id, tool_call.name, result
                     )
 
-                # Interleaved CoT: reflect before next action
+                # Nudge toward completion in final iterations
                 if iteration >= self.max_iterations - 3:
                     messages.append({"role": "user", "content": "Summarize your findings and respond to the user."})
-                else:
-                    messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:
                 # No tool calls, we're done
                 final_content = response.content
@@ -852,13 +893,19 @@ class AgentLoop:
         if final_content is None:
             if iteration >= self.max_iterations:
                 final_content = f"Reached {self.max_iterations} iterations without completion."
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert(
+                    "agent", "medium",
+                    f"Agent exhausted {self.max_iterations} iterations for session {key}",
+                    "iteration_exhausted",
+                )
             else:
                 final_content = "I've completed processing but have no response to give."
-        
+
         # Log response preview
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
-        
+
         # Save to session (include tool names so consolidation sees what happened)
         session.add_message("user", msg.content)
         is_error = final_content.startswith(_ERROR_PREFIXES)
@@ -872,13 +919,16 @@ class AgentLoop:
         self.sessions.save(session)
 
         # Copilot: background extraction (async, never blocks response)
-        if self._extractor and not is_error:
+        # Skip for background services to avoid extracting heartbeat/dream conversations.
+        if self._extractor and not is_error and not skip_enrichment:
             self._extractor.schedule_extraction(
                 msg.content, final_content, session.key
             )
 
         # Copilot: store exchange in memory (async, never blocks response)
-        if self._memory_manager and not is_error:
+        # Skip for background services to prevent reverse contamination —
+        # heartbeat/dream conversations should not appear in user episodic recall.
+        if self._memory_manager and not is_error and not skip_enrichment:
             self._track_task(
                 self._memory_manager.remember_exchange(msg.content, final_content, session.key),
                 name="memory_remember_exchange",
@@ -890,16 +940,16 @@ class AgentLoop:
             content=final_content,
             metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
-    
+
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a system message (e.g., subagent announce).
-        
+
         The chat_id field contains "original_channel:original_chat_id" to route
         the response back to the correct destination.
         """
         logger.info(f"Processing system message from {msg.sender_id}")
-        
+
         # Parse origin from chat_id (format: "channel:chat_id")
         if ":" in msg.chat_id:
             parts = msg.chat_id.split(":", 1)
@@ -909,24 +959,24 @@ class AgentLoop:
             # Fallback
             origin_channel = "cli"
             origin_chat_id = msg.chat_id
-        
+
         # Use the origin session for context
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
-        
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
             message_tool.set_context(origin_channel, origin_chat_id)
-        
+
         spawn_tool = self.tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(origin_channel, origin_chat_id)
-        
+
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(origin_channel, origin_chat_id)
-        
+
         # Build messages with the announce content
         messages = self.context.build_messages(
             history=session.get_history(),
@@ -934,7 +984,7 @@ class AgentLoop:
             channel=origin_channel,
             chat_id=origin_chat_id,
         )
-        
+
         # Agent loop (limited for announce handling)
         iteration = 0
         _turn_start = __import__('time').monotonic()
@@ -954,7 +1004,7 @@ class AgentLoop:
                 response = await asyncio.wait_for(
                     self.provider.chat(
                         messages=messages,
-                        tools=self.tools.get_definitions(),
+                        tools=self.tools.get_definitions() if iteration < self.max_iterations else [],
                         model=self.model
                     ),
                     timeout=self._llm_timeout,
@@ -982,7 +1032,7 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
-                
+
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
@@ -990,29 +1040,43 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
-                # Interleaved CoT: reflect before next action
+                # Nudge toward completion in final iterations
                 if iteration >= self.max_iterations - 3:
                     messages.append({"role": "user", "content": "Summarize your findings and respond to the user."})
-                else:
-                    messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:
                 final_content = response.content
                 break
 
         if final_content is None:
             final_content = "Background task completed."
-        
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().alert(
+                "agent", "medium",
+                f"System message loop exhausted {self.max_iterations} iterations from {msg.sender_id}",
+                "iteration_exhausted",
+            )
+
         # Save to session (mark as system message in history)
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
         session.add_message("assistant", final_content)
         self.sessions.save(session)
-        
+
         return OutboundMessage(
             channel=origin_channel,
             chat_id=origin_chat_id,
             content=final_content
         )
-    
+
+    async def reset_session(self, session_key: str) -> str:
+        """Consolidate and clear a session. Returns confirmation message."""
+        session = self.sessions.get_or_create(session_key)
+        if not session.messages:
+            return "Session already empty."
+        await self._consolidate_memory(session, archive_all=True)
+        session.clear()
+        self.sessions.save(session)
+        return "Session refreshed. Memory consolidated."
+
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
         """Consolidate old messages into searchable memory, then trim session."""
         if not session.messages:
@@ -1036,7 +1100,6 @@ class AgentLoop:
             tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
             lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
         conversation = "\n".join(lines)
-        current_memory = memory.read_long_term()
 
         prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly one key:
 
@@ -1090,6 +1153,7 @@ Respond with ONLY valid JSON, no markdown fences."""
         channel: str = "cli",
         chat_id: str = "direct",
         model: str | None = None,
+        skip_enrichment: bool = False,
     ) -> str:
         """
         Process a message directly (for CLI or cron usage).
@@ -1100,6 +1164,9 @@ Respond with ONLY valid JSON, no markdown fences."""
             channel: Source channel (for tool context routing).
             chat_id: Source chat ID (for tool context routing).
             model: Optional model override for this call only.
+            skip_enrichment: If True, skip user-facing context enrichment
+                (lessons, episodic recall, events, extraction, memory storage).
+                Set this for background services (heartbeat, dream, cron, etc.).
 
         Returns:
             The agent's response.
@@ -1117,7 +1184,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             original_model = self.model
             self.model = model
         try:
-            response = await self._process_message(msg, session_key=session_key)
+            response = await self._process_message(msg, session_key=session_key, skip_enrichment=skip_enrichment)
             return response.content if response else ""
         finally:
             if original_model is not None:

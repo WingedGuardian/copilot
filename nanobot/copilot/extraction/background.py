@@ -6,13 +6,13 @@ import asyncio
 import json
 import re
 import time
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from nanobot.providers.base import LLMProvider
 from nanobot.copilot.cost.logger import CostLogger
 from nanobot.copilot.extraction.schemas import ExtractionResult
+from nanobot.providers.base import LLMProvider
 
 if TYPE_CHECKING:
     from nanobot.copilot.slm_queue.manager import SlmWorkQueue
@@ -59,7 +59,7 @@ class BackgroundExtractor:
         self._fallback_model = fallback_model
         self._current_task: asyncio.Task | None = None
         self._slm_queue: SlmWorkQueue | None = None
-        self._last_source: str = "none"  # "local", "cloud", "heuristic", "none"
+        self._last_source: str = "none"  # "local", "cloud", "fallback", "none"
 
         # Callback set by the agent loop to persist results
         self.on_result: Any = None  # async def on_result(session_key, result)
@@ -155,8 +155,8 @@ class BackgroundExtractor:
             except Exception as qe:
                 logger.debug(f"Queue enqueue failed: {qe}")
 
-        # Heuristic fallback (immediate low-quality results)
-        self._last_source = "heuristic"
+        # Regex fallback (immediate low-quality results)
+        self._last_source = "fallback"
         return self._heuristic_extract(user_message, assistant_response)
 
     async def extract_cloud(
@@ -183,6 +183,7 @@ class BackgroundExtractor:
         result = self._parse_json(response.content)
         if not result:
             raise ValueError("Cloud extraction returned unparseable JSON")
+        self._last_source = "cloud"
         result.token_count_estimate = (
             len(user_message) + len(assistant_response)
         ) // 4
@@ -235,6 +236,11 @@ class BackgroundExtractor:
         # Strip markdown code fences if present
         text = re.sub(r"^```(?:json)?\s*", "", text.strip())
         text = re.sub(r"\s*```$", "", text.strip())
+        # Find JSON object boundaries (handles preamble/postamble text)
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
         try:
             data = json.loads(text)
             return ExtractionResult(**data)

@@ -2,23 +2,22 @@
 
 import asyncio
 import os
-import signal
-from pathlib import Path
 import select
+import signal
 import sys
+from pathlib import Path
 
 import typer
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.patch_stdout import patch_stdout
-
-from nanobot import __version__, __logo__
+from nanobot import __logo__, __version__
 
 app = typer.Typer(
     name="nanobot",
@@ -158,9 +157,9 @@ def onboard():
     from nanobot.config.loader import get_config_path, load_config, save_config
     from nanobot.config.schema import Config
     from nanobot.utils.helpers import get_workspace_path
-    
+
     config_path = get_config_path()
-    
+
     if config_path.exists():
         # Load existing config — Pydantic fills in defaults for any new fields
         config = load_config()
@@ -170,14 +169,14 @@ def onboard():
         config = Config()
         save_config(config)
         console.print(f"[green]✓[/green] Created config at {config_path}")
-    
+
     # Create workspace
     workspace = get_workspace_path()
     console.print(f"[green]✓[/green] Created workspace at {workspace}")
-    
+
     # Create default bootstrap files
     _create_workspace_templates(workspace)
-    
+
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
     console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
@@ -229,13 +228,13 @@ Information about the user goes here.
 - Language: (your preferred language)
 """,
     }
-    
+
     for filename, content in templates.items():
         file_path = workspace / filename
         if not file_path.exists():
             file_path.write_text(content)
             console.print(f"  [dim]Created {filename}[/dim]")
-    
+
     # Create memory directory and MEMORY.md
     memory_dir = workspace / "memory"
     memory_dir.mkdir(exist_ok=True)
@@ -258,7 +257,7 @@ This file stores important information that should persist across sessions.
 (Things to remember)
 """)
         console.print("  [dim]Created memory/MEMORY.md[/dim]")
-    
+
     history_file = memory_dir / "HISTORY.md"
     if not history_file.exists():
         history_file.write_text("")
@@ -422,16 +421,19 @@ def gateway(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Start the nanobot gateway."""
-    from nanobot.config.loader import load_config, get_data_dir
-    from nanobot.bus.queue import MessageBus
+    import os
+    import signal
+    from pathlib import Path as _Path
+
     from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.session.manager import SessionManager
+    from nanobot.config.loader import get_data_dir, load_config
+    from nanobot.copilot.dream.cognitive_heartbeat import CopilotHeartbeatService
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
-    import os, signal
-    from pathlib import Path as _Path
+    from nanobot.session.manager import SessionManager
 
     if verbose:
         import logging
@@ -440,7 +442,9 @@ def gateway(
     # Singleton: kill any existing gateway before starting (prevents duplicate responses)
     # Uses both port-based detection (most reliable) and PID file (backup).
     # Port check catches orphans even when PID file is missing or stale.
-    import fcntl, subprocess, time as _time
+    import fcntl
+    import subprocess
+    import time as _time
     pid_file = _Path("/tmp/nanobot-gateway.pid")
 
     def _kill_existing_gateway():
@@ -495,7 +499,7 @@ def gateway(
             if _attempt < 2:
                 _time.sleep(2)
             else:
-                console.print(f"[red]Cannot acquire gateway lock after 3 attempts. Check for orphan processes.[/red]")
+                console.print("[red]Cannot acquire gateway lock after 3 attempts. Check for orphan processes.[/red]")
                 raise typer.Exit(1)
     # Keep _pid_fd open — lock held for process lifetime. Don't delete file on exit.
 
@@ -519,10 +523,21 @@ def gateway(
     # --- Copilot: initialise cost logger if enabled ---
     cost_logger = None
     if config.copilot.enabled:
+        from nanobot.copilot import tz as _tz_mod
+        _tz_mod.init(config.copilot.timezone)
         import asyncio as _aio
-        from nanobot.copilot.cost.db import ensure_tables, migrate_alerts, migrate_routing_preferences, migrate_heartbeat_events, migrate_alert_resolution
-        from nanobot.copilot.cost.logger import CostLogger
         from pathlib import Path
+
+        from nanobot.copilot.cost.db import (
+            ensure_tables,
+            migrate_alert_resolution,
+            migrate_alerts,
+            migrate_heartbeat_events,
+            migrate_navigator,
+            migrate_routing_preferences,
+            migrate_sentience,
+        )
+        from nanobot.copilot.cost.logger import CostLogger
 
         db_path = Path(config.copilot.db_path)
         _aio.run(ensure_tables(db_path))
@@ -530,6 +545,8 @@ def gateway(
         _aio.run(migrate_routing_preferences(db_path))
         _aio.run(migrate_heartbeat_events(db_path))
         _aio.run(migrate_alert_resolution(db_path))
+        _aio.run(migrate_sentience(db_path))
+        _aio.run(migrate_navigator(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
         # Normalize monitor_chat_id for WhatsApp (must be JID format)
@@ -540,12 +557,12 @@ def gateway(
         if not config.copilot.monitor_chat_id and config.copilot.monitor_channel == "whatsapp":
             if config.whatsapp.allow_from:
                 config.copilot.monitor_chat_id = config.whatsapp.allow_from[0] + "@s.whatsapp.net"
-                console.print(f"[green]✓[/green] monitor_chat_id auto-set from whatsapp.allow_from")
+                console.print("[green]✓[/green] monitor_chat_id auto-set from whatsapp.allow_from")
         if not config.copilot.monitor_chat_id:
             console.print("[yellow]Warning: copilot.monitor_chat_id is empty — alerts/dream reports won't be delivered[/yellow]")
 
     # --- Copilot: initialise alert bus if enabled ---
-    alert_bus = None
+    _alert_bus = None
     if config.copilot.enabled:
         from nanobot.copilot.alerting.bus import init_alert_bus
 
@@ -557,7 +574,7 @@ def gateway(
                 content=content,
             ))
 
-        alert_bus = init_alert_bus(
+        _alert_bus = init_alert_bus(
             db_path=str(db_path),
             deliver_fn=_alert_deliver,
             dedup_hours=config.copilot.alert_dedup_hours,
@@ -566,11 +583,11 @@ def gateway(
 
     provider = _make_provider(config, cost_logger=cost_logger)
     session_manager = SessionManager(config.workspace_path)
-    
+
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
-    
+
     # --- Copilot: initialise background extractor if enabled ---
     extractor = None
     if config.copilot.enabled:
@@ -601,8 +618,8 @@ def gateway(
                 _ext_key = cloud_p.api_key
                 _ext_base = config.get_api_base()
         if _ext_key:
-            from nanobot.providers.litellm_provider import LiteLLMProvider as _LEP
-            cloud_extractor_provider = _LEP(
+            from nanobot.providers.litellm_provider import LiteLLMProvider as _LiteLLMProvider
+            cloud_extractor_provider = _LiteLLMProvider(
                 api_key=_ext_key,
                 api_base=_ext_base,
                 default_model=_ext_model,
@@ -632,8 +649,8 @@ def gateway(
     extended_context = None
     if config.copilot.enabled:
         from nanobot.agent.context import ContextBuilder
-        from nanobot.copilot.context.extended import ExtendedContextBuilder
         from nanobot.copilot.context.budget import TokenBudget
+        from nanobot.copilot.context.extended import ExtendedContextBuilder
 
         extended_context = ExtendedContextBuilder(
             base=ContextBuilder(config.workspace_path),
@@ -656,6 +673,7 @@ def gateway(
 
     if config.copilot.enabled:
         import asyncio as _aio
+
         from nanobot.copilot.cost.db import migrate_phase3
 
         db_path = Path(config.copilot.db_path)
@@ -695,6 +713,7 @@ def gateway(
     memory_manager = None
     if config.copilot.enabled:
         import asyncio as _aio
+
         from nanobot.copilot.cost.db import migrate_phase4
         db_path = Path(config.copilot.db_path)
         _aio.run(migrate_phase4(db_path))
@@ -725,7 +744,8 @@ def gateway(
                 except Exception as _mem_err:
                     if _mem_attempt < 2:
                         console.print(f"[yellow]Memory init attempt {_mem_attempt + 1} failed, retrying...[/yellow]")
-                        import time as _t; _t.sleep(2)
+                        import time as _t
+                        _t.sleep(2)
                     else:
                         raise _mem_err
             console.print("[green]v[/green] Memory system enabled (Qdrant + SQLite)")
@@ -748,9 +768,10 @@ def gateway(
     slm_drainer = None
     if config.copilot.enabled and config.copilot.slm_queue_enabled and extractor and memory_manager:
         import asyncio as _aio_q
+
         from nanobot.copilot.db import SqlitePool
-        from nanobot.copilot.slm_queue.manager import SlmWorkQueue
         from nanobot.copilot.slm_queue.drainer import SlmQueueDrainer
+        from nanobot.copilot.slm_queue.manager import SlmWorkQueue
 
         _slm_pool = SqlitePool(config.copilot.db_path)
         _aio_q.run(_slm_pool.start())
@@ -833,8 +854,8 @@ def gateway(
     # --- Copilot: set_preference tool ---
     pref_tool = None
     if config.copilot.enabled:
-        from nanobot.copilot.tools.preferences import SetPreferenceTool
         from nanobot.config.loader import get_config_path
+        from nanobot.copilot.tools.preferences import SetPreferenceTool
 
         reschedule_cbs: dict = {}
         # Health check reschedule uses a late-binding closure so it works
@@ -849,6 +870,7 @@ def gateway(
             copilot_config=config.copilot,
             router=provider if hasattr(provider, 'set_model') else None,
             reschedule_callbacks=reschedule_cbs,
+            db_path=str(db_path),
         )
         agent.tools.register(pref_tool)
         console.print("[green]v[/green] Preference tool enabled")
@@ -881,8 +903,8 @@ def gateway(
             agent.tools.register(UseModelTool(session_manager, timeout_minutes=_timeout_min))
             console.print("[green]v[/green] Model override tool enabled")
 
-            from nanobot.copilot.tools.plan_routing import PlanRoutingTool
             from nanobot.config.loader import get_config_path as _gcp
+            from nanobot.copilot.tools.plan_routing import PlanRoutingTool
             agent.tools.register(PlanRoutingTool(
                 router=provider if hasattr(provider, 'set_routing_plan') else None,
                 config_path=_gcp(),
@@ -900,9 +922,9 @@ def gateway(
             _aio.run(migrate_phase7(db_path))
 
             from nanobot.copilot.tasks.manager import TaskManager
+            from nanobot.copilot.tasks.prompts import build_decomposition_prompt
             from nanobot.copilot.tasks.tool import TaskTool
             from nanobot.copilot.tasks.worker import TaskWorker
-            from nanobot.copilot.tasks.prompts import build_decomposition_prompt
 
             task_manager = TaskManager(db_path)
             agent.tools.register(TaskTool(task_manager))
@@ -913,12 +935,16 @@ def gateway(
             _monitor_ch = config.copilot.monitor_channel
             _monitor_cid = config.copilot.monitor_chat_id
 
-            async def _decompose_task(description: str) -> str:
+            async def _decompose_task(description: str, past_wisdom: str | None = None) -> str:
+                import uuid as _uuid
                 pool_path = Path(config.copilot.copilot_docs_dir) / "models.md"
                 model_pool = pool_path.read_text() if pool_path.exists() else None
-                prompt = build_decomposition_prompt(description, model_pool=model_pool)
+                prompt = build_decomposition_prompt(
+                    description, model_pool=model_pool, past_wisdom=past_wisdom,
+                )
+                session_key = f"task:decompose:{_uuid.uuid4().hex[:8]}"
                 return await agent.process_direct(
-                    prompt, session_key="task:decompose", model=_decomp_model,
+                    prompt, session_key=session_key, model=_decomp_model,
                 )
 
             async def _notify_task_progress(message: str) -> None:
@@ -934,12 +960,47 @@ def gateway(
                     desc, session_key=sk, channel=ch, model=model,
                 )
 
+            _dream_model = config.copilot.resolved_dream_model or None
+            async def _run_retrospective(prompt: str) -> str:
+                import uuid as _uuid
+                session_key = f"task:retro:{_uuid.uuid4().hex[:8]}"
+                return await agent.process_direct(
+                    prompt, session_key=session_key, model=_dream_model,
+                    skip_enrichment=True,
+                )
+
+            # Navigator duo (opt-in)
+            _navigator_fn = None
+            _navigator_identity = ""
+            if config.copilot.navigator_enabled:
+                _nav_model = config.copilot.resolved_navigator_model
+                _nav_identity_path = Path(config.copilot.copilot_docs_dir) / "navigator.md"
+                _navigator_identity = _nav_identity_path.read_text() if _nav_identity_path.exists() else ""
+
+                async def _navigator_call(messages: list[dict]) -> str:
+                    """Direct provider.chat() for navigator reviews. No tools."""
+                    response = await provider.chat(
+                        messages=messages, model=_nav_model,
+                        tools=None, max_tokens=2048, temperature=0.3,
+                    )
+                    return response.content or ""
+
+                _navigator_fn = _navigator_call
+                console.print(f"[green]v[/green] Navigator duo enabled (model: {_nav_model})")
+
             task_worker = TaskWorker(
                 task_manager=task_manager,
                 execute_fn=_execute_step,
                 decompose_fn=_decompose_task,
                 notify_fn=_notify_task_progress,
                 interval_s=config.copilot.task_worker_interval,
+                db_path=str(db_path),
+                memory_manager=memory_manager,
+                retrospective_fn=_run_retrospective,
+                navigator_fn=_navigator_fn,
+                navigator_identity=_navigator_identity,
+                max_duo_rounds=config.copilot.max_duo_rounds,
+                max_review_cycles=config.copilot.max_review_cycles,
             )
 
             # Increase subagent iteration limit for task execution
@@ -952,11 +1013,19 @@ def gateway(
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        # Frame the message so the LLM knows it's delivering a reminder,
+        # not interpreting an open-ended task prompt.
+        framed = (
+            "[SCHEDULED REMINDER — deliver this message to the user as-is. "
+            "Do NOT run tools or interpret it as a task.]\n\n"
+            + job.payload.message
+        )
         response = await agent.process_direct(
-            job.payload.message,
+            framed,
             session_key=f"cron:{job.id}",
             channel=job.payload.channel or "cli",
             chat_id=job.payload.to or "direct",
+            skip_enrichment=True,
         )
         if job.payload.deliver and job.payload.to:
             from nanobot.bus.events import OutboundMessage
@@ -965,27 +1034,48 @@ def gateway(
                 chat_id=job.payload.to,
                 content=response or ""
             ))
+            # Inject reminder context into user session so replies have context
+            user_key = f"{job.payload.channel or 'cli'}:{job.payload.to}"
+            user_session = agent.sessions.get_or_create(user_key)
+            user_session.add_message(
+                "assistant",
+                f"[Scheduled reminder delivered: {job.payload.message}]"
+            )
+            agent.sessions.save(user_session)
         return response
     cron.on_job = on_cron_job
-    
+
     # Create heartbeat service (LLM-powered, every 2h)
     _hb_model = config.copilot.resolved_heartbeat_model if config.copilot.enabled else None
 
     async def on_heartbeat(prompt: str) -> str:
-        """Execute heartbeat through the agent with explicit model."""
+        """Execute heartbeat through the agent with explicit model.
+
+        Uses daily session key for within-day continuity (stream of consciousness).
+        New day = new session (natural reset, dream cycle seeds first tick).
+        """
+        from datetime import date
+        daily_key = f"heartbeat:{date.today().isoformat()}"
         return await agent.process_direct(
-            prompt, session_key="heartbeat", model=_hb_model or None,
+            prompt, session_key=daily_key, model=_hb_model or None,
+            skip_enrichment=True,
         )
 
     _hb_db = str(Path(config.copilot.db_path)) if config.copilot.enabled else ""
-    heartbeat = HeartbeatService(
+    _hb_kwargs = dict(
         workspace=config.workspace_path,
         on_heartbeat=on_heartbeat,
         interval_s=2 * 60 * 60,  # 2 hours
         enabled=True,
-        db_path=_hb_db,
-        task_manager=getattr(agent, '_task_manager', None),
     )
+    if config.copilot.enabled:
+        heartbeat = CopilotHeartbeatService(
+            db_path=_hb_db,
+            task_manager=getattr(agent, '_task_manager', None),
+            **_hb_kwargs,
+        )
+    else:
+        heartbeat = HeartbeatService(**_hb_kwargs)
 
     # --- Copilot: Phase 8 — dream cycle + monitor + copilot heartbeat ---
     dream_cycle = None
@@ -994,14 +1084,15 @@ def gateway(
 
     if config.copilot.enabled:
         import asyncio as _aio
+
         from nanobot.copilot.cost.db import migrate_phase8
         db_path = Path(config.copilot.db_path)
         _aio.run(migrate_phase8(db_path))
 
         try:
             from nanobot.copilot.dream.cycle import DreamCycle
-            from nanobot.copilot.dream.monitor import MonitorService
             from nanobot.copilot.dream.health_check import HealthCheckService
+            from nanobot.copilot.dream.monitor import MonitorService
 
             async def _deliver_msg(channel, chat_id, content):
                 from nanobot.bus.events import OutboundMessage
@@ -1018,12 +1109,15 @@ def gateway(
                 status_aggregator=status_aggregator,
                 execute_fn=lambda prompt: agent.process_direct(
                     prompt, session_key="dream", model=_dream_model,
+                    skip_enrichment=True,
                 ),
                 weekly_execute_fn=lambda prompt: agent.process_direct(
                     prompt, session_key="weekly_review", model=_weekly_model,
+                    skip_enrichment=True,
                 ),
                 monthly_execute_fn=lambda prompt: agent.process_direct(
                     prompt, session_key="monthly_review", model=_monthly_model,
+                    skip_enrichment=True,
                 ),
                 backup_dir=config.copilot.backup_dir,
                 deliver_fn=_deliver_msg,
@@ -1032,6 +1126,13 @@ def gateway(
                 docs_dir=config.copilot.copilot_docs_dir,
                 emergency_cloud_model=config.copilot.emergency_cloud_model,
             )
+
+            # Wire dream_cycle into agent for /dream and /review commands
+            agent._dream_cycle = dream_cycle
+
+            # Wire dream_cycle into cognitive heartbeat for FM4 skip-if-busy
+            if hasattr(heartbeat, '_dream_cycle'):
+                heartbeat._dream_cycle = dream_cycle
 
             if slm_queue:
                 dream_cycle._slm_queue = slm_queue
@@ -1061,6 +1162,12 @@ def gateway(
                 subagent_manager=getattr(agent, '_subagent_manager', None),
                 task_manager=getattr(agent, '_task_manager', None),
                 qdrant_url=config.copilot.qdrant_url,
+                cron_service=cron,
+                session_manager=session_manager,
+                reset_session_fn=agent.reset_session,
+                daily_reset_enabled=config.copilot.daily_session_reset,
+                daily_reset_hour=config.copilot.daily_reset_hour,
+                daily_reset_quiet_minutes=config.copilot.daily_reset_quiet_minutes,
             )
             if status_aggregator:
                 status_aggregator._health_check = health_check
@@ -1085,16 +1192,16 @@ def gateway(
         config, bus, session_manager=session_manager,
         voice_transcriber=voice_transcriber,
     )
-    
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
-    
+
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
-    
+
     hc_interval = config.copilot.health_check_interval // 60 if config.copilot.enabled else 0
     console.print(f"[green]✓[/green] Heartbeat: health check every {hc_interval}m, HEARTBEAT.md every 2h")
 
@@ -1121,10 +1228,11 @@ def gateway(
             console.print("[green]v[/green] Process supervisor started")
 
             # Schedule dream cycle via croniter
-            dream_task = None
+            _dream_task = None
             _dream_cancel_event = asyncio.Event()
             if dream_cycle:
                 import time as _time
+
                 from croniter import croniter as _croniter
 
                 async def _dream_scheduler():
@@ -1146,7 +1254,7 @@ def gateway(
                         except Exception as exc:
                             _dream_log.error(f"Dream cycle failed: {exc}")
 
-                dream_task = asyncio.create_task(_dream_scheduler(), name="dream_scheduler")
+                _dream_task = asyncio.create_task(_dream_scheduler(), name="dream_scheduler")
                 from loguru import logger as _log
                 _log.info(f"Dream cycle scheduled: {config.copilot.dream_cron_expr}")
 
@@ -1157,7 +1265,7 @@ def gateway(
                     pref_tool._reschedule["dream_cron_expr"] = _reschedule_dream
 
             # Weekly review scheduler
-            weekly_task = None
+            _weekly_task = None
             _weekly_cancel_event = asyncio.Event()
             if dream_cycle:
                 async def _weekly_scheduler():
@@ -1173,12 +1281,12 @@ def gateway(
                             except asyncio.TimeoutError:
                                 pass
                         try:
-                            result = await dream_cycle.run_weekly()
+                            await dream_cycle.run_weekly()
                             _weekly_log.info("Weekly review complete")
                         except Exception as exc:
                             _weekly_log.error(f"Weekly review failed: {exc}")
 
-                weekly_task = asyncio.create_task(_weekly_scheduler(), name="weekly_review")
+                _weekly_task = asyncio.create_task(_weekly_scheduler(), name="weekly_review")
                 _log.info(f"Weekly review scheduled: {config.copilot.weekly_review_cron_expr}")
 
                 if config.copilot.enabled and pref_tool is not None:
@@ -1187,7 +1295,7 @@ def gateway(
                     pref_tool._reschedule["weekly_review_cron_expr"] = _reschedule_weekly
 
             # Monthly review scheduler
-            monthly_task = None
+            _monthly_task = None
             _monthly_cancel_event = asyncio.Event()
             if dream_cycle:
                 async def _monthly_scheduler():
@@ -1203,12 +1311,12 @@ def gateway(
                             except asyncio.TimeoutError:
                                 pass
                         try:
-                            result = await dream_cycle.run_monthly()
+                            await dream_cycle.run_monthly()
                             _monthly_log.info("Monthly review complete")
                         except Exception as exc:
                             _monthly_log.error(f"Monthly review failed: {exc}")
 
-                monthly_task = asyncio.create_task(_monthly_scheduler(), name="monthly_review")
+                _monthly_task = asyncio.create_task(_monthly_scheduler(), name="monthly_review")
                 _log.info(f"Monthly review scheduled: {config.copilot.monthly_review_cron_expr}")
 
                 if config.copilot.enabled and pref_tool is not None:
@@ -1268,13 +1376,14 @@ def agent(
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
 ):
     """Interact with the agent directly."""
-    from nanobot.config.loader import load_config
-    from nanobot.bus.queue import MessageBus
-    from nanobot.agent.loop import AgentLoop
     from loguru import logger
-    
+
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.loader import load_config
+
     config = load_config()
-    
+
     bus = MessageBus()
     provider = _make_provider(config)
 
@@ -1282,7 +1391,7 @@ def agent(
         logger.enable("nanobot")
     else:
         logger.disable("nanobot")
-    
+
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -1295,7 +1404,7 @@ def agent(
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
     )
-    
+
     # Show spinner when logs are off (no output to miss); skip when logs are on
     def _thinking_ctx():
         if logs:
@@ -1310,7 +1419,7 @@ def agent(
             with _thinking_ctx():
                 response = await agent_loop.process_direct(message, session_id)
             _print_agent_response(response, render_markdown=markdown)
-        
+
         asyncio.run(run_once())
     else:
         # Interactive mode
@@ -1323,7 +1432,7 @@ def agent(
             os._exit(0)
 
         signal.signal(signal.SIGINT, _exit_on_sigint)
-        
+
         async def run_interactive():
             while True:
                 try:
@@ -1337,7 +1446,7 @@ def agent(
                         _restore_terminal()
                         console.print("\nGoodbye!")
                         break
-                    
+
                     with _thinking_ctx():
                         response = await agent_loop.process_direct(user_input, session_id)
                     _print_agent_response(response, render_markdown=markdown)
@@ -1349,7 +1458,7 @@ def agent(
                     _restore_terminal()
                     console.print("\nGoodbye!")
                     break
-        
+
         asyncio.run(run_interactive())
 
 
@@ -1406,7 +1515,7 @@ def channels_status():
         "✓" if mc.enabled else "✗",
         mc_base
     )
-    
+
     # Telegram
     tg = config.channels.telegram
     tg_config = f"token: {tg.token[:10]}..." if tg.token else "[dim]not configured[/dim]"
@@ -1432,57 +1541,57 @@ def _get_bridge_dir() -> Path:
     """Get the bridge directory, setting it up if needed."""
     import shutil
     import subprocess
-    
+
     # User's bridge location
     user_bridge = Path.home() / ".nanobot" / "bridge"
-    
+
     # Check if already built
     if (user_bridge / "dist" / "index.js").exists():
         return user_bridge
-    
+
     # Check for npm
     if not shutil.which("npm"):
         console.print("[red]npm not found. Please install Node.js >= 18.[/red]")
         raise typer.Exit(1)
-    
+
     # Find source bridge: first check package data, then source dir
     pkg_bridge = Path(__file__).parent.parent / "bridge"  # nanobot/bridge (installed)
     src_bridge = Path(__file__).parent.parent.parent / "bridge"  # repo root/bridge (dev)
-    
+
     source = None
     if (pkg_bridge / "package.json").exists():
         source = pkg_bridge
     elif (src_bridge / "package.json").exists():
         source = src_bridge
-    
+
     if not source:
         console.print("[red]Bridge source not found.[/red]")
         console.print("Try reinstalling: pip install --force-reinstall nanobot")
         raise typer.Exit(1)
-    
+
     console.print(f"{__logo__} Setting up bridge...")
-    
+
     # Copy to user directory
     user_bridge.parent.mkdir(parents=True, exist_ok=True)
     if user_bridge.exists():
         shutil.rmtree(user_bridge)
     shutil.copytree(source, user_bridge, ignore=shutil.ignore_patterns("node_modules", "dist"))
-    
+
     # Install and build
     try:
         console.print("  Installing dependencies...")
         subprocess.run(["npm", "install"], cwd=user_bridge, check=True, capture_output=True)
-        
+
         console.print("  Building...")
         subprocess.run(["npm", "run", "build"], cwd=user_bridge, check=True, capture_output=True)
-        
+
         console.print("[green]✓[/green] Bridge ready\n")
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Build failed: {e}[/red]")
         if e.stderr:
             console.print(f"[dim]{e.stderr.decode()[:500]}[/dim]")
         raise typer.Exit(1)
-    
+
     return user_bridge
 
 
@@ -1490,18 +1599,19 @@ def _get_bridge_dir() -> Path:
 def channels_login():
     """Link device via QR code."""
     import subprocess
+
     from nanobot.config.loader import load_config
-    
+
     config = load_config()
     bridge_dir = _get_bridge_dir()
-    
+
     console.print(f"{__logo__} Starting bridge...")
     console.print("Scan the QR code to connect.\n")
-    
+
     env = {**os.environ}
     if config.channels.whatsapp.bridge_token:
         env["BRIDGE_TOKEN"] = config.channels.whatsapp.bridge_token
-    
+
     try:
         subprocess.run(["npm", "start"], cwd=bridge_dir, check=True, env=env)
     except subprocess.CalledProcessError as e:
@@ -1525,23 +1635,23 @@ def cron_list(
     """List scheduled jobs."""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     jobs = service.list_jobs(include_disabled=all)
-    
+
     if not jobs:
         console.print("No scheduled jobs.")
         return
-    
+
     table = Table(title="Scheduled Jobs")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
     table.add_column("Schedule")
     table.add_column("Status")
     table.add_column("Next Run")
-    
+
     import time
     for job in jobs:
         # Format schedule
@@ -1551,17 +1661,17 @@ def cron_list(
             sched = job.schedule.expr or ""
         else:
             sched = "one-time"
-        
+
         # Format next run
         next_run = ""
         if job.state.next_run_at_ms:
             next_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(job.state.next_run_at_ms / 1000))
             next_run = next_time
-        
+
         status = "[green]enabled[/green]" if job.enabled else "[dim]disabled[/dim]"
-        
+
         table.add_row(job.id, job.name, sched, status, next_run)
-    
+
     console.print(table)
 
 
@@ -1580,7 +1690,7 @@ def cron_add(
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronSchedule
-    
+
     # Determine schedule type
     if every:
         schedule = CronSchedule(kind="every", every_ms=every * 1000)
@@ -1593,10 +1703,10 @@ def cron_add(
     else:
         console.print("[red]Error: Must specify --every, --cron, or --at[/red]")
         raise typer.Exit(1)
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     job = service.add_job(
         name=name,
         schedule=schedule,
@@ -1605,7 +1715,7 @@ def cron_add(
         to=to,
         channel=channel,
     )
-    
+
     console.print(f"[green]✓[/green] Added job '{job.name}' ({job.id})")
 
 
@@ -1616,10 +1726,10 @@ def cron_remove(
     """Remove a scheduled job."""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     if service.remove_job(job_id):
         console.print(f"[green]✓[/green] Removed job {job_id}")
     else:
@@ -1634,10 +1744,10 @@ def cron_enable(
     """Enable or disable a job."""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     job = service.enable_job(job_id, enabled=not disable)
     if job:
         status = "disabled" if disable else "enabled"
@@ -1654,15 +1764,15 @@ def cron_run(
     """Manually run a job."""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     async def run():
         return await service.run_job(job_id, force=force)
-    
+
     if asyncio.run(run()):
-        console.print(f"[green]✓[/green] Job executed")
+        console.print("[green]✓[/green] Job executed")
     else:
         console.print(f"[red]Failed to run job {job_id}[/red]")
 
@@ -1675,7 +1785,7 @@ def cron_run(
 @app.command()
 def status():
     """Show nanobot status."""
-    from nanobot.config.loader import load_config, get_config_path
+    from nanobot.config.loader import get_config_path, load_config
 
     config_path = get_config_path()
     config = load_config()
@@ -1690,7 +1800,7 @@ def status():
         from nanobot.providers.registry import PROVIDERS
 
         console.print(f"Model: {config.agents.defaults.model}")
-        
+
         # Check API keys from registry
         for spec in PROVIDERS:
             p = getattr(config.providers, spec.name, None)
@@ -1763,8 +1873,8 @@ def backfill_extractions(
         console.print("[red]No cloud extraction API key configured[/red]")
         raise typer.Exit(1)
 
-    from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.copilot.extraction.background import BackgroundExtractor
+    from nanobot.providers.litellm_provider import LiteLLMProvider
 
     provider = LiteLLMProvider(
         api_key=_ext_key, api_base=_ext_base,
@@ -1790,7 +1900,6 @@ def backfill_extractions(
                     user_msg, asst_msg, session_key=session_key,
                 )
                 existing.append(result.model_dump())
-                n = len(result.facts) + len(result.decisions) + len(result.entities)
                 console.print(
                     f"  [green]✓[/green] {i}/{len(pairs)}: "
                     f"{len(result.facts)}F {len(result.decisions)}D "

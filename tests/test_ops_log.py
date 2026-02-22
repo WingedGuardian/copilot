@@ -1,9 +1,9 @@
 """Tests for ops_log tool and heartbeat summary injection."""
 
 import asyncio
-import pytest
-import aiosqlite
 
+import aiosqlite
+import pytest
 
 # --- Fixture: in-memory DB with operational tables ---
 
@@ -276,8 +276,9 @@ class TestHeartbeatSummary:
 class TestStatusOpsSummary:
 
     def test_format_ago(self):
-        from nanobot.copilot.status.aggregator import _format_ago
         from datetime import datetime, timedelta
+
+        from nanobot.copilot.status.aggregator import _format_ago
         # Recent
         ts = (datetime.now(tz=None) - timedelta(seconds=30)).isoformat()
         assert "30s ago" in _format_ago(ts)

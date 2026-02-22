@@ -9,14 +9,15 @@ from loguru import logger
 from nanobot.providers.base import LLMProvider, LLMResponse
 
 
-def _fire_alert(message: str) -> None:
+def _fire_alert(message: str, provider_name: str = "") -> None:
     """Fire an alert without silently losing errors."""
     import asyncio
 
     async def _send():
         try:
             from nanobot.copilot.alerting.bus import get_alert_bus
-            await get_alert_bus().alert("llm", "medium", message, "provider_failed")
+            error_key = f"provider_failed:{provider_name}" if provider_name else "provider_failed"
+            await get_alert_bus().alert("llm", "medium", message, error_key)
         except Exception as e:
             logger.warning(f"Alert delivery failed: {e}")
 
@@ -24,6 +25,23 @@ def _fire_alert(message: str) -> None:
         asyncio.ensure_future(_send())
     except RuntimeError:
         pass  # No event loop — skip alert
+
+
+def _resolve_provider_alert(provider_name: str) -> None:
+    """Resolve a provider's circuit-breaker alert on recovery."""
+    import asyncio
+
+    async def _resolve():
+        try:
+            from nanobot.copilot.alerting.bus import get_alert_bus
+            await get_alert_bus().resolve("llm", f"provider_failed:{provider_name}")
+        except Exception:
+            pass
+
+    try:
+        asyncio.ensure_future(_resolve())
+    except RuntimeError:
+        pass
 
 
 @dataclass
@@ -71,6 +89,7 @@ class CircuitBreaker:
         s["failures"] = []
         if s["state"] != "closed":
             logger.info(f"CircuitBreaker: {name} -> closed (recovered)")
+            _resolve_provider_alert(name)
         s["state"] = "closed"
         s["opened_at"] = 0.0
 
@@ -89,11 +108,14 @@ class CircuitBreaker:
             logger.warning(f"CircuitBreaker: {name} -> open (probe failed)")
             # LM Studio is optional local infra — don't alert when it's down
             if "lm_studio" not in name:
-                _fire_alert(f"LLM provider '{name}' circuit opened")
+                _fire_alert(f"LLM provider '{name}' circuit opened", name)
         elif len(s["failures"]) >= self._failure_threshold:
-            s["state"] = "open"
-            s["opened_at"] = now
-            logger.warning(f"CircuitBreaker: {name} -> open ({len(s['failures'])} failures in {self._window_s}s)")
+            if s["state"] != "open":  # Only alert on first opening
+                s["state"] = "open"
+                s["opened_at"] = now
+                logger.warning(f"CircuitBreaker: {name} -> open ({len(s['failures'])} failures in {self._window_s}s)")
+                if "lm_studio" not in name:
+                    _fire_alert(f"LLM provider '{name}' circuit opened", name)
 
 
 class FailoverChain:

@@ -1,14 +1,13 @@
 """Tests for MCP server integration (Phase 4B)."""
 
-import json
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from nanobot.agent.mcp.bridge import McpToolAdapter
 from nanobot.agent.mcp.client import McpClient, McpServerConfig
 from nanobot.agent.mcp.manager import McpManager
 from nanobot.agent.tools.registry import ToolRegistry
-
 
 # --- McpServerConfig ---
 

@@ -2,10 +2,11 @@
 
 import os
 import tempfile
+
 import pytest
 
-from nanobot.copilot.memory.fulltext import FullTextStore, FTSResult, reciprocal_rank_fusion
 from nanobot.copilot.memory.episodic import Episode
+from nanobot.copilot.memory.fulltext import FTSResult, FullTextStore, reciprocal_rank_fusion
 
 
 @pytest.fixture

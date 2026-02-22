@@ -1,7 +1,7 @@
 """Unified alert bus — deduplicated, severity-aware notifications."""
 
 import time
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 import aiosqlite
 from loguru import logger
@@ -80,6 +80,21 @@ class AlertBus:
             "muted": muted,
             "mute_until": self._mute_until if muted else None,
         }
+
+    async def resolve(self, subsystem: str, error_key: str) -> None:
+        """Resolve all unresolved alerts matching subsystem + error_key."""
+        if not self._db_path:
+            return
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    "UPDATE alerts SET resolved_at = CURRENT_TIMESTAMP "
+                    "WHERE subsystem = ? AND error_key = ? AND resolved_at IS NULL",
+                    (subsystem, error_key),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.debug(f"Alert resolve failed: {e}")
 
     # ── Internals ─────────────────────────────────────────────────────
 

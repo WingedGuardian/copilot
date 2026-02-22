@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
 from nanobot.copilot.tasks.decomposer import parse_decomposition_response
 from nanobot.copilot.tasks.manager import TaskManager
-from nanobot.copilot.tasks.prompts import build_progress_message
+from nanobot.copilot.tasks.navigator import DuoMetrics, review_execution, review_plan
+from nanobot.copilot.tasks.prompts import (
+    build_navigator_escalation_message,
+    build_progress_message,
+)
 
 
 class TaskWorker:
@@ -22,6 +26,13 @@ class TaskWorker:
         decompose_fn: Callable[[str], Awaitable[str]] | None = None,
         notify_fn: Callable[[str], Awaitable[None]] | None = None,
         interval_s: int = 60,
+        db_path: str = "",
+        memory_manager: Any = None,
+        retrospective_fn: Callable[[str], Awaitable[str]] | None = None,
+        navigator_fn: Callable[[list[dict]], Awaitable[str]] | None = None,
+        navigator_identity: str = "",
+        max_duo_rounds: int = 3,
+        max_review_cycles: int = 3,
     ):
         self._manager = task_manager
         self._execute_fn = execute_fn
@@ -30,6 +41,14 @@ class TaskWorker:
         self._interval = interval_s
         self._running = False
         self._task: asyncio.Task | None = None
+        self._db_path = db_path
+        self._memory = memory_manager
+        self._retrospective_fn = retrospective_fn
+        self._navigator_fn = navigator_fn
+        self._navigator_identity = navigator_identity
+        self._max_duo_rounds = max_duo_rounds
+        self._max_review_cycles = max_review_cycles
+        self._duo_metrics: dict[str, DuoMetrics] = {}
 
     async def start(self) -> None:
         """Start the background worker loop."""
@@ -91,7 +110,12 @@ class TaskWorker:
             return
 
         try:
-            raw_response = await self._decompose_fn(task.description or task.title)
+            # Phase 3B: Inject past wisdom from retrospectives
+            past_wisdom = await self._get_past_wisdom(task.description or task.title)
+            raw_response = await self._decompose_fn(
+                task.description or task.title,
+                past_wisdom=past_wisdom,
+            )
             result = parse_decomposition_response(raw_response)
 
             if result.error:
@@ -108,6 +132,28 @@ class TaskWorker:
                 return
 
             if result.steps:
+                # Navigator plan review (single round, advisory)
+                if self._navigator_fn:
+                    verdict, rounds = await review_plan(
+                        result.steps, task, self._navigator_fn,
+                        self._navigator_identity,
+                    )
+                    metrics = DuoMetrics(
+                        plan_review_rounds=rounds,
+                        plan_approved_first_try=verdict.approved,
+                    )
+                    self._duo_metrics[task.id] = metrics
+
+                    if verdict.needs_user:
+                        await self._manager.set_pending_questions(
+                            task.id,
+                            f"Navigator review:\n{verdict.critique}",
+                        )
+                        await self._notify(build_navigator_escalation_message(
+                            task.id, task.title, verdict.critique, "plan_review",
+                        ))
+                        return
+
                 await self._manager.add_steps_v2(task.id, result.steps)
                 logger.info(f"Task {task.id} decomposed into {len(result.steps)} steps")
 
@@ -134,13 +180,23 @@ class TaskWorker:
             await self._manager.complete_step(task.id, step.step_index, result[:1000])
         except Exception as e:
             await self._manager.fail_step(task.id, step.step_index, str(e))
+            await self._manager.update_status(task.id, "failed")
             logger.error(f"Task step failed: {task.id}/{step.step_index}: {e}")
+            await self._maybe_retrospective(
+                task, "failed",
+                error_context=f"Step {step.step_index} ({step.description[:100]}): {e}",
+            )
+            return  # Don't continue to next step after failure
 
         # Check if all steps are done
         next_step = await self._manager.get_next_step(task.id)
         if next_step is None:
-            await self._manager.complete_task(task.id)
-            await self._notify_completion(task)
+            if self._navigator_fn:
+                await self._navigator_execution_review(task)
+            else:
+                await self._manager.complete_task(task.id)
+                await self._notify_completion(task)
+                await self._maybe_retrospective(task, "completed")
         else:
             # Send progress notification
             completed = await self._get_completed_steps(task.id)
@@ -151,19 +207,77 @@ class TaskWorker:
     async def _execute_whole_task(self, task) -> None:
         """Execute a task that has no steps as a single unit."""
         try:
-            result = await self._execute_fn(
+            await self._execute_fn(
                 task.description or task.title,
                 task.session_key or f"task:{task.id}",
                 "cli",
                 "general",
             )
-            await self._manager.complete_task(task.id)
-            await self._notify(f"Task #{task.id} completed: {task.title}")
-            logger.info(f"Task completed: {task.id}")
+            if self._navigator_fn:
+                await self._navigator_execution_review(task)
+            else:
+                await self._manager.complete_task(task.id)
+                await self._notify(f"Task #{task.id} completed: {task.title}")
+                logger.info(f"Task completed: {task.id}")
         except Exception as e:
             await self._manager.update_status(task.id, "failed")
             await self._notify(f"Task #{task.id} failed: {task.title}\n{e}")
             logger.error(f"Task execution failed: {task.id}: {e}")
+            await self._maybe_retrospective(task, "failed", error_context=str(e))
+
+    async def _navigator_execution_review(self, task) -> None:
+        """Run navigator execution review loop on completed task."""
+        metrics = self._duo_metrics.get(task.id, DuoMetrics())
+        metrics.review_cycles += 1
+
+        if metrics.review_cycles > self._max_review_cycles:
+            await self._manager.complete_task(task.id)
+            await self._notify(build_navigator_escalation_message(
+                task.id, task.title,
+                f"Max review cycles ({self._max_review_cycles}) reached. "
+                f"Themes: {', '.join(metrics.disagreement_themes[-5:])}",
+                "max_cycles",
+            ))
+            metrics.resolution_pattern = "max_cycles"
+            self._duo_metrics[task.id] = metrics
+            await self._maybe_retrospective(task, "completed", duo_metrics=metrics)
+            return
+
+        full_task = await self._manager.get_task(task.id)
+        steps_with_results = []
+        current_output_parts = []
+        if full_task and full_task.steps:
+            for s in full_task.steps:
+                steps_with_results.append({
+                    "description": s.description, "status": s.status, "result": s.result or "",
+                })
+                if s.result:
+                    current_output_parts.append(f"Step {s.step_index}: {s.result[:500]}")
+
+        current_output = "\n".join(current_output_parts) if current_output_parts else "(no step results captured)"
+
+        async def _revise(prompt: str) -> str:
+            return await self._execute_fn(
+                prompt, task.session_key or f"task:{task.id}", "cli", "general", "",
+            )
+
+        verdict, output, metrics = await review_execution(
+            task=task, steps_with_results=steps_with_results, current_output=current_output,
+            navigator_fn=self._navigator_fn, revise_fn=_revise,
+            identity=self._navigator_identity, max_rounds=self._max_duo_rounds, metrics=metrics,
+        )
+        self._duo_metrics[task.id] = metrics
+
+        if verdict.approved:
+            await self._manager.complete_task(task.id)
+            await self._notify_completion(task)
+            await self._maybe_retrospective(task, "completed", duo_metrics=metrics)
+        else:
+            await self._manager.complete_task(task.id)
+            await self._notify(build_navigator_escalation_message(
+                task.id, task.title, verdict.critique, metrics.resolution_pattern,
+            ))
+            await self._maybe_retrospective(task, "completed", duo_metrics=metrics)
 
     async def _notify_completion(self, task) -> None:
         """Send a completion notification with aggregated results."""
@@ -181,3 +295,176 @@ class TaskWorker:
             for s in full_task.steps
             if s.status == "completed"
         ]
+
+    # ------------------------------------------------------------------
+    # Past wisdom (Phase 3B)
+    # ------------------------------------------------------------------
+
+    async def _get_past_wisdom(self, description: str) -> str | None:
+        """Query Qdrant for similar past retrospectives to inform decomposition."""
+        if not self._memory:
+            return None
+        try:
+            episodes = await self._memory._episodic.recall(
+                query=description,
+                limit=3,
+                role_filter="retrospective",
+                min_score=0.35,
+            )
+            if not episodes:
+                return None
+            lines = []
+            for ep in episodes:
+                lines.append(f"- {ep.text[:500]}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug(f"Past wisdom query failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Retrospective (Phase 3A)
+    # ------------------------------------------------------------------
+
+    async def _maybe_retrospective(
+        self, task, outcome: str, error_context: str = "",
+        duo_metrics: DuoMetrics | None = None,
+    ) -> None:
+        """Run retrospective if task is non-trivial (FM5 threshold)."""
+        # FM5: Skip trivial successful tasks (single-step quick completions)
+        # But always retrospect if duo was involved (valuable learning data)
+        if outcome == "completed" and task.step_count <= 1 and not duo_metrics:
+            return
+        # Always retrospect on failures
+        try:
+            await self._run_retrospective(task, outcome, error_context, duo_metrics)
+        except Exception as e:
+            logger.warning(f"Retrospective failed for {task.id}: {e}")
+
+    async def _run_retrospective(
+        self, task, outcome: str, error_context: str = "",
+        duo_metrics: DuoMetrics | None = None,
+    ) -> None:
+        """Run LLM retrospective on a completed/failed task, store results."""
+        if not self._retrospective_fn or not self._db_path:
+            return
+
+        # Gather step summaries
+        full_task = await self._manager.get_task(task.id)
+        step_summaries = ""
+        if full_task and full_task.steps:
+            lines = []
+            for s in full_task.steps:
+                status = s.status
+                result = (s.result or "")[:200]
+                lines.append(f"  Step {s.step_index}: {s.description} [{status}] {result}")
+            step_summaries = "\n".join(lines)
+
+        # Duo context for retrospective prompt
+        duo_context = ""
+        if duo_metrics and duo_metrics.total_rounds > 0:
+            duo_context = (
+                f"\nNavigator Duo Summary:\n"
+                f"  Plan review: {duo_metrics.plan_review_rounds} round(s), "
+                f"first-try approval: {duo_metrics.plan_approved_first_try}\n"
+                f"  Execution review: {duo_metrics.review_cycles} cycle(s), "
+                f"{duo_metrics.total_rounds} total round(s)\n"
+                f"  Resolution: {duo_metrics.resolution_pattern}\n"
+                f"  Disagreement themes: {', '.join(duo_metrics.disagreement_themes) or 'none'}\n"
+            )
+
+        # Build retrospective prompt
+        if outcome == "failed":
+            prompt = (
+                f'Task failed: "{task.title}"\n'
+                f"Description: {task.description or 'N/A'}\n"
+                f"Error: {error_context}\n"
+                f"Steps:\n{step_summaries or '(no steps)'}\n{duo_context}\n"
+                "DIAGNOSE:\n"
+                "1. ROOT CAUSE: What specifically failed and why?\n"
+                "2. WHAT I TRIED: What approaches were attempted?\n"
+                "3. PROPOSED FIX: What would fix this?\n"
+                "4. CAPABILITY GAP: What tool, skill, or access was missing?\n\n"
+                'Output JSON: {"diagnosis": "...", "approach_summary": "...", '
+                '"learnings": "...", "capability_gaps": []}'
+            )
+        else:
+            prompt = (
+                f'Task completed: "{task.title}"\n'
+                f"Description: {task.description or 'N/A'}\n"
+                f"Steps:\n{step_summaries or '(no steps)'}\n{duo_context}\n"
+                "RETROSPECTIVE:\n"
+                "What went well? What could be improved? Any capability gaps?\n\n"
+                'Output JSON: {"approach_summary": "...", "learnings": "...", '
+                '"capability_gaps": []}'
+            )
+
+        response = await self._retrospective_fn(prompt)
+
+        # Parse structured response
+        from nanobot.copilot.dream.cycle import DreamCycle
+        parsed = DreamCycle._parse_llm_json(response)
+        if not isinstance(parsed, dict):
+            parsed = {"approach_summary": response[:500]}
+
+        # Store in task_retrospectives
+        import aiosqlite
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    """INSERT INTO task_retrospectives
+                       (task_id, outcome, approach_summary, diagnosis, learnings,
+                        capability_gaps, duo_metrics_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        task.id,
+                        outcome,
+                        parsed.get("approach_summary", ""),
+                        parsed.get("diagnosis", ""),
+                        parsed.get("learnings", ""),
+                        ", ".join(parsed.get("capability_gaps", [])),
+                        duo_metrics.to_json() if duo_metrics else None,
+                    ),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Retrospective DB write failed: {e}")
+            return
+
+        # On failure, write dream_observations for visibility
+        if outcome == "failed":
+            try:
+                async with aiosqlite.connect(self._db_path) as db:
+                    diagnosis = parsed.get("diagnosis", error_context[:300])
+                    await db.execute(
+                        """INSERT INTO dream_observations
+                           (source, observation_type, content, priority, related_task_id)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (
+                            "task_retrospective",
+                            "failure_diagnosis",
+                            f"Task '{task.title}' failed: {diagnosis}",
+                            "high",
+                            task.id,
+                        ),
+                    )
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"Retrospective observation write failed: {e}")
+
+        # Embed in Qdrant for future task wisdom (FM6: graceful on failure)
+        if self._memory:
+            retro_text = (
+                f"Task: {task.title}\nOutcome: {outcome}\n"
+                f"Approach: {parsed.get('approach_summary', '')}\n"
+                f"Learnings: {parsed.get('learnings', '')}\n"
+                f"Gaps: {', '.join(parsed.get('capability_gaps', []))}"
+            )
+            try:
+                await self._memory._episodic.store(
+                    text=retro_text,
+                    session_key=f"retro:{task.id}",
+                    role="retrospective",
+                    importance=0.9 if outcome == "failed" else 0.7,
+                )
+            except Exception as e:
+                logger.debug(f"Retrospective embed failed (will retry in dream): {e}")
