@@ -86,7 +86,9 @@ class SqlitePool:
         logger.info(f"SqlitePool closed: {self._db_path}")
 
     async def acquire(self) -> aiosqlite.Connection:
-        """Acquire a connection from the pool."""
+        """Acquire a connection from the pool. Auto-starts on first use."""
+        if not self._started:
+            await self.start()
         return await self._pool.get()
 
     async def release(self, conn: aiosqlite.Connection) -> None:
