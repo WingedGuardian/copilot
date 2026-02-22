@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import aiosqlite
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool
+from nanobot.copilot import tz as _tz
 
 
 class OpsLogTool(Tool):
@@ -74,9 +74,9 @@ class OpsLogTool(Tool):
                 """SELECT run_at, duration_ms, episodes_consolidated,
                           items_created, items_pruned, lessons_reviewed, errors
                    FROM dream_cycle_log
-                   WHERE run_at >= datetime('now', ? || ' hours')
+                   WHERE run_at >= ?
                    ORDER BY run_at DESC LIMIT 10""",
-                (f"-{hours}",),
+                (_tz.local_datetime_str(offset_hours=-hours),),
             )
             rows = await cur.fetchall()
 
@@ -108,9 +108,9 @@ class OpsLogTool(Tool):
             cur = await db.execute(
                 """SELECT run_at, tasks_checked, tasks_with_results, duration_ms
                    FROM heartbeat_log
-                   WHERE run_at >= datetime('now', ? || ' hours')
+                   WHERE run_at >= ?
                    ORDER BY run_at DESC LIMIT 10""",
-                (f"-{hours}",),
+                (_tz.local_datetime_str(offset_hours=-hours),),
             )
             runs = await cur.fetchall()
 
@@ -118,9 +118,9 @@ class OpsLogTool(Tool):
             cur = await db.execute(
                 """SELECT created_at, severity, message, source
                    FROM heartbeat_events
-                   WHERE created_at >= datetime('now', ? || ' hours')
+                   WHERE created_at >= ?
                    ORDER BY created_at DESC LIMIT 15""",
-                (f"-{hours}",),
+                (_tz.local_datetime_str(offset_hours=-hours),),
             )
             events = await cur.fetchall()
 
@@ -146,10 +146,10 @@ class OpsLogTool(Tool):
                 """SELECT subsystem, severity, message,
                           MAX(timestamp) as last_seen, COUNT(*) as occurrences
                    FROM alerts
-                   WHERE timestamp >= datetime('now', ? || ' hours')
+                   WHERE timestamp >= ?
                    GROUP BY error_key
                    ORDER BY last_seen DESC LIMIT 15""",
-                (f"-{hours}",),
+                (_tz.local_datetime_str(offset_hours=-hours),),
             )
             rows = await cur.fetchall()
 
@@ -171,8 +171,8 @@ class OpsLogTool(Tool):
             cur = await db.execute(
                 """SELECT COALESCE(SUM(cost_usd), 0), COUNT(*)
                    FROM cost_log
-                   WHERE timestamp >= datetime('now', ? || ' hours')""",
-                (f"-{hours}",),
+                   WHERE timestamp >= ?""",
+                (_tz.local_datetime_str(offset_hours=-hours),),
             )
             total_cost, total_calls = await cur.fetchone()
 
@@ -181,9 +181,9 @@ class OpsLogTool(Tool):
                 """SELECT model, COUNT(*) as calls, SUM(cost_usd) as total,
                           SUM(tokens_input) as tok_in, SUM(tokens_output) as tok_out
                    FROM cost_log
-                   WHERE timestamp >= datetime('now', ? || ' hours')
+                   WHERE timestamp >= ?
                    GROUP BY model ORDER BY total DESC LIMIT 10""",
-                (f"-{hours}",),
+                (_tz.local_datetime_str(offset_hours=-hours),),
             )
             by_model = await cur.fetchall()
 
@@ -191,9 +191,9 @@ class OpsLogTool(Tool):
             cur = await db.execute(
                 """SELECT date(timestamp) as day, SUM(cost_usd), COUNT(*)
                    FROM cost_log
-                   WHERE timestamp >= datetime('now', ? || ' hours')
+                   WHERE timestamp >= ?
                    GROUP BY day ORDER BY day DESC LIMIT 7""",
-                (f"-{hours}",),
+                (_tz.local_datetime_str(offset_hours=-hours),),
             )
             by_day = await cur.fetchall()
 
