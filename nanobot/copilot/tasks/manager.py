@@ -123,7 +123,7 @@ class TaskManager:
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                """SELECT * FROM tasks WHERE status = 'pending'
+                """SELECT * FROM tasks WHERE status IN ('pending', 'active')
                    ORDER BY priority ASC, rowid ASC LIMIT 1"""
             )
             row = await cur.fetchone()
