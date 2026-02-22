@@ -61,11 +61,12 @@ async def index(request: web.Request) -> dict:
             timeline.sort(key=lambda x: x.get("run_at") or "", reverse=True)
 
             # dream_observations columns: id, created_at, source,
-            #   observation_type, content, priority, actionable, acted_on,
-            #   acted_on_at, expires_at, related_task_id, metadata_json
+            #   observation_type, category, content, priority, status,
+            #   expires_at, resolved_at, resolved_by, resolution_note,
+            #   related_task_id, metadata_json
             cur = await db.execute(
-                """SELECT id, created_at, source, observation_type, content,
-                          priority, actionable, acted_on
+                """SELECT id, created_at, source, observation_type, category,
+                          content, priority, status
                    FROM dream_observations
                    ORDER BY created_at DESC
                    LIMIT 30"""

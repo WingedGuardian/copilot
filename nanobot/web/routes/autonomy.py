@@ -34,7 +34,7 @@ async def get_autonomy(request: web.Request) -> dict:
                 cur = await db.execute(
                     "SELECT id, created_at, source, observation_type, content, priority"
                     " FROM dream_observations"
-                    " WHERE acted_on = 0 ORDER BY created_at DESC LIMIT 50"
+                    " WHERE status = 'open' ORDER BY created_at DESC LIMIT 50"
                 )
                 observations = [dict(r) for r in await cur.fetchall()]
             except Exception:
@@ -72,10 +72,12 @@ async def post_observation_action(request: web.Request) -> web.Response:
     action = request.match_info["action"]  # "approve" or "reject"
 
     if db_path and action in ("approve", "reject"):
+        status = "resolved" if action == "approve" else "wont_fix"
         async with aiosqlite.connect(db_path) as db:
             await db.execute(
-                "UPDATE dream_observations SET acted_on = 1 WHERE id = ?",
-                (obs_id,),
+                "UPDATE dream_observations SET status = ?, resolved_at = CURRENT_TIMESTAMP,"
+                " resolved_by = 'user' WHERE id = ? AND status = 'open'",
+                (status, obs_id),
             )
             await db.commit()
     raise web.HTTPSeeOther("/autonomy")
