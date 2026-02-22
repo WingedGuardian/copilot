@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +86,9 @@ class SqlitePool:
         logger.info(f"SqlitePool closed: {self._db_path}")
 
     async def acquire(self) -> aiosqlite.Connection:
-        """Acquire a connection from the pool."""
+        """Acquire a connection from the pool. Auto-starts on first use."""
+        if not self._started:
+            await self.start()
         return await self._pool.get()
 
     async def release(self, conn: aiosqlite.Connection) -> None:
@@ -115,6 +119,22 @@ class SqlitePool:
     async def execute_commit(self, sql: str, params: tuple = ()) -> aiosqlite.Cursor:
         """Execute SQL and commit."""
         return await self.execute(sql, params, commit=True)
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Hold a pooled connection for a multi-statement transaction.
+
+        Commits on clean exit, rolls back on exception, always releases.
+        """
+        conn = await self.acquire()
+        try:
+            yield conn
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        finally:
+            await self.release(conn)
 
     async def fetchall(self, sql: str, params: tuple = ()) -> list[Any]:
         """Execute and fetch all rows."""

@@ -7,6 +7,7 @@ import aiosqlite
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.copilot import tz as _tz
 from nanobot.copilot.context.budget import TokenBudget
 
 
@@ -257,7 +258,8 @@ class ExtendedContextBuilder:
                     cur = await db.execute(
                         "SELECT COUNT(*) FROM tasks "
                         "WHERE status = 'completed' "
-                        "AND updated_at > datetime('now', '-24 hours')"
+                        "AND updated_at > ?",
+                        (_tz.local_datetime_str(offset_hours=-24),),
                     )
                     completed_24h = (await cur.fetchone())[0]
                 except Exception:
@@ -267,7 +269,8 @@ class ExtendedContextBuilder:
                 try:
                     cur = await db.execute(
                         "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log "
-                        "WHERE date(timestamp) = date('now')"
+                        "WHERE date(timestamp) = ?",
+                        (_tz.local_date_str(),),
                     )
                     daily_spend = (await cur.fetchone())[0]
                 except Exception:

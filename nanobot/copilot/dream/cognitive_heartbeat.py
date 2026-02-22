@@ -17,6 +17,7 @@ from typing import Any
 import aiosqlite
 from loguru import logger
 
+from nanobot.copilot import tz as _tz
 from nanobot.heartbeat.service import HeartbeatService, _is_heartbeat_empty
 
 
@@ -243,8 +244,9 @@ class CopilotHeartbeatService(HeartbeatService):
                     # Check if dream ran since last check by comparing timestamps
                     cur2 = await db.execute(
                         """SELECT COUNT(*) FROM dream_cycle_log
-                           WHERE run_at > datetime('now', '-4 hours')
-                             AND reflection_full IS NOT NULL AND reflection_full != ''"""
+                           WHERE run_at > ?
+                             AND reflection_full IS NOT NULL AND reflection_full != ''""",
+                        (_tz.local_datetime_str(offset_hours=-4),),
                     )
                     count = (await cur2.fetchone())[0]
                     if count > 0 and time.time() - self._last_dream_check > 3600:

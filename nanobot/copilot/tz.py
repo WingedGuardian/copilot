@@ -34,7 +34,7 @@ def local_date_str(offset_days: int = 0) -> str:
     return local_date(offset_days).isoformat()
 
 
-def local_datetime_str(offset_days: int = 0, offset_hours: int = 0) -> str:
+def local_datetime_str(offset_days: int = 0, offset_hours: int = 0, offset_minutes: int = 0) -> str:
     """ISO datetime string for use as SQL parameter."""
-    dt = local_now() + timedelta(days=offset_days, hours=offset_hours)
+    dt = local_now() + timedelta(days=offset_days, hours=offset_hours, minutes=offset_minutes)
     return dt.strftime("%Y-%m-%d %H:%M:%S")

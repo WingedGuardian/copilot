@@ -11,6 +11,8 @@ from typing import Any
 import aiosqlite
 from loguru import logger
 
+from nanobot.copilot import tz as _tz
+
 
 def _format_ago(timestamp_str: str) -> str:
     """Format a DB timestamp as a human-readable 'Xh Ym ago' string."""
@@ -465,7 +467,8 @@ class StatusAggregator:
             async with aiosqlite.connect(self._db_path) as db:
                 # Today
                 cur = await db.execute(
-                    "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM cost_log WHERE date(timestamp) = date('now')"
+                    "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM cost_log WHERE date(timestamp) = ?",
+                    (_tz.local_date_str(),),
                 )
                 row = await cur.fetchone()
                 today = row[0] if row else 0.0
@@ -473,7 +476,8 @@ class StatusAggregator:
 
                 # Week
                 cur = await db.execute(
-                    "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log WHERE timestamp >= datetime('now', '-7 days')"
+                    "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log WHERE timestamp >= ?",
+                    (_tz.local_datetime_str(offset_days=-7),),
                 )
                 row = await cur.fetchone()
                 week = row[0] if row else 0.0
@@ -481,8 +485,9 @@ class StatusAggregator:
                 # Top models
                 cur = await db.execute(
                     """SELECT model, SUM(cost_usd) as total FROM cost_log
-                       WHERE date(timestamp) = date('now')
-                       GROUP BY model ORDER BY total DESC LIMIT 5"""
+                       WHERE date(timestamp) = ?
+                       GROUP BY model ORDER BY total DESC LIMIT 5""",
+                    (_tz.local_date_str(),),
                 )
                 top_models = [(r[0], r[1]) for r in await cur.fetchall()]
 
@@ -516,8 +521,9 @@ class StatusAggregator:
                 async with aiosqlite.connect(self._db_path) as db:
                     cur = await db.execute(
                         "SELECT COUNT(*) FROM cost_log "
-                        "WHERE date(timestamp) = date('now') "
-                        "AND model LIKE '%haiku%'"
+                        "WHERE date(timestamp) = ? "
+                        "AND model LIKE '%haiku%'",
+                        (_tz.local_date_str(),),
                     )
                     row = await cur.fetchone()
                     if row and row[0]:
@@ -692,9 +698,10 @@ class StatusAggregator:
                 # Alert counts (24h)
                 cur = await db.execute(
                     """SELECT severity, COUNT(*) FROM alerts
-                       WHERE timestamp >= datetime('now', '-24 hours')
+                       WHERE timestamp >= ?
                          AND severity IN ('high', 'medium')
-                       GROUP BY severity"""
+                       GROUP BY severity""",
+                    (_tz.local_datetime_str(offset_hours=-24),),
                 )
                 for sev, cnt in await cur.fetchall():
                     if sev == "high":

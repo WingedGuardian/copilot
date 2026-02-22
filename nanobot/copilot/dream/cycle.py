@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 import aiosqlite
 from loguru import logger
 
+from nanobot.copilot import tz as _tz
 from nanobot.copilot.memory.episodic import EpisodicStore
 
 
@@ -316,8 +317,9 @@ class DreamCycle:
             cur = await db.execute(
                 """SELECT model, COUNT(*) as calls, SUM(cost_usd) as total,
                    SUM(tokens_input) as tok_in, SUM(tokens_output) as tok_out
-                   FROM cost_log WHERE date(timestamp) = date('now', '-1 day')
-                   GROUP BY model ORDER BY total DESC"""
+                   FROM cost_log WHERE date(timestamp) = ?
+                   GROUP BY model ORDER BY total DESC""",
+                (_tz.local_date_str(-1),),
             )
             rows = await cur.fetchall()
 
@@ -340,7 +342,8 @@ class DreamCycle:
             await db.execute(
                 """UPDATE lessons SET confidence = MAX(confidence - 0.05, 0.0)
                    WHERE active = 1 AND (last_applied IS NULL OR
-                   last_applied < datetime('now', '-7 days'))"""
+                   last_applied < ?)""",
+                (_tz.local_datetime_str(offset_days=-7),),
             )
 
             # Deactivate lessons with very low confidence
@@ -640,7 +643,8 @@ class DreamCycle:
             async with aiosqlite.connect(self._db_path) as db:
                 cur = await db.execute(
                     """SELECT COUNT(*) FROM routing_log
-                       WHERE timestamp >= datetime('now', '-30 minutes')"""
+                       WHERE timestamp >= ?""",
+                    (_tz.local_datetime_str(offset_minutes=-30),),
                 )
                 recent_activity = (await cur.fetchone())[0]
                 if recent_activity > 0:
@@ -994,8 +998,9 @@ Rules:
                     cur = await db.execute(
                         """SELECT observation_type, category, status, content
                            FROM dream_observations
-                           WHERE DATE(created_at) = DATE('now')
-                           ORDER BY created_at DESC LIMIT 20"""
+                           WHERE DATE(created_at) = ?
+                           ORDER BY created_at DESC LIMIT 20""",
+                        (_tz.local_date_str(),),
                     )
                     obs_rows = await cur.fetchall()
                     if obs_rows:
@@ -1030,11 +1035,12 @@ Rules:
                     # Recent alerts from DB (not just dream cycle alerts)
                     cur = await db.execute(
                         """SELECT severity, subsystem, message FROM alerts
-                           WHERE timestamp > datetime('now', '-1 day')
+                           WHERE timestamp > ?
                              AND message NOT LIKE '%lm_studio%'
                              AND message NOT LIKE '%LM Studio%'
                              AND error_key NOT LIKE 'provider_failed:%'
-                           ORDER BY timestamp DESC LIMIT 5"""
+                           ORDER BY timestamp DESC LIMIT 5""",
+                        (_tz.local_datetime_str(offset_days=-1),),
                     )
                     alert_rows = await cur.fetchall()
                     if alert_rows:
@@ -1051,8 +1057,9 @@ Rules:
                     cur = await db.execute(
                         """SELECT task_id, outcome, approach_summary, duo_metrics_json
                            FROM task_retrospectives
-                           WHERE created_at >= datetime('now', '-1 day')
-                           ORDER BY created_at DESC LIMIT 10"""
+                           WHERE created_at >= ?
+                           ORDER BY created_at DESC LIMIT 10""",
+                        (_tz.local_datetime_str(offset_days=-1),),
                     )
                     retro_rows = await cur.fetchall()
                     if retro_rows:
@@ -1076,7 +1083,8 @@ Rules:
                     cur = await db.execute(
                         """SELECT duo_metrics_json FROM task_retrospectives
                            WHERE duo_metrics_json IS NOT NULL
-                             AND created_at >= datetime('now', '-7 days')"""
+                             AND created_at >= ?""",
+                        (_tz.local_datetime_str(offset_days=-7),),
                     )
                     duo_rows = await cur.fetchall()
                     if duo_rows:
@@ -1188,7 +1196,8 @@ Rules:
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 await db.execute(
-                    "DELETE FROM routing_preferences WHERE created_at < datetime('now', '-7 days')"
+                    "DELETE FROM routing_preferences WHERE created_at < ?",
+                    (_tz.local_datetime_str(offset_days=-7),),
                 )
                 await db.commit()
         except Exception as e:
@@ -1465,8 +1474,9 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                        WHERE observation_type = 'capability_gap'
                          AND (status = 'open'
                               OR (status IN ('resolved', 'wont_fix', 'duplicate')
-                                  AND resolved_at >= datetime('now', '-7 days')))
-                       ORDER BY created_at DESC LIMIT 20"""
+                                  AND resolved_at >= ?))
+                       ORDER BY created_at DESC LIMIT 20""",
+                    (_tz.local_datetime_str(offset_days=-7),),
                 )
                 rows = await cur.fetchall()
                 if not rows:
@@ -1486,8 +1496,9 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                     """SELECT task_id, diagnosis, capability_gaps, created_at
                        FROM task_retrospectives
                        WHERE outcome = 'failed'
-                         AND created_at >= datetime('now', '-7 days')
-                       ORDER BY created_at DESC LIMIT 15"""
+                         AND created_at >= ?
+                       ORDER BY created_at DESC LIMIT 15""",
+                    (_tz.local_datetime_str(offset_days=-7),),
                 )
                 rows = await cur.fetchall()
                 if not rows:
@@ -1511,7 +1522,8 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                 cur = await db.execute(
                     """SELECT duo_metrics_json FROM task_retrospectives
                        WHERE duo_metrics_json IS NOT NULL
-                         AND created_at >= datetime('now', '-7 days')"""
+                         AND created_at >= ?""",
+                    (_tz.local_datetime_str(offset_days=-7),),
                 )
                 rows = await cur.fetchall()
                 if not rows:
@@ -1563,16 +1575,16 @@ The full analysis is stored internally. Only the user_summary is sent to the use
             async with aiosqlite.connect(self._db_path) as db:
                 cur = await db.execute("""
                     SELECT model, COUNT(*) as calls, SUM(cost_usd) as total
-                    FROM cost_log WHERE timestamp >= datetime('now', '-7 days')
+                    FROM cost_log WHERE timestamp >= ?
                     GROUP BY model ORDER BY total DESC
-                """)
+                """, (_tz.local_datetime_str(offset_days=-7),))
                 rows = await cur.fetchall()
 
                 cur2 = await db.execute("""
                     SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log
-                    WHERE timestamp >= datetime('now', '-14 days')
-                      AND timestamp < datetime('now', '-7 days')
-                """)
+                    WHERE timestamp >= ?
+                      AND timestamp < ?
+                """, (_tz.local_datetime_str(offset_days=-14), _tz.local_datetime_str(offset_days=-7)))
                 prior = (await cur2.fetchone())[0]
                 this_week = sum(r[2] or 0 for r in rows)
 
@@ -1593,9 +1605,9 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                 cur = await db.execute("""
                     SELECT run_at, duration_ms, errors
                     FROM dream_cycle_log
-                    WHERE run_at >= datetime('now', '-7 days')
+                    WHERE run_at >= ?
                     ORDER BY run_at DESC
-                """)
+                """, (_tz.local_datetime_str(offset_days=-7),))
                 rows = await cur.fetchall()
 
             if not rows:
@@ -1623,17 +1635,17 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                 # Total this month
                 cur = await db.execute("""
                     SELECT model, COUNT(*) as calls, SUM(cost_usd) as total
-                    FROM cost_log WHERE timestamp >= datetime('now', '-30 days')
+                    FROM cost_log WHERE timestamp >= ?
                     GROUP BY model ORDER BY total DESC
-                """)
+                """, (_tz.local_datetime_str(offset_days=-30),))
                 rows = await cur.fetchall()
 
                 # Prior 30 days for comparison
                 cur2 = await db.execute("""
                     SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log
-                    WHERE timestamp >= datetime('now', '-60 days')
-                      AND timestamp < datetime('now', '-30 days')
-                """)
+                    WHERE timestamp >= ?
+                      AND timestamp < ?
+                """, (_tz.local_datetime_str(offset_days=-60), _tz.local_datetime_str(offset_days=-30)))
                 prior = (await cur2.fetchone())[0]
                 this_month = sum(r[2] or 0 for r in rows)
 
@@ -1642,9 +1654,9 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                     SELECT strftime('%Y-W%W', timestamp) as week,
                            COUNT(*) as calls, SUM(cost_usd) as total
                     FROM cost_log
-                    WHERE timestamp >= datetime('now', '-30 days')
+                    WHERE timestamp >= ?
                     GROUP BY week ORDER BY week
-                """)
+                """, (_tz.local_datetime_str(offset_days=-30),))
                 weekly_rows = await cur3.fetchall()
 
             lines = [f"This month: ${this_month:.2f} (prior month: ${prior:.2f})"]
@@ -1789,8 +1801,9 @@ The full analysis is stored internally. Only the user_summary is sent to the use
                     cur = await db.execute(
                         """SELECT created_at, message FROM heartbeat_events
                            WHERE event_type = 'weekly_review'
-                             AND created_at >= datetime('now', '-30 days')
-                           ORDER BY created_at DESC LIMIT 5"""
+                             AND created_at >= ?
+                           ORDER BY created_at DESC LIMIT 5""",
+                        (_tz.local_datetime_str(offset_days=-30),),
                     )
                     rows = await cur.fetchall()
                     if rows:
