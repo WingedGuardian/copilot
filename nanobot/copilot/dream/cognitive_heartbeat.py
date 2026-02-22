@@ -270,9 +270,15 @@ class CopilotHeartbeatService(HeartbeatService):
         active_lessons: list[dict],
         morning_brief: str | None,
     ) -> str:
+        from nanobot.copilot.tz import get_tz, local_now
+        dt = local_now()
+        time_str = dt.strftime("%Y-%m-%d %H:%M (%A)")
+        tz_name = str(get_tz())
+
         sections = [
             "You are in your heartbeat cycle. Nobody is talking to you right now. "
-            "This is your time to think, observe, and (if appropriate) act."
+            "This is your time to think, observe, and (if appropriate) act.",
+            f"\n## Current Time\n{time_str} ({tz_name})",
         ]
 
         if heartbeat_md:

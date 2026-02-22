@@ -72,10 +72,16 @@ Skills with available="false" need dependencies installed first - you can try in
 
     def _get_identity(self) -> str:
         """Get the core identity section."""
-        import time as _time
-        from datetime import datetime
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        tz = _time.strftime("%Z") or "UTC"
+        try:
+            from nanobot.copilot.tz import get_tz, local_now
+            dt = local_now()
+            tz = str(get_tz())
+        except Exception:
+            import time as _time
+            from datetime import datetime
+            dt = datetime.now()
+            tz = _time.strftime("%Z") or "UTC"
+        now = dt.strftime("%Y-%m-%d %H:%M (%A)")
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
