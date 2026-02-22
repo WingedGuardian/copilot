@@ -783,6 +783,18 @@ class AgentLoop:
             except Exception as e:
                 logger.debug(f"Event injection skipped: {e}")
 
+        # Situational briefing (active tasks, pending questions, daily spend)
+        if self._copilot_config and hasattr(self.context, '_base') and not skip_enrichment:
+            try:
+                from nanobot.copilot.context.extended import ExtendedContextBuilder
+                briefing = await ExtendedContextBuilder.build_situational_briefing(
+                    self._copilot_config.db_path
+                )
+                if briefing:
+                    build_kwargs["situational_briefing"] = briefing
+            except Exception as e:
+                logger.debug(f"Situational briefing skipped: {e}")
+
         messages = self.context.build_messages(**build_kwargs)
 
         # Check routing preferences for conversation continuity

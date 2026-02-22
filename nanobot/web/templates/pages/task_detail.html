@@ -31,8 +31,29 @@
         <span class="px-2 py-0.5 rounded text-xs bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20">planning</span>
         {% elif s == 'awaiting' %}
         <span class="px-2 py-0.5 rounded text-xs bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20">awaiting</span>
+        {% elif s == 'paused' %}
+        <span class="px-2 py-0.5 rounded text-xs bg-nb-muted/10 text-nb-muted border border-nb-muted/20">paused</span>
         {% else %}
         <span class="px-2 py-0.5 rounded text-xs bg-nb-border text-nb-muted border border-nb-border">{{ s }}</span>
+        {% endif %}
+
+        <!-- Pause/Resume controls -->
+        {% if s in ('active', 'pending', 'planning', 'awaiting') %}
+        <form method="POST" action="/tasks/{{ task.id }}/pause" class="inline">
+          <button type="submit"
+                  class="px-2 py-0.5 rounded text-xs bg-nb-yellow/10 text-nb-yellow border border-nb-yellow/20
+                         hover:bg-nb-yellow/20 transition-colors">
+            Pause
+          </button>
+        </form>
+        {% elif s == 'paused' %}
+        <form method="POST" action="/tasks/{{ task.id }}/resume" class="inline">
+          <button type="submit"
+                  class="px-2 py-0.5 rounded text-xs bg-nb-accent/10 text-nb-accent border border-nb-accent/20
+                         hover:bg-nb-accent/20 transition-colors">
+            Resume
+          </button>
+        </form>
         {% endif %}
       </div>
     </div>
@@ -148,11 +169,17 @@
           <th class="text-left pb-2 font-normal">Details</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-nb-border">
+      <tbody id="event-log-tbody" class="divide-y divide-nb-border">
         {% for log in logs %}
         <tr>
           <td class="py-2 text-nb-muted text-xs whitespace-nowrap">{{ log.timestamp[:19] if log.timestamp else "—" }}</td>
-          <td class="py-2 text-nb-text text-xs whitespace-nowrap">{{ log.event or "—" }}</td>
+          <td class="py-2 text-xs whitespace-nowrap
+            {%- set ev = log.event or '' -%}
+            {%- if ev in ('step_completed', 'decomposition_complete') %} text-nb-green
+            {%- elif ev == 'step_failed' %} text-nb-red
+            {%- elif ev in ('plan_review', 'execution_review') %} text-nb-yellow
+            {%- elif ev == 'user_message' %} text-nb-accent
+            {%- else %} text-nb-text{%- endif %}">{{ ev or "—" }}</td>
           <td class="py-2 text-nb-muted text-xs truncate max-w-sm">{{ log.details or "—" }}</td>
         </tr>
         {% endfor %}
@@ -163,12 +190,86 @@
     {% endif %}
   </div>
 
+  <!-- User message input -->
+  {% if task.status in ('active', 'awaiting', 'pending', 'planning') %}
+  <div class="bg-nb-surface border border-nb-border rounded p-4">
+    <h2 class="text-nb-muted text-xs uppercase tracking-widest mb-3">Send Message to Task</h2>
+    <form method="POST" action="/tasks/{{ task.id }}/message" class="flex gap-2">
+      <input type="text" name="message" placeholder="Send input to active task..."
+             class="flex-1 bg-nb-bg border border-nb-border rounded px-3 py-1.5 text-nb-text text-xs
+                    focus:outline-none focus:border-nb-accent placeholder-nb-muted"
+             required>
+      <button type="submit"
+              class="px-3 py-1.5 bg-nb-accent/10 text-nb-accent border border-nb-accent/20 rounded text-xs
+                     hover:bg-nb-accent/20 transition-colors">
+        Send
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
   {% else %}
   <!-- Task not found -->
   <div class="bg-nb-surface border border-nb-border rounded p-6 text-center">
     <p class="text-nb-muted text-sm">Task not found.</p>
   </div>
   {% endif %}
+
+{% if task and task.status in ('active', 'pending', 'planning', 'awaiting', 'paused') %}
+<script>
+(function() {
+  const taskId = {{ task.id | tojson }};
+  const tbody = document.getElementById('event-log-tbody');
+  if (!tbody) return;
+
+  const EVENT_COLORS = {
+    step_completed: 'text-nb-green', decomposition_complete: 'text-nb-green',
+    step_failed: 'text-nb-red',
+    plan_review: 'text-nb-yellow', execution_review: 'text-nb-yellow',
+    user_message: 'text-nb-accent',
+  };
+
+  let lastTs = '1970-01-01T00:00:00';
+  const rows = tbody.querySelectorAll('tr');
+  if (rows.length > 0) {
+    const first = rows[0].querySelector('td');
+    if (first && first.textContent.trim() !== '—') lastTs = first.textContent.trim();
+  }
+
+  function makeCell(text, classes) {
+    const td = document.createElement('td');
+    td.textContent = text;
+    td.className = classes;
+    return td;
+  }
+
+  async function poll() {
+    try {
+      const resp = await fetch('/tasks/' + encodeURIComponent(taskId) + '/events?since=' + encodeURIComponent(lastTs));
+      if (!resp.ok) return;
+      const events = await resp.json();
+      if (!events.length) return;
+
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        const tr = document.createElement('tr');
+        const ts = (ev.timestamp || '').substring(0, 19) || '—';
+        const evName = ev.event || '—';
+        const colorClass = EVENT_COLORS[evName] || 'text-nb-text';
+
+        tr.appendChild(makeCell(ts, 'py-2 text-nb-muted text-xs whitespace-nowrap'));
+        tr.appendChild(makeCell(evName, 'py-2 text-xs whitespace-nowrap ' + colorClass));
+        tr.appendChild(makeCell(ev.details || '—', 'py-2 text-nb-muted text-xs truncate max-w-sm'));
+        tbody.insertBefore(tr, tbody.firstChild);
+      }
+      lastTs = events[events.length - 1].timestamp || lastTs;
+    } catch (e) { /* silent */ }
+  }
+
+  setInterval(poll, 5000);
+})();
+</script>
+{% endif %}
 
 </div>
 {% endblock %}

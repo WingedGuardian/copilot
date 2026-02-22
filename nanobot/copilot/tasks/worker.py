@@ -144,6 +144,16 @@ class TaskWorker:
                     )
                     self._duo_metrics[task.id] = metrics
 
+                    import json as _json
+                    await self._manager._log_event(
+                        task.id, "plan_review",
+                        _json.dumps({
+                            "approved": verdict.approved,
+                            "critique": (verdict.critique or "")[:200],
+                            "themes": verdict.themes[:5] if verdict.themes else [],
+                        }),
+                    )
+
                     if verdict.needs_user:
                         await self._manager.set_pending_questions(
                             task.id,
@@ -155,6 +165,9 @@ class TaskWorker:
                         return
 
                 await self._manager.add_steps_v2(task.id, result.steps)
+                await self._manager._log_event(
+                    task.id, "decomposition_complete", f"{len(result.steps)} steps",
+                )
                 logger.info(f"Task {task.id} decomposed into {len(result.steps)} steps")
 
         except Exception as e:
@@ -162,6 +175,12 @@ class TaskWorker:
 
     async def _execute_next_step(self, task) -> None:
         """Execute the next pending step of a task."""
+        # Check if task was paused between steps
+        current = await self._manager.get_task(task.id)
+        if current and current.status == 'paused':
+            logger.info(f"Task {task.id} paused, skipping execution")
+            return
+
         step = await self._manager.get_next_step(task.id)
         if not step:
             # All steps done
@@ -170,16 +189,43 @@ class TaskWorker:
             return
 
         try:
+            await self._manager._log_event(
+                task.id, "step_started",
+                f"Step {step.step_index}: {step.description[:100]}",
+            )
+
+            # Inject any user messages received since last step
+            step_prompt = step.description
+            user_msgs = await self._get_user_messages_since(task.id, step.step_index)
+            if user_msgs:
+                msg_block = "\n".join(f"- User: {m}" for m in user_msgs)
+                step_prompt = (
+                    f"{step.description}\n\n"
+                    f"## User Messages (received during execution)\n"
+                    f"{msg_block}\n"
+                    f"Take these into account for this step."
+                )
+                await self._manager._log_event(
+                    task.id, "user_messages_injected", f"{len(user_msgs)} message(s)",
+                )
+
             result = await self._execute_fn(
-                step.description,
+                step_prompt,
                 task.session_key or f"task:{task.id}",
                 "cli",
                 step.tool_type,
                 step.recommended_model,
             )
             await self._manager.complete_step(task.id, step.step_index, result[:1000])
+            await self._manager._log_event(
+                task.id, "step_completed", f"Step {step.step_index}",
+            )
         except Exception as e:
             await self._manager.fail_step(task.id, step.step_index, str(e))
+            await self._manager._log_event(
+                task.id, "step_failed",
+                f"Step {step.step_index}: {str(e)[:200]}",
+            )
             await self._manager.update_status(task.id, "failed")
             logger.error(f"Task step failed: {task.id}/{step.step_index}: {e}")
             await self._maybe_retrospective(
@@ -268,6 +314,17 @@ class TaskWorker:
         )
         self._duo_metrics[task.id] = metrics
 
+        import json as _json
+        await self._manager._log_event(
+            task.id, "execution_review",
+            _json.dumps({
+                "approved": verdict.approved,
+                "critique": (verdict.critique or "")[:200],
+                "themes": verdict.themes[:5] if verdict.themes else [],
+                "round": metrics.review_cycles,
+            }),
+        )
+
         if verdict.approved:
             await self._manager.complete_task(task.id)
             await self._notify_completion(task)
@@ -295,6 +352,42 @@ class TaskWorker:
             for s in full_task.steps
             if s.status == "completed"
         ]
+
+    async def _get_user_messages_since(self, task_id: str, current_step_index: int) -> list[str]:
+        """Get user messages posted since the previous step started (or task creation)."""
+        if not self._db_path:
+            return []
+        try:
+            import aiosqlite
+            async with aiosqlite.connect(self._db_path) as db:
+                # Find timestamp of the previous step_started event (boundary)
+                if current_step_index > 0:
+                    cur = await db.execute(
+                        "SELECT timestamp FROM task_log "
+                        "WHERE task_id = ? AND event = 'step_started' "
+                        "AND details LIKE ? ORDER BY timestamp DESC LIMIT 1",
+                        (task_id, f"Step {current_step_index - 1}:%"),
+                    )
+                else:
+                    cur = await db.execute(
+                        "SELECT timestamp FROM task_log "
+                        "WHERE task_id = ? AND event = 'created' "
+                        "ORDER BY timestamp ASC LIMIT 1",
+                        (task_id,),
+                    )
+                row = await cur.fetchone()
+                since = row[0] if row else "1970-01-01T00:00:00"
+
+                cur = await db.execute(
+                    "SELECT details FROM task_log "
+                    "WHERE task_id = ? AND event = 'user_message' AND timestamp >= ? "
+                    "ORDER BY timestamp ASC",
+                    (task_id, since),
+                )
+                return [r[0] for r in await cur.fetchall() if r[0]]
+        except Exception as e:
+            logger.debug(f"User message fetch failed: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Past wisdom (Phase 3B)
@@ -450,6 +543,11 @@ class TaskWorker:
                     await db.commit()
             except Exception as e:
                 logger.warning(f"Retrospective observation write failed: {e}")
+
+        await self._manager._log_event(
+            task.id, "retrospective",
+            parsed.get("learnings", "")[:200],
+        )
 
         # Embed in Qdrant for future task wisdom (FM6: graceful on failure)
         if self._memory:
