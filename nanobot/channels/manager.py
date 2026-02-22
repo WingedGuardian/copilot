@@ -5,15 +5,17 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import os
-import signal
 import shutil
+import signal
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
+if TYPE_CHECKING:
+    from nanobot.session.manager import SessionManager
+
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Config
@@ -50,10 +52,10 @@ class ChannelManager:
         self._bridge_process: subprocess.Popen | None = None
 
         self._init_channels()
-    
+
     def _init_channels(self) -> None:
         """Initialize channels based on config."""
-        
+
         # Telegram channel
         if self.config.channels.telegram.enabled:
             try:
@@ -66,7 +68,7 @@ class ChannelManager:
                 logger.info("Telegram channel enabled")
             except ImportError as e:
                 logger.warning(f"Telegram channel not available: {e}")
-        
+
         # WhatsApp channel
         if self.config.channels.whatsapp.enabled:
             try:
@@ -89,7 +91,7 @@ class ChannelManager:
                 logger.info("Discord channel enabled")
             except ImportError as e:
                 logger.warning(f"Discord channel not available: {e}")
-        
+
         # Feishu channel
         if self.config.channels.feishu.enabled:
             try:
@@ -157,7 +159,7 @@ class ChannelManager:
                 logger.info("QQ channel enabled")
             except ImportError as e:
                 logger.warning(f"QQ channel not available: {e}")
-    
+
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
         """Start a channel and log any exceptions."""
         try:
@@ -211,7 +213,8 @@ class ChannelManager:
     @staticmethod
     def _kill_stale_bridge(port: int = 3001) -> None:
         """Kill any process occupying the bridge port (orphan from previous run)."""
-        import re, time
+        import re
+        import time
         # Use `ss` to find PID listening on the bridge port
         try:
             result = subprocess.run(
@@ -247,8 +250,8 @@ class ChannelManager:
             os.setpgid(0, 0)
             # Ask kernel to SIGTERM this child when parent dies
             try:
-                PR_SET_PDEATHSIG = 1
-                ctypes.CDLL("libc.so.6").prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+                pr_set_pdeathsig = 1
+                ctypes.CDLL("libc.so.6").prctl(pr_set_pdeathsig, signal.SIGTERM)
             except Exception:
                 pass
 
@@ -311,7 +314,7 @@ class ChannelManager:
             self._supervisor_task,
             return_exceptions=True,
         )
-    
+
     async def _supervise_channels(self) -> None:
         """Monitor channel tasks and restart crashed ones with exponential backoff."""
         while True:
@@ -319,10 +322,14 @@ class ChannelManager:
             for name, task in list(self._channel_tasks.items()):
                 if task.done() and not task.cancelled():
                     exc = task.exception()
-                    if exc:
-                        logger.error(f"Channel '{name}' crashed: {exc}")
-                        from nanobot.copilot.alerting.bus import get_alert_bus
-                        await get_alert_bus().alert("channel", "high", f"Channel '{name}' crashed: {exc}", f"crash_{name}")
+                    if not exc:
+                        # Channel completed normally (e.g. web_chat whose start()
+                        # is a no-op). Don't treat as a crash — no restart needed.
+                        continue
+
+                    logger.error(f"Channel '{name}' crashed: {exc}")
+                    from nanobot.copilot.alerting.bus import get_alert_bus
+                    await get_alert_bus().alert("channel", "high", f"Channel '{name}' crashed: {exc}", f"crash_{name}")
 
                     count = self._restart_counts.get(name, 0)
                     if count >= self._max_restarts:
@@ -348,7 +355,7 @@ class ChannelManager:
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""
         logger.info("Stopping all channels...")
-        
+
         # Stop dispatcher
         if self._dispatch_task:
             self._dispatch_task.cancel()
@@ -373,18 +380,18 @@ class ChannelManager:
 
         # Stop bridge subprocess
         self._stop_bridge()
-    
+
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""
         logger.info("Outbound dispatcher started")
-        
+
         while True:
             try:
                 msg = await asyncio.wait_for(
                     self.bus.consume_outbound(),
                     timeout=1.0
                 )
-                
+
                 channel = self.channels.get(msg.channel)
                 if channel:
                     try:
@@ -393,16 +400,16 @@ class ChannelManager:
                         logger.error(f"Error sending to {msg.channel}: {e}")
                 else:
                     logger.warning(f"Unknown channel: {msg.channel}")
-                    
+
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
-    
+
     def get_channel(self, name: str) -> BaseChannel | None:
         """Get a channel by name."""
         return self.channels.get(name)
-    
+
     def get_status(self) -> dict[str, Any]:
         """Get status of all channels."""
         return {
@@ -412,7 +419,7 @@ class ChannelManager:
             }
             for name, channel in self.channels.items()
         }
-    
+
     @property
     def enabled_channels(self) -> list[str]:
         """Get list of enabled channel names."""
