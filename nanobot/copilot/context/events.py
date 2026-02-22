@@ -7,6 +7,8 @@ from datetime import datetime
 import aiosqlite
 from loguru import logger
 
+from nanobot.copilot import tz as _tz
+
 
 async def get_unacknowledged_events(db_path: str, limit: int = 10) -> str:
     """Read unacknowledged heartbeat events and mark them acknowledged.
@@ -81,9 +83,10 @@ async def get_heartbeat_summary(db_path: str) -> str:
             if event_count > 0:
                 cur = await db.execute(
                     """SELECT severity, message FROM heartbeat_events
-                       WHERE created_at >= datetime('now', '-4 hours')
+                       WHERE created_at >= ?
                          AND severity IN ('high', 'medium')
-                       ORDER BY created_at DESC LIMIT 1"""
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (_tz.local_datetime_str(offset_hours=-4),),
                 )
                 event = await cur.fetchone()
                 if event:
