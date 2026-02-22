@@ -300,9 +300,9 @@ class HealthCheckService:
                 cur = await db.execute(
                     """UPDATE alerts SET resolved_at = CURRENT_TIMESTAMP
                        WHERE resolved_at IS NULL
-                         AND timestamp < datetime('now', ? || ' hours')
+                         AND timestamp < ?
                        RETURNING id""",
-                    (f"-{hours}",),
+                    (_tz.local_datetime_str(offset_hours=-hours),),
                 )
                 resolved = await cur.fetchall()
                 if resolved:
@@ -347,13 +347,14 @@ class HealthCheckService:
             async with aiosqlite.connect(self._db_path) as db:
                 cur = await db.execute(
                     """SELECT severity, message FROM alerts
-                       WHERE timestamp > datetime('now', '-4 hours')
+                       WHERE timestamp > ?
                          AND severity IN ('high', 'medium')
                          AND resolved_at IS NULL
                          AND message NOT LIKE '%lm_studio%'
                          AND message NOT LIKE '%LM Studio%'
                          AND error_key NOT LIKE 'provider_failed%'
                        ORDER BY timestamp DESC LIMIT 5""",
+                    (_tz.local_datetime_str(offset_hours=-4),),
                 )
                 rows = await cur.fetchall()
                 if rows:
