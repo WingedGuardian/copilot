@@ -8,6 +8,7 @@ import aiosqlite
 from loguru import logger
 
 from nanobot.bus.events import OutboundMessage
+from nanobot.copilot import tz as _tz
 
 
 class CostAlerter:
@@ -74,7 +75,8 @@ class CostAlerter:
         try:
             async with aiosqlite.connect(self._db_path) as db:
                 cursor = await db.execute(
-                    "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log WHERE date(timestamp) = date('now')"
+                    "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_log WHERE date(timestamp) = ?",
+                    (_tz.local_date_str(),),
                 )
                 row = await cursor.fetchone()
                 return row[0] if row else 0.0
