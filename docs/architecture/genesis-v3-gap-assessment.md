@@ -240,7 +240,44 @@ progresses. Stalled tasks block the queue silently.
 
 ---
 
-### R5. Complexity Budget
+### R5. Code Execution Economics
+
+**Problem:** The three-engine architecture originally assumed Claude SDK usage would
+be covered by a Pro/Max subscription. Per Anthropic's TOS, this is not the case —
+Claude Agent SDK bills at API rates (~$15/$75 per MTok for Opus). This invalidates
+the economic premise of using the SDK as the default code engine.
+
+**What this changes:**
+- Claude SDK becomes a premium tool for complex work, not the default code path
+- OpenCode is promoted from "fallback" to "workhorse" for routine code tasks
+- The Claude CLI as subprocess (uses subscription OAuth) is an experimental option
+  worth validating in Phase 0, but could be closed by Anthropic at any time
+- Cost consciousness becomes a first-class governance feature: before spawning
+  Claude SDK, the system must estimate cost and get user confirmation
+
+**What's needed:**
+- **Phase 0 validation**: Test Claude CLI subprocess invocation from Agent Zero.
+  Can it capture output? Handle errors? Resume sessions? If this works, it's the
+  economically optimal path for subscription holders.
+- **Cost estimation model**: Before invoking Claude SDK, estimate token usage based
+  on task complexity (number of files, estimated turns, model tier). Present this
+  to the user as part of task confirmation.
+- **Routing logic**: A decision tree for code task routing: routine → OpenCode,
+  complex → CLI subprocess (if available) → SDK (with cost notification) →
+  Bedrock/Vertex (volume pricing).
+- **Budget tracking per engine**: Track spend separately for Agent Zero LiteLLM,
+  Claude SDK, OpenCode, and CLI subprocess so the user can see where money goes.
+
+**Risk if unmitigated:** The system burns API dollars on routine code tasks that
+could be handled by cheaper alternatives. User discovers unexpected bills and
+loses trust in the system's cost management.
+
+See `genesis-v3-dual-engine-plan.md` §"Code Execution Economics" for the full
+revised engine role breakdown.
+
+---
+
+### R6. Complexity Budget
 
 **Problem:** The v3 architecture describes a system with:
 - 3 cognitive layers (Awareness Loop, Reflection Engine, Self-Learning Loop)
@@ -302,21 +339,25 @@ Which of these migrate as-is? Which need schema changes? Which get
 re-indexed? What's the data migration plan and how do we verify nothing
 was lost?
 
-### Q3. What's the LLM Cost Model for the Cognitive Layer?
+### Q3. What's the Full LLM Cost Model?
 
-The autonomous behavior doc specifies models for each depth (Micro: local/Flash,
-Light: Haiku, Deep: Sonnet, Strategic: Opus) but doesn't estimate steady-state
-cost. With:
-- Micro every 30min-1h
-- Light every 2-4h
-- Deep every 1-2 days
-- Strategic every 3-7 days
-- Plus engagement tracking, salience evaluation, quality gates, governance checks
+Two cost dimensions need estimation:
 
-What's the estimated monthly LLM cost for the cognitive layer alone, excluding
-user-initiated tasks? This matters because V2's cognitive services (dream cycle,
-heartbeat, reviews) are optimized for free-tier models. If V3's cognitive layer
-costs $50/month in tokens, that's a design constraint worth knowing upfront.
+**Cognitive layer (background):** The autonomous behavior doc specifies models for
+each depth (Micro: local/Flash, Light: Haiku, Deep: Sonnet, Strategic: Opus) but
+doesn't estimate steady-state cost. With Micro every 30min-1h, Light every 2-4h,
+Deep every 1-2 days, Strategic every 3-7 days, plus engagement tracking, salience
+evaluation, quality gates, governance checks — what's the monthly cognitive burn?
+V2 optimizes for free-tier models. If V3's cognitive layer costs $50/month, that's
+a design constraint.
+
+**Task execution (foreground):** With the Claude SDK billing at API rates (see R5),
+task execution costs are no longer subsidized by subscription. A day of heavy code
+work could cost $20-50 at Opus API rates. The cost model needs to account for:
+- What percentage of tasks route to Claude SDK vs. OpenCode vs. CLI subprocess?
+- What's the realistic monthly spend for an active user doing 2-3 code tasks/day?
+- At what point does the API spend exceed the value of the subscription entirely?
+- Can the Claude CLI subprocess (if it works) offset SDK costs enough to matter?
 
 ### Q4. How Does the System Handle Prolonged User Absence?
 

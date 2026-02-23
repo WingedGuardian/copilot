@@ -1,15 +1,22 @@
 # Genesis v3: Agent Zero + Claude SDK Architecture Plan
 
 **Date:** 2026-02-22
-**Status:** DRAFT — Pending Phase 0 validation
-**Supersedes:** Previous dual-engine plan (OpenCode + Claude SDK) from earlier today
+**Status:** APPENDIX — Superseded as active plan; retained as decision history and audit trail
 
-> **Partial supersession notice (2026-02-23):** The cognitive layer sections of this
-> document (scheduler, MCP server list, review cycle integration) have been superseded
-> by `genesis-v3-autonomous-behavior-design.md`. This document remains the primary
-> reference for: framework decision (why Agent Zero), three-engine architecture,
-> memory system MCP wrapping, CLAUDE.md handshake protocol, migration plan,
-> container architecture, risk assessment, and open questions.
+> **Document status (2026-02-23):** This document is **not the current plan.** It is
+> an appendix that preserves the decision history of how we converged on the Genesis v3
+> architecture. The active design documents are:
+> - `genesis-v3-autonomous-behavior-design.md` — the primary v3 architecture document
+> - `genesis-v3-gap-assessment.md` — pre-implementation gaps and open questions
+>
+> This document remains a useful reference for: framework decision rationale (why Agent
+> Zero), three-engine concept, memory system MCP wrapping approach, CLAUDE.md handshake
+> protocol, migration plan outline, container architecture, and risk assessment. But
+> specific sections (scheduler, MCP server list, review cycle, code execution economics)
+> have been superseded or revised by the documents above.
+>
+> **Do not use this document for current design decisions.** When it conflicts with the
+> autonomous behavior design doc or gap assessment, those documents take precedence.
 
 ---
 
@@ -114,9 +121,81 @@ Nanobot is a chat framework we've been stretching into an autonomous cognitive s
 | **Claude Agent SDK** (power tool) | High-quality code editing, multi-file refactoring, complex builds | When Agent Zero's `claude_code` tool is invoked — for tasks, weekly/monthly code reviews, self-modification |
 | **OpenCode** (backup tool) | Same capabilities as Claude SDK but model-flexible | When Claude rate limits are exhausted across all paths (direct → Bedrock → Vertex) |
 
+### Code Execution Economics (2026-02-23)
+
+> **This section was added after the original plan and reflects updated understanding
+> of Claude Agent SDK pricing.**
+
+The original three-engine design assumed Claude SDK usage would be offset by a Pro/Max
+subscription. **This is not the case.** Per Anthropic's TOS:
+
+> "Unless previously approved, Anthropic does not allow third party developers to offer
+> claude.ai login or rate limits for their products, including agents built on the
+> Claude Agent SDK."
+
+Claude SDK bills at API rates: ~$15/$75 per MTok (Opus), ~$3/$15 per MTok (Sonnet).
+An hour of heavy agentic code work can cost $2-10 at Opus rates. This fundamentally
+changes the economics of the three-engine model:
+
+**Revised engine roles:**
+
+| Engine | Original Role | Revised Role |
+|--------|--------------|-------------|
+| **Agent Zero + LiteLLM** | Brain, orchestrator, 80% of work | Brain, orchestrator, **AND primary code engine** for routine work |
+| **Claude Agent SDK** | Power tool for all code work | **Premium tool** — reserved for complex multi-file refactoring, architectural work, tasks where quality justifies $5-10 |
+| **OpenCode** | Backup when Claude rate-limited | **Primary alternative code engine** — model-flexible, can use cost-efficient providers for routine code tasks |
+| **Claude CLI (subprocess)** | Not in original plan | **Experimental** — Agent Zero invokes `claude` CLI as subprocess, which uses subscription OAuth. Architecturally messy but economically attractive. Worth attempting in Phase 0. Could be closed by Anthropic at any time. |
+
+**Key implications:**
+1. **Cost consciousness is a first-class feature.** Before spawning Claude SDK for a
+   task, Genesis must estimate cost and notify the user: "This task will use Claude SDK
+   and may cost $5-10 to complete. Proceed?" This is a governance check, not a UX
+   nicety.
+2. **OpenCode is promoted from fallback to workhorse.** For routine code tasks (add a
+   function, fix a bug, write tests), OpenCode with Sonnet/GPT-4o through its own
+   routing may be more cost-effective than Claude SDK at API rates.
+3. **Claude CLI as subprocess is worth attempting.** If Agent Zero can invoke the
+   `claude` CLI binary and capture its output, this uses the user's subscription
+   allocation. This is not SDK usage — it's running Anthropic's own CLI product. The
+   risk: Anthropic could restrict automated CLI invocation, or the CLI's interactive
+   nature may not map cleanly to Agent Zero's tool interface. Test in Phase 0.
+4. **Bedrock/Vertex become cost-optimization paths, not just fallbacks.** Volume
+   pricing, committed use discounts, and different rate structures may make these the
+   economically rational primary routing targets for SDK-level work.
+
+### Why OpenCode is promoted in this architecture
+
+OpenCode is no longer just a fallback. It's the cost-effective code engine for routine
+work:
+
+- **Model-flexible**: Can use Sonnet, GPT-4o, Gemini, or any LiteLLM-supported model
+- **No vendor lock-in**: Not tied to Anthropic API pricing
+- **Good enough for 80% of code tasks**: Adding functions, fixing bugs, writing tests
+  don't require Opus-level reasoning
+- **Claude SDK reserved for the 20%**: Complex refactoring, multi-file architectural
+  changes, tasks requiring deep codebase understanding
+
+The fallback chain becomes a **cost-optimization chain**:
+
+```
+Code task arrives
+  │
+  ├─ Routine (add function, fix bug, write test)
+  │    → OpenCode with cost-efficient model (Sonnet/GPT-4o)
+  │
+  ├─ Complex (multi-file refactor, architecture change)
+  │    → Claude CLI subprocess (if working — uses subscription)
+  │    → Claude SDK direct API (if CLI unavailable — notify user of cost)
+  │    → Bedrock/Vertex (volume pricing fallback)
+  │
+  └─ Claude rate-limited
+       → OpenCode with best available model
+```
+
 ### Why OpenCode survives in this architecture
 
-OpenCode is NOT a primary engine. It's a single custom tool that activates when Claude is unavailable:
+OpenCode is NOT just a fallback. It's a cost-effective code engine (see above) that
+also activates when Claude is unavailable:
 
 ```python
 class ClaudeCode(Tool):

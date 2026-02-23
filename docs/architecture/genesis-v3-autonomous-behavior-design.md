@@ -534,7 +534,7 @@ The "make it happen" abstraction requires these always-on behaviors behind the s
 
 5. **Transparent audit trail** — The user can always ask "what did you do?" and get a coherent explanation. The execution trace is stored in memory-mcp as an episodic record.
 
-6. **Graceful degradation** — If a preferred tool is unavailable, Genesis routes to the next best option without telling the user unless it affects quality or timeline. The fallback chain: Claude SDK → Bedrock → Vertex → OpenCode.
+6. **Graceful degradation** — If a preferred tool is unavailable, Genesis routes to the next best option. The routing chain is cost-aware: routine code → OpenCode, complex code → Claude CLI subprocess (subscription) → Claude SDK API (with cost notification) → Bedrock/Vertex → OpenCode fallback.
 
 ### Execution Trace Schema
 
@@ -564,10 +564,49 @@ Before spawning any sub-agent, a programmatic check runs (not LLM — too slow f
 1. Check autonomy permissions for the capability type (code_edit, browser, computer_use, external_api)
 2. Check budget: cumulative task cost + estimated sub-agent cost < task budget
 3. Check reversibility flag on the capability type (code_edit = reversible via git, computer_use = NOT reversible, external_api = depends on endpoint)
+4. **Check cost tier of the engine being invoked** (see below)
 
 If all pass → spawn. If budget fails → downgrade model or surface to user. If reversibility fails on a non-approved capability → surface to user.
 
 The LLM-based governance check (permissions + precedent + social simulation) runs only for OUTREACH and STRATEGIC decisions, not for every sub-agent spawn.
+
+### Cost-Conscious Engine Selection
+
+Claude Agent SDK bills at API rates (~$15/$75 per MTok for Opus), not subscription
+rates. This makes engine selection a cost governance concern, not just a capability
+routing decision.
+
+**Routing logic for code tasks:**
+
+| Task Complexity | Primary Engine | Fallback | User Notification |
+|----------------|---------------|----------|-------------------|
+| Routine (add function, fix bug, write tests) | OpenCode (cost-efficient model) | Agent Zero LiteLLM | None — within normal budget |
+| Complex (multi-file refactor, architecture) | Claude CLI subprocess (subscription) | Claude SDK API (with cost estimate) | "This task may cost $X via Claude SDK. Proceed?" |
+| Rate-limited | OpenCode (best available model) | — | "Claude unavailable, using OpenCode with [model]" |
+
+**Cost estimation before invocation:**
+Before spawning a Claude SDK sub-agent, Genesis estimates cost based on:
+- Number of files likely to be read (from task plan)
+- Estimated conversation turns (from procedural memory of similar tasks)
+- Model tier (Opus vs. Sonnet)
+- Historical cost of similar tasks (from execution traces in memory-mcp)
+
+This estimate is surfaced to the user as part of task confirmation:
+"This task will use Claude SDK (Opus) for multi-file refactoring. Estimated cost:
+$5-8. Approve / Use cheaper model / Cancel"
+
+**Claude CLI subprocess (experimental):**
+Agent Zero can attempt to invoke the `claude` CLI binary as a subprocess, which
+uses the user's subscription OAuth rather than API billing. This is running
+Anthropic's own product, not the SDK. Risks: Anthropic could restrict automated
+invocation; the CLI's interactive nature may not map cleanly to Agent Zero's tool
+interface. If it works, it's the preferred path for subscription holders. If not,
+fall back to SDK with cost notification.
+
+**Per-engine budget tracking:**
+Execution traces (see schema above) track `cost_usd` per sub-agent. Aggregate
+reporting by engine type (Agent Zero LiteLLM, Claude SDK, OpenCode, CLI subprocess)
+enables the user to see where money goes and adjust routing preferences.
 
 ### Quality Gate
 
