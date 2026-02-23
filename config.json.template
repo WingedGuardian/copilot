@@ -1,0 +1,106 @@
+{
+  "_comment": "Nanobot configuration. Copy to ~/.nanobot/config.json and edit.",
+  "_comment2": "API keys go in ~/.nanobot/secrets.json (see secrets.json.template).",
+  "_comment3": "The loader auto-merges secrets.json on top of this file at runtime.",
+
+  "agents": {
+    "defaults": {
+      "workspace": "~/.nanobot/workspace",
+      "model": "",
+      "maxTokens": 8192,
+      "temperature": 0.7,
+      "maxToolIterations": 10
+    }
+  },
+
+  "providers": {
+    "_comment": "Configure at least one provider. API keys go in secrets.json.",
+    "anthropic": {
+      "apiBase": null,
+      "defaultModel": "claude-sonnet-4-6"
+    },
+    "openai": {
+      "apiBase": null,
+      "defaultModel": "gpt-4o"
+    },
+    "openrouter": {
+      "apiBase": null
+    },
+    "deepseek": {
+      "apiBase": null,
+      "defaultModel": "deepseek-chat"
+    },
+    "groq": {
+      "apiBase": null
+    },
+    "gemini": {
+      "apiBase": null,
+      "defaultModel": "gemini-2.5-flash"
+    },
+    "vllm": {
+      "_comment": "Point to a local LM Studio / vLLM / Ollama instance",
+      "apiBase": "http://localhost:1234/v1"
+    }
+  },
+
+  "channels": {
+    "_comment": "Enable channels you want to use. Tokens go in secrets.json.",
+    "whatsapp": {
+      "enabled": false,
+      "bridgeUrl": "ws://localhost:3001"
+    },
+    "telegram": {
+      "enabled": false
+    },
+    "discord": {
+      "enabled": false,
+      "gatewayUrl": "wss://gateway.discord.gg/?v=10&encoding=json",
+      "intents": 37377
+    },
+    "slack": {
+      "enabled": false,
+      "mode": "socket",
+      "webhookPath": "/slack/events"
+    },
+    "email": {
+      "enabled": false,
+      "imapPort": 993,
+      "imapMailbox": "INBOX",
+      "imapUseSsl": true,
+      "smtpPort": 587,
+      "smtpUseTls": true,
+      "autoReplyEnabled": true,
+      "pollIntervalSeconds": 30,
+      "markSeen": true,
+      "maxBodyChars": 12000
+    }
+  },
+
+  "copilot": {
+    "_comment": "Set enabled=true for cognitive features (dream cycle, memory, routing, health checks).",
+    "_comment2": "Requires Qdrant running and at least one cloud provider for background tasks.",
+    "enabled": false,
+    "cloudEmbeddingApiBase": "https://api.jina.ai/v1",
+    "cloudEmbeddingModel": "jina-embeddings-v3",
+    "heartbeat_model": "",
+    "weekly_model": "",
+    "monthly_model": ""
+  },
+
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
+  },
+
+  "tools": {
+    "web": {
+      "search": {
+        "maxResults": 5
+      }
+    },
+    "exec": {
+      "timeout": 60
+    },
+    "restrictToWorkspace": false
+  }
+}

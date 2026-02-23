@@ -27,3 +27,18 @@ data/sqlite/*.db-shm
 node_modules/
 firebase-debug.log
 .firecrawl/
+
+# Claude Code plugins (installed per-user, not project code)
+nanobot/skills/figma/
+nanobot/skills/jupyter-notebook/
+nanobot/skills/pdf/
+nanobot/skills/playwright/
+nanobot/skills/security-best-practices/
+nanobot/skills/speech/
+nanobot/skills/transcribe/
+nanobot/skills/yeet/
+
+# Local Claude Code config
+.claude/settings.json
+.claude/plugins/
+docs/plans/
