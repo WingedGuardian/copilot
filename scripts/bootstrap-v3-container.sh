@@ -42,7 +42,8 @@
 #
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail
+# NOTE: not using -e so one failed step doesn't silently kill the whole script
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -65,10 +66,12 @@ section_system() {
     sudo apt-get install -y -qq \
         git curl wget build-essential \
         python3 python3-venv python3-dev python3-pip \
-        nodejs npm \
+        nodejs \
         sqlite3 jq ripgrep fd-find unzip \
-        tmux htop \
-        > /dev/null 2>&1
+        tmux htop
+
+    # npm conflicts with NodeSource's nodejs package — skip it
+    # (NodeSource bundles npm with nodejs already)
 
     log "System packages installed"
 
@@ -189,7 +192,7 @@ section_agent_zero() {
     fi
 
     source .venv/bin/activate
-    pip install -q -r requirements.txt 2>/dev/null
+    pip install -q -r requirements.txt --only-binary scipy
     log "Agent Zero dependencies installed"
 
     # Also install the Anthropic SDK in Agent Zero's venv
