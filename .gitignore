@@ -26,3 +26,4 @@ data/sqlite/*.db-wal
 data/sqlite/*.db-shm
 node_modules/
 firebase-debug.log
+.firecrawl/
