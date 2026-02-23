@@ -28,6 +28,13 @@ def _extract_video_id(url: str) -> str | None:
     return None
 
 
+def _verification_line(source: str, text: str) -> str:
+    """Build a verification header the LLM can parse to confirm a real transcript."""
+    chars = len(text)
+    words = len(text.split())
+    return f"[TRANSCRIPT_VERIFIED | source={source} | chars={chars} | words={words}]"
+
+
 class YouTubeTranscriptTool(Tool):
     """Extract transcript/captions from a YouTube video."""
 
@@ -141,13 +148,16 @@ class YouTubeTranscriptTool(Tool):
             if fmt == "text":
                 # API returns {"transcript": "full text..."} in text mode
                 text = data.get("transcript", "")
+                if not text:
+                    # Fallback: join segments
+                    segments = data.get("segments", data.get("captions", []))
+                    text = " ".join(s.get("text", "") for s in segments).strip()
                 if text:
-                    return text
-                # Fallback: join segments
-                segments = data.get("segments", data.get("captions", []))
-                return " ".join(s.get("text", "") for s in segments).strip() or None
+                    return f"{_verification_line('TranscriptAPI', text)}\n\n{text}"
+                return None
             else:
-                return json.dumps(data, indent=2)
+                raw = json.dumps(data, indent=2)
+                return f"{_verification_line('TranscriptAPI', raw)}\n\n{raw}"
 
     async def _fetch_ytdlp(self, video_id: str, fmt: str) -> str:
         """Fetch transcript via yt-dlp subtitle extraction."""
@@ -185,10 +195,13 @@ class YouTubeTranscriptTool(Tool):
 
             vtt_content = vtt_files[0].read_text(encoding="utf-8", errors="replace")
             transcript = self._parse_vtt(vtt_content)
+            if not transcript:
+                raise RuntimeError("yt-dlp subtitle file was empty after parsing")
 
             if fmt == "json":
-                return json.dumps({"video_id": video_id, "source": "yt-dlp", "text": transcript})
-            return transcript
+                raw = json.dumps({"video_id": video_id, "source": "yt-dlp-subtitles", "text": transcript})
+                return f"{_verification_line('yt-dlp-subtitles', raw)}\n\n{raw}"
+            return f"{_verification_line('yt-dlp-subtitles', transcript)}\n\n{transcript}"
 
     async def _fetch_audio_transcription(self, video_id: str) -> str:
         """Download audio via yt-dlp, transcribe via Groq (primary) or OpenAI."""
@@ -224,14 +237,19 @@ class YouTubeTranscriptTool(Tool):
                 raise RuntimeError("yt-dlp produced no audio file")
             audio_file = audio_files[0]
 
+            file_size_mb = audio_file.stat().st_size / (1024 * 1024)
+            logger.info(f"Audio downloaded: {audio_file.name} ({file_size_mb:.1f}MB)")
+
             # Try Groq first (cheapest), then OpenAI
             transcript = await self._transcribe_groq(audio_file)
             if transcript:
-                return f"[Audio transcription via Groq]\n\n{transcript}"
+                logger.info(f"Audio cleanup: temp dir {tmpdir} will be removed")
+                return f"{_verification_line('Groq-Whisper', transcript)}\n\n{transcript}"
 
             transcript = await self._transcribe_openai(audio_file)
             if transcript:
-                return f"[Audio transcription via OpenAI]\n\n{transcript}"
+                logger.info(f"Audio cleanup: temp dir {tmpdir} will be removed")
+                return f"{_verification_line('OpenAI-Whisper', transcript)}\n\n{transcript}"
 
             raise RuntimeError("Both Groq and OpenAI transcription returned empty")
 
