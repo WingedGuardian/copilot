@@ -98,8 +98,6 @@ class HealthCheckService:
     async def _tick(self) -> None:
         """Execute one health check cycle — purely programmatic."""
         now = _tz.local_now()
-        if not (self._active_hours[0] <= now.hour < self._active_hours[1]):
-            return  # Outside active hours
 
         start = time.time()
         events: list[dict] = []

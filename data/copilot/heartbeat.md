@@ -45,6 +45,22 @@ Default: all `notify`. User grants autonomy explicitly via conversation.
 - Flag items for the user's next conversation (via heartbeat_events)
 - Mark dream observations as acted_on when you've addressed them
 
+## memory/MEMORY.md Rules (CRITICAL)
+
+`memory/MEMORY.md` is a **tiny working scratchpad** (~150 tokens max). It is injected into EVERY prompt, so bloat costs real money on every interaction.
+
+**NEVER write these to MEMORY.md:**
+- Facts, principles, or identity content (belongs in SOUL.md/USER.md/AGENTS.md)
+- Long-term knowledge or user preferences (use `memory store` tool → Qdrant)
+- Resolved issues, completed tasks, or historical notes
+- System descriptions, architecture overviews, or documentation
+
+**ONLY write these to MEMORY.md:**
+- 1-3 bullet points of **active** goals/blockers that need attention THIS session
+- Remove items the moment they're resolved
+
+If MEMORY.md is empty, that's healthy — it means nothing is actively blocked.
+
 ## Output Format
 
 After executing any HEARTBEAT.md tasks, optionally append structured observations:

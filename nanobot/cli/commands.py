@@ -1330,8 +1330,36 @@ def gateway(
             _weekly_task = None
             _weekly_cancel_event = asyncio.Event()
             if dream_cycle:
+                async def _was_missed(cron_expr: str, service_name: str) -> bool:
+                    """Check if the previous cron window was missed (no DB record)."""
+                    import aiosqlite as _aiosqlite
+                    try:
+                        prev_it = _croniter(cron_expr, _time.time())
+                        prev_ts = prev_it.get_prev()
+                        # If previous occurrence was within the last 24h, check DB
+                        if _time.time() - prev_ts > 86400:
+                            return False
+                        async with _aiosqlite.connect(str(db_path)) as _db:
+                            cur = await _db.execute(
+                                "SELECT COUNT(*) FROM llm_traces "
+                                "WHERE service = ? AND created_at >= datetime(?, 'unixepoch')",
+                                (service_name, prev_ts),
+                            )
+                            row = await cur.fetchone()
+                            return row[0] == 0
+                    except Exception:
+                        return False
+
                 async def _weekly_scheduler():
                     from loguru import logger as _weekly_log
+                    # Check for missed window on startup
+                    if await _was_missed(config.copilot.weekly_review_cron_expr, "weekly_review"):
+                        _weekly_log.info("Weekly review was missed — running now")
+                        try:
+                            await dream_cycle.run_weekly()
+                            _weekly_log.info("Weekly review complete (catch-up)")
+                        except Exception as exc:
+                            _weekly_log.error(f"Weekly review catch-up failed: {exc}")
                     while True:
                         cron_it = _croniter(config.copilot.weekly_review_cron_expr, _time.time())
                         delay = cron_it.get_next() - _time.time()
@@ -1362,6 +1390,14 @@ def gateway(
             if dream_cycle:
                 async def _monthly_scheduler():
                     from loguru import logger as _monthly_log
+                    # Check for missed window on startup
+                    if await _was_missed(config.copilot.monthly_review_cron_expr, "monthly_review"):
+                        _monthly_log.info("Monthly review was missed — running now")
+                        try:
+                            await dream_cycle.run_monthly()
+                            _monthly_log.info("Monthly review complete (catch-up)")
+                        except Exception as exc:
+                            _monthly_log.error(f"Monthly review catch-up failed: {exc}")
                     while True:
                         cron_it = _croniter(config.copilot.monthly_review_cron_expr, _time.time())
                         delay = cron_it.get_next() - _time.time()
