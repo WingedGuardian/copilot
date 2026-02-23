@@ -38,7 +38,8 @@ class YouTubeTranscriptTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Extract the transcript (captions/subtitles) from a YouTube video. "
+            "Extract the transcript from a YouTube video. "
+            "Tries captions/subtitles first, then downloads audio and transcribes via Whisper. "
             "Supports full URLs, shortened URLs (youtu.be, search.app), and bare video IDs."
         )
 
@@ -78,11 +79,23 @@ class YouTubeTranscriptTool(Tool):
             except Exception as e:
                 logger.warning(f"TranscriptAPI failed, falling back to yt-dlp: {e}")
 
-        # Fallback: yt-dlp
+        # Fallback: yt-dlp subtitle extraction
+        subtitle_err = ""
         try:
             return await self._fetch_ytdlp(video_id, format)
         except Exception as e:
-            return f"Error: Both TranscriptAPI and yt-dlp failed. yt-dlp error: {e}"
+            subtitle_err = str(e)
+            logger.warning(f"Subtitle extraction failed: {e}")
+
+        # Last resort: download audio and transcribe via Groq/OpenAI
+        try:
+            return await self._fetch_audio_transcription(video_id)
+        except Exception as e:
+            return (
+                f"Error: All transcript methods failed for video {video_id}.\n"
+                f"Subtitles: {subtitle_err}\n"
+                f"Audio transcription: {e}"
+            )
 
     async def _resolve_url(self, url: str) -> str:
         """Follow redirects to resolve shortened URLs."""
@@ -176,6 +189,107 @@ class YouTubeTranscriptTool(Tool):
             if fmt == "json":
                 return json.dumps({"video_id": video_id, "source": "yt-dlp", "text": transcript})
             return transcript
+
+    async def _fetch_audio_transcription(self, video_id: str) -> str:
+        """Download audio via yt-dlp, transcribe via Groq (primary) or OpenAI."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = Path(tmpdir) / f"{video_id}.m4a"
+            yt_url = f"https://www.youtube.com/watch?v={video_id}"
+            cmd = [
+                "yt-dlp",
+                "-x", "--audio-format", "m4a",
+                "--audio-quality", "5",  # lower quality = smaller file
+                "-o", str(audio_path),
+                "--max-filesize", "25m",
+                yt_url,
+            ]
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=120,
+            )
+            if proc.returncode != 0:
+                err = stderr.decode(errors="replace").strip()
+                raise RuntimeError(f"yt-dlp audio download failed: {err[:500]}")
+
+            # Find the audio file (yt-dlp may add codec suffix)
+            audio_files = list(Path(tmpdir).glob(f"{video_id}.*"))
+            if not audio_files:
+                raise RuntimeError("yt-dlp produced no audio file")
+            audio_file = audio_files[0]
+
+            # Try Groq first (cheapest), then OpenAI
+            transcript = await self._transcribe_groq(audio_file)
+            if transcript:
+                return f"[Audio transcription via Groq]\n\n{transcript}"
+
+            transcript = await self._transcribe_openai(audio_file)
+            if transcript:
+                return f"[Audio transcription via OpenAI]\n\n{transcript}"
+
+            raise RuntimeError("Both Groq and OpenAI transcription returned empty")
+
+    async def _transcribe_groq(self, audio_path: Path) -> str | None:
+        """Transcribe via Groq Whisper API."""
+        secrets_path = Path.home() / ".nanobot" / "secrets.json"
+        try:
+            data = json.loads(secrets_path.read_text())
+            api_key = data.get("providers", {}).get("groq", {}).get("apiKey", "")
+        except Exception:
+            return None
+        if not api_key:
+            return None
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=120) as client:
+                with open(audio_path, "rb") as f:
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        files={"file": (audio_path.name, f, "audio/m4a")},
+                        data={"model": "whisper-large-v3", "language": "en"},
+                    )
+                if resp.status_code == 200:
+                    return resp.json().get("text", "")
+                logger.warning(f"Groq transcription HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.warning(f"Groq transcription failed: {e}")
+        return None
+
+    async def _transcribe_openai(self, audio_path: Path) -> str | None:
+        """Transcribe via OpenAI Whisper API."""
+        secrets_path = Path.home() / ".nanobot" / "secrets.json"
+        try:
+            data = json.loads(secrets_path.read_text())
+            api_key = data.get("providers", {}).get("openai", {}).get("apiKey", "")
+        except Exception:
+            return None
+        if not api_key:
+            return None
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=120) as client:
+                with open(audio_path, "rb") as f:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        files={"file": (audio_path.name, f, "audio/m4a")},
+                        data={"model": "whisper-1", "language": "en"},
+                    )
+                if resp.status_code == 200:
+                    return resp.json().get("text", "")
+                logger.warning(f"OpenAI transcription HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.warning(f"OpenAI transcription failed: {e}")
+        return None
 
     @staticmethod
     def _parse_vtt(vtt: str) -> str:

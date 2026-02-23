@@ -108,7 +108,9 @@ Your workspace is at: {workspace_path}
 
 IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
 Only use the 'message' tool when you need to send a message to a specific chat channel (like WhatsApp).
-For normal conversation, just respond with text - do not call the message tool."""
+For normal conversation, just respond with text - do not call the message tool.
+
+CRITICAL: When a tool fails or returns an error, NEVER fabricate the missing output. Report what failed and offer to retry. A confident wrong answer is worse than an honest failure."""
 
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
