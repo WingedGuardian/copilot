@@ -655,6 +655,25 @@ Trust is harder to build than to lose. Regression triggers:
 
 Regression is announced: "I've been making mistakes with [category]. Dropping back to [level] until I rebuild confidence. You can override this."
 
+### Context-Dependent Trust Ceiling
+
+Earned autonomy has a ceiling imposed by the interaction context. Regardless of
+the system's earned level for a capability category, the *channel or invocation
+context* can cap the effective autonomy:
+
+| Context | Max Effective Autonomy | Rationale |
+|---------|----------------------|-----------|
+| Direct user session (WhatsApp, Web UI) | Earned level (no cap) | User is present, can intervene |
+| Background cognitive (Reflection Engine) | L3 (notify + act) | No user in the loop — keep actions reversible |
+| Sub-agent spawned by task | L2 (act with confirmation) for irreversible; earned for reversible | Sub-agents inherit task permissions, not global permissions |
+| Outreach (proactive messaging) | L2 (act with confirmation) until engagement data proves calibration | Wrong outreach erodes trust faster than wrong internal action |
+
+The principle: **later contexts restrict but never expand** effective autonomy.
+A system with L5 earned autonomy for code operations still caps at L2 when a
+sub-agent attempts an irreversible action inside a background task with no user
+present. This prevents earned trust in supervised contexts from being exploited
+in unsupervised ones.
+
 ### What "Learns HOW to Learn" Actually Means in Practice
 
 At L6, the system can observe that its own learning is working or not:
