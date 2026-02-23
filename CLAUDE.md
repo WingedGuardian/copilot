@@ -1,14 +1,18 @@
-# Project: Genesis
+# Project: Copilot
 
-**Genesis** is the project name for this system. Built on the [nanobot](https://github.com/HKUDS/nanobot) framework (upstream fork), with extensive copilot/executive extensions. GitHub repo: `WingedGuardian/Genesis`.
+Built on the [nanobot](https://github.com/HKUDS/nanobot) framework (upstream fork), with extensive copilot/executive extensions.
 
-**Current naming (pre-v2 — do not rename these yet):**
-- Local directory: `~/executive-copilot/nanobot/` (rename to `~/genesis/` is post-v2)
+**Repositories & remotes:**
+- `public` → [WingedGuardian/copilot](https://github.com/WingedGuardian/copilot) — public-facing repo
+- `origin` → WingedGuardian/nanobot-copilot-data — private backup
+- `upstream` → HKUDS/nanobot — upstream fork source
+- **No association with `WingedGuardian/Genesis`** — that is a separate project. Do NOT push to, reference, or create remotes for it from this repo.
+
+**Local naming:**
+- Local directory: `~/executive-copilot/nanobot/`
 - Python package: `nanobot` (upstream name, kept permanently)
 - Runtime data: `~/.nanobot/` (kept permanently)
 - Internal code references to "nanobot" and "copilot" remain unchanged
-
-**Post-v2 rename scope:** local directory, venv paths, systemd service, hook scripts, settings.json, config.py backup_dir, Claude projects directory. See POST-V2-UPSTREAM-MERGE.md.
 
 # Communication Style
 
@@ -28,6 +32,11 @@ Always be trying to "one up" the user's ideas when there's a good opportunity th
 - **One logical change per branch.** Don't mix unrelated work. If a second concern emerges mid-branch, stash it or note it for the next branch.
 - **Commit on branch → review diff → merge.** Every merge to main is a deliberate decision, not a side effect of working.
 - **Use git worktrees for parallel independent work** when multiple tasks have no shared state or sequential dependencies.
+- **After merging to main, push to BOTH remotes:**
+  ```
+  git push public main && git push origin main
+  ```
+  `public` = public-facing repo (WingedGuardian/copilot). `origin` = private backup (nanobot-copilot-data). Every merge to main gets pushed to both. No exceptions.
 
 # Session Discipline
 
