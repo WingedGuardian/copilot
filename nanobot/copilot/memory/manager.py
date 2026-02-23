@@ -29,6 +29,11 @@ class MemoryManager:
         self._db_path = str(db_path)
         self._slm_queue: Any = None  # Set by commands.py for deferred re-embedding
 
+    @property
+    def _qdrant(self):
+        """Expose the underlying Qdrant client for dream cycle jobs."""
+        return self._episodic._client
+
     async def initialize(self) -> None:
         """Connect to all backends."""
         try:
