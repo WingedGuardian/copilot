@@ -25,18 +25,28 @@ The venv at `~/agent-zero/.venv` has a broken partial install (only ~29 packages
 The `unstructured[all-docs]` dependency pulls in scipy, scikit-learn, opencv, etc.
 which kept failing due to missing build deps (now installed: gfortran, libopenblas-dev, cmake).
 
-**Fix:** Nuke the venv and reinstall clean:
+**Fix:** Nuke the venv and reinstall with scipy workaround:
 ```bash
 cd ~/agent-zero
 rm -rf .venv
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+
+# CRITICAL: Install scipy binary FIRST — the requirements.txt triggers a source
+# build via transitive deps (unstructured[all-docs] → scikit-learn → scipy) which
+# fails with a Cython/nogil error on Python 3.12. Pre-installing the binary wheel
+# satisfies the dependency before pip tries to build from source.
+pip install scipy --only-binary :all:
+pip install flask-basicauth==0.2.0
+pip install -r requirements.txt --only-binary scipy
 pip install anthropic
 deactivate
 ```
 
-If scipy still fails to build, use: `pip install -r requirements.txt --only-binary scipy`
+If it STILL tries to build scipy from source, use the nuclear option:
+`pip install -r requirements.txt --only-binary :all:` (forces ALL packages to use
+prebuilt wheels — only flask-basicauth needs to be pre-installed separately since
+it has no wheel).
 
 ### 2. Agent Zero .env needs API keys
 
