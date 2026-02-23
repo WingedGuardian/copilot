@@ -4,6 +4,10 @@
 > **Source**: Direct code reads of routing/, tasks/, dream/, context/, copilot/config.py, agent/loop.py
 > **Supersedes**: All prior status docs for accuracy. Old V2/Amendment docs remain as decision history.
 > **Status legend**: ✅ DONE | ⚠️ PARTIAL | ❌ NOT STARTED | 🐛 BUG | 🔄 CHANGED (from plan)
+>
+> **V3 note (2026-02-23):** Most gaps in this document become irrelevant with the
+> Genesis v3 migration to Agent Zero. See `genesis-v3-dual-engine-plan.md` §4
+> "What This Migration Solves" for the full mapping.
 
 ---
 

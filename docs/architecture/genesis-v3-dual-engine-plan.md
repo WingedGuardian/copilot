@@ -4,6 +4,13 @@
 **Status:** DRAFT — Pending Phase 0 validation
 **Supersedes:** Previous dual-engine plan (OpenCode + Claude SDK) from earlier today
 
+> **Partial supersession notice (2026-02-23):** The cognitive layer sections of this
+> document (scheduler, MCP server list, review cycle integration) have been superseded
+> by `genesis-v3-autonomous-behavior-design.md`. This document remains the primary
+> reference for: framework decision (why Agent Zero), three-engine architecture,
+> memory system MCP wrapping, CLAUDE.md handshake protocol, migration plan,
+> container architecture, risk assessment, and open questions.
+
 ---
 
 ## 1. Executive Summary
@@ -54,7 +61,7 @@ Nanobot is a chat framework we've been stretching into an autonomous cognitive s
 │  │   ├── identity_files (SOUL.md loading + evolution)           │
 │  │   └── situational_briefing (active tasks, spend, alerts)     │
 │  │                                                              │
-│  ├── Scheduler (cron):                                          │
+│  ├── Scheduler (cron):  ← SUPERSEDED (see note below)                                          │
 │  │   ├── heartbeat: every 2h                                    │
 │  │   ├── dream_cycle: daily 3 AM (13 jobs as subordinates)      │
 │  │   ├── weekly_review: Sunday 9 AM                             │
@@ -68,7 +75,7 @@ Nanobot is a chat framework we've been stretching into an autonomous cognitive s
 │  │   ├── opencode_fallback — OpenCode for when Claude limited   │
 │  │   └── (standard: code_execution, knowledge, browser, etc.)   │
 │  │                                                              │
-│  ├── MCP Clients:                                               │
+│  ├── MCP Clients:  ← SUPERSEDED (see note below)                                               │
 │  │   ├── genesis-memory — YOUR Qdrant+FTS5+SQLite system        │
 │  │   ├── genesis-observations — dream_observations lifecycle    │
 │  │   ├── genesis-recon — recon_findings + triage                │
@@ -90,6 +97,14 @@ Nanobot is a chat framework we've been stretching into an autonomous cognitive s
 │  Qdrant can be shared between containers if desired             │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+> **SUPERSEDED — Scheduler:** The cron-based scheduler above is replaced by the Awareness Loop +
+> Reflection Engine in `genesis-v3-autonomous-behavior-design.md`. The event-driven model with
+> adaptive calendar floors/ceilings is the target architecture, not fixed cron intervals.
+
+> **SUPERSEDED — MCP Clients:** The 3-server list above (genesis-memory, genesis-observations,
+> genesis-recon) is replaced by the 4-server design (memory-mcp, recon-mcp, health-mcp, outreach-mcp)
+> in the autonomous behavior design doc. Observations are folded into memory-mcp.
 
 ### The Three Engines
 
@@ -355,6 +370,11 @@ Between each step, Agent Zero can query new memories, update CLAUDE.md, run mini
 
 ### Review Cycle Integration
 
+> **SUPERSEDED:** The linear pipeline below (task → retrospective → nightly dream → weekly → monthly)
+> is replaced by the Reflection Engine's adaptive depth model in `genesis-v3-autonomous-behavior-design.md`.
+> The Reflection Engine dynamically selects Light/Deep/Strategic depth based on signal urgency,
+> rather than running on fixed calendar schedules.
+
 The learning loop from task outcomes through review cycles:
 
 ```
@@ -412,9 +432,14 @@ Every review cycle reads from and writes to Genesis memory. Task outcomes → re
 
 **Net reduction: ~12,000 lines deleted, ~2,500 written.** Plus the memory system code (~2,000 lines) is ported (not rewritten) into the MCP server.
 
+> **Updated estimate (2026-02-23):** The ~2,500 new lines estimate above predates the
+> autonomous behavior design (`genesis-v3-autonomous-behavior-design.md`). Revised estimate:
+> **5,000-8,000 new lines** with the full cognitive layer (Awareness Loop, Reflection Engine,
+> Self-Learning Loop, health-mcp, outreach-mcp, engagement tracking, signal-weighted triggers).
+
 ---
 
-## 6. The V2 Roadmap — What Changes
+## 7. The V2 Roadmap — What Changes
 
 ### V2 phases that become IRRELEVANT
 
@@ -455,7 +480,7 @@ The cognitive layer (dream cycle, heartbeat, identity evolution, recon) was alwa
 
 ---
 
-## 7. Migration Plan
+## 8. Migration Plan
 
 ### Phase 0: Validation (BEFORE committing)
 
@@ -527,7 +552,7 @@ pip install claude-agent-sdk
 
 ---
 
-## 8. Open Questions
+## 9. Open Questions
 
 1. **Qdrant sharing vs fresh instance** — Share v1's Qdrant (all existing memories available instantly) or start fresh? Sharing is simpler but creates a dependency between containers during parallel run.
 
@@ -545,7 +570,7 @@ pip install claude-agent-sdk
 
 ---
 
-## 9. Risk Assessment
+## 10. Risk Assessment
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
@@ -559,7 +584,7 @@ pip install claude-agent-sdk
 
 ---
 
-## 10. What This Plan Does NOT Cover
+## 11. What This Plan Does NOT Cover
 
 - Specific Agent Zero prompt engineering (that's implementation)
 - Telegram bot UX design (interface layer decision)
@@ -569,7 +594,7 @@ pip install claude-agent-sdk
 
 ---
 
-## 11. Summary
+## 12. Summary
 
 | Metric | Current (nanobot) | v3 (Agent Zero + Claude SDK + OpenCode) |
 |--------|------------------|----------------------------------------|

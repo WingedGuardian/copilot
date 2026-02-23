@@ -3,6 +3,10 @@
 > **This document supersedes all prior plan docs for current state accuracy.**
 > Old docs remain as decision history: V2 Architecture, Amendments #2/#3, Brain Architecture Plan, Task Lifecycle docs.
 > This is a read from the code, not from the plans.
+>
+> **V3 note (2026-02-23):** This document reflects nanobot v1/v2 current state.
+> For the Genesis v3 architecture replacing this system, see
+> `genesis-v3-dual-engine-plan.md` and `genesis-v3-autonomous-behavior-design.md`.
 
 ---
 

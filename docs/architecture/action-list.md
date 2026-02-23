@@ -3,6 +3,11 @@
 > **Basis**: Gap analysis + reconciled architecture + recurring failure patterns.
 > **Ordering**: Blocking bugs first → foundational infrastructure → trust/safety features → value features.
 > **Size**: S = <2h, M = half-day, L = full day, XL = multi-day
+>
+> **V3 note (2026-02-23):** This action list targets nanobot v1/v2. With the
+> Genesis v3 migration to Agent Zero, most items become irrelevant (fresh codebase
+> eliminates SqlitePool debt, timezone issues, task system bugs). Retained as
+> decision history.
 
 ---
 

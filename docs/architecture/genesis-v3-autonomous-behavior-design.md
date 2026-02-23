@@ -13,6 +13,12 @@ The current nanobot system runs 6+ independent timer-based services (heartbeat, 
 - Neuroscience functional mapping (used as thinking tool, not deployment blueprint)
 - Brainstorming session on proactive outreach, anticipatory intelligence, and feedback loops
 
+**Companion document:** `genesis-v3-dual-engine-plan.md` covers framework decision
+(why Agent Zero), three-engine architecture, memory system MCP wrapping, CLAUDE.md
+handshake protocol, migration plan, container architecture, and risk assessment.
+This document covers the cognitive/autonomous behavior layer that runs on top of
+that foundation.
+
 **Core design principle:** The brain has separate modules because evolution couldn't refactor the brainstem. We don't have that constraint. Keep the cognitive FUNCTIONS from neuroscience, simplify the DEPLOYMENT. If something doesn't need its own process, state, and lifecycle, it's a prompt pattern or internal instrument — not a server.
 
 ---
@@ -60,10 +66,10 @@ The current nanobot system runs 6+ independent timer-based services (heartbeat, 
 │  └ User model cache      └ Self-scheduling                   │
 │                                                              │
 │  health-mcp              outreach-mcp                        │
-│  ├ System vitals         ├ Channel registry (WhatsApp, web)  │
-│  ├ Provider status       ├ Delivery queue + timing           │
-│  ├ Anomaly detection     ├ Engagement tracking               │
-│  └ Resource monitoring   └ Digest generation                 │
+│  ├ Software error rates  ├ Channel registry (WhatsApp, web)  │
+│  ├ Provider/API status   ├ Delivery queue + timing           │
+│  ├ Process health        ├ Engagement tracking               │
+│  └ Storage limits        └ Digest generation                 │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -73,12 +79,15 @@ The current nanobot system runs 6+ independent timer-based services (heartbeat, 
 
 **Replaces:** MonitorService + HealthCheckService polling logic
 **Type:** Agent Zero extension, 5-minute tick
-**Cost:** Zero LLM calls — purely programmatic
+**Cost:** Zero LLM calls — purely programmatic signal collection
+
+The Awareness Loop is pure perception — it collects signals and decides which depth of reflection to trigger. It does NOT reason about signals or take actions. All reasoning, even the lightest kind, belongs to the Reflection Engine (starting at Micro depth).
 
 ### Responsibilities
 
-- Poll MCP servers for pending notifications/alerts
-- Track event counters since last reflection (conversations, errors, memories stored, recon findings)
+- Collect signals from MCP servers (pending notifications, error counts, engagement data, recon findings)
+- Track event counters since last reflection (conversations, errors, memories stored, findings)
+- Run lightweight programmatic health checks (process alive? API responding? storage within bounds?)
 - Check time-since-last-reflection at each depth level
 - Apply calendar floor/ceiling schedule (see below)
 - When thresholds crossed → trigger Reflection Engine at appropriate depth
@@ -89,7 +98,7 @@ Events set the tempo, calendar sets the minimum BPM.
 
 | Depth | Event-driven trigger | Calendar floor | Calendar ceiling |
 |-------|---------------------|----------------|-----------------|
-| **Micro** | On alert / health threshold | Every 30min | N/A |
+| **Micro** | Software anomaly, new user interaction pattern, quick improvement idea | Every 30min | Max 2/hour |
 | **Light** | Notable activity (5+ conversations, budget warning, recon finding flagged) | Every 6h | Max 1/hour |
 | **Deep** | Backlog / salience spike (200+ unprocessed memories, budget alert, multiple recon findings) | Every 48-72h | Max 1/day |
 | **Strategic** | Major signal (user goal change, paradigm shift in recon, quarterly boundary) | Every 7-14 days | Max 1/week |
@@ -104,14 +113,16 @@ Events set the tempo, calendar sets the minimum BPM.
 
 **Replaces:** HeartbeatService, CopilotHeartbeatService, DreamCycle (13 jobs), weekly review, monthly review
 **Type:** Agent Zero extension, triggered by Awareness Loop
-**Cost:** Variable per depth (Micro = 0, Light = low, Deep = medium, Strategic = high)
+**Cost:** Variable per depth (Micro = near-zero via local 20-30B or Gemini Flash free tier, Light = low, Deep = medium, Strategic = high)
 
 ### Depth Levels
 
-**Micro** (replaces health check programmatic checks):
-- No LLM. Programmatic checks only.
-- Endpoint pings, disk/memory, provider status, process health
-- Output: health status record, alerts if thresholds crossed
+**Micro** (quick sanity pass):
+- Cheap LLM call: local 20-30B model or free cloud tier (Gemini Flash)
+- NOT a health monitor. The question Micro answers is: "Anything worth paying attention to right now?"
+- Biased toward: user value opportunities ("user asked about X yesterday, I found related info"), self-improvement ideas ("that task failed because of Y, I should note the pattern"), software anomaly detection ("API error rate spiked", "gateway returned malformed JSON", "config value looks wrong")
+- Hardware health is NOT Micro's focus — the Awareness Loop catches the rare hardware issue (storage limits) programmatically. Micro thinks about software reliability, user needs, and system improvement.
+- Output: brief observations, optional flag for Light reflection if something warrants deeper thought
 
 **Light** (replaces heartbeat):
 - Brief LLM reflection on recent activity
@@ -136,6 +147,8 @@ Events set the tempo, calendar sets the minimum BPM.
 - DIRECTOR role (monthly cadence): audits weekly findings, adjusts budgets, strategic assessment
 - **Can modify system parameters:** adjust Awareness Loop thresholds, Reflection Engine drive weights, outreach preferences
 - Output: strategic adjustments, configuration changes, high-level observations
+
+Strategic reflections track an internal counter. Every Strategic reflection runs MANAGER-scope work. Every 4th Strategic reflection (or when >28 days since last DIRECTOR pass) also runs DIRECTOR-scope work. This gives roughly weekly MANAGER and monthly DIRECTOR cadence while keeping them in a single depth level.
 
 ### Inline Capabilities (Prompt Patterns)
 
@@ -162,6 +175,8 @@ Four drives shape what the Reflection Engine focuses on:
 
 Weights are initial-configured but adjusted by the Self-Learning Loop based on feedback. If proactive suggestions keep getting acted on → cooperation weight rises. If the system keeps breaking → preservation weight rises.
 
+**Bounds:** No single drive may drop below 0.10 or rise above 0.50. This prevents any drive from being effectively silenced or from dominating all reflection. Initial weights: preservation 0.35, curiosity 0.25, cooperation 0.25, competence 0.15.
+
 ---
 
 ## Layer 3: Self-Learning Loop
@@ -182,6 +197,19 @@ Weights are initial-configured but adjusted by the Self-Learning Loop based on f
 2. **Prediction error:** `salience_score` predicted engagement. Actual engagement was higher/lower. Compute error.
 3. **Drive weight adjustment:** Positive engagement on cooperation-driven outreach → increase cooperation weight. Ignored outreach → decrease.
 4. **Salience calibration:** "Outreach about topic X at score 0.78 was ignored → adjust threshold for similar topics"
+
+### Engagement Signal Heuristics (Per-Channel)
+
+Engagement inference is the primary training signal for salience calibration.
+Default heuristics (per-adapter, overridable):
+
+| Channel | "Engaged" | "Ignored" | "Neutral" |
+|---------|-----------|-----------|-----------|
+| WhatsApp | Reply or read receipt + action within 4h | No read receipt in 24h, OR read but no reply to a question in 12h | Read receipt but no reply on non-question within 24h |
+| Telegram | Reaction or reply | No reaction or reply in 24h | Message read (if available) but no reaction |
+| Web UI | Click-through, reply, or explicit feedback button | Page loaded but no interaction in session | Viewed in digest but no action |
+
+These heuristics are initial defaults. The Self-Learning Loop can propose adjustments (L6 autonomy — user-approved) if engagement patterns suggest the heuristics are miscalibrated.
 
 ### Over Time
 
@@ -211,6 +239,7 @@ This loop makes proactive behavior increasingly accurate:
 - `observation_write` — Write processed reflection/observation
 - `observation_query` — Query by type/priority/source
 - `observation_resolve` — Mark resolved with notes
+- `evolution_propose` — Write identity evolution proposal (for SOUL.md / identity file changes)
 
 ### 2. recon-mcp
 
@@ -234,19 +263,20 @@ Self-manages schedules internally. Pushes high-priority findings as notification
 
 ### 3. health-mcp
 
-**New.** System monitoring as an external observer:
+**New.** Lightweight software health awareness — NOT an enterprise monitoring system. Genesis is a cognitive assistant that happens to be self-maintaining, not a sys admin. Health monitoring exists so Genesis can fix its own problems when they arise, not so it can spend cycles worrying about uptime.
 
-- **Endpoint health:** HTTP pings to configured services
-- **Provider status:** API availability, latency, error rates per provider
-- **Resource usage:** Disk, memory, CPU, token budget consumption
-- **Error rate tracking:** Rolling window error counts with anomaly detection
-- **Baseline management:** Learns normal patterns over time, alerts on statistical deviation (not just threshold breaches)
+**Focus: software reliability** (the real failure modes):
+- **API/provider status:** Which APIs are responding? Which are returning errors? Which are rate-limited? (Crashes, dead APIs, and non-graceful degradation are the #1 real-world failure mode)
+- **Error tracking:** Rolling window of errors with pattern detection — malformed JSON, config issues, unexpected exceptions, gateway crashes
+- **Process health:** Are background services running? Did something crash silently?
+- **Storage:** The one hardware check that matters — disk usage approaching limits (backups, logs, DB growth)
+
+**NOT in scope:** CPU monitoring, memory profiling, network throughput, latency histograms, baseline learning for statistical deviation. This isn't Datadog. If something breaks, Genesis notices and fixes it. If nothing breaks, health-mcp is quiet.
 
 **Tools:**
-- `health_status` — Current system health snapshot
-- `health_history` — Historical metrics for trend analysis
-- `health_alerts` — Active alerts and their severity
-- `health_baselines` — View/reset learned baselines
+- `health_status` — Current system health snapshot (API status, error counts, process state, storage)
+- `health_errors` — Recent error log with pattern grouping
+- `health_alerts` — Active alerts (software failures, storage warnings)
 
 ### 4. outreach-mcp
 
@@ -355,7 +385,7 @@ Channel selection is learned, not prescribed. The system tracks which channel ge
 | **Constitutional Subagent** | Governance check — permissions, reversibility, budget, precedent | Reflection Engine prompt pattern |
 | **Procedural Memory** | Structured "how-to" records alongside episodic/semantic | memory-mcp (new memory type) |
 | **Phased training curriculum** | Bootstrap sequence: observe → react → light proactive → anticipatory | Deployment phasing (see Bootstrap below) |
-| **Survival Subagent** | health-mcp + Awareness Loop alert system | MCP server + internal extension |
+| **Survival Subagent** | health-mcp (software health, reactive) + Awareness Loop signal collection | MCP server + internal extension — self-maintenance, not self-monitoring |
 | **Ego/Meta-Controller** | Agent Zero core + Awareness Loop + Reflection Engine | Framework + extensions |
 | **Audit & Explainability** | Memory-stored retrospectives + engagement logs | memory-mcp + outreach-mcp |
 
@@ -404,8 +434,8 @@ This mapping informed the architecture but doesn't dictate deployment:
 | Salience Network | "Is this important?" switching | Salience evaluation (prompt pattern in Reflection Engine) |
 | Hippocampus | Memory encoding, consolidation, pattern completion | memory-mcp |
 | Mirror Neurons / Theory of Mind | Model other minds, predict needs | User model synthesis (prompt pattern, data in memory-mcp) |
-| Insular Cortex | Internal state awareness | health-mcp |
-| Anterior Cingulate | Error/conflict detection | health-mcp anomaly detection |
+| Insular Cortex | Internal state awareness | health-mcp (software health, not hardware) |
+| Anterior Cingulate | Error/conflict detection | health-mcp error pattern detection |
 | Basal Ganglia | Habits, routines, learned procedures | Procedural memory (memory type in memory-mcp) |
 | Dopaminergic System | Reward prediction error, learning what's valuable | Self-Learning Loop (extension) |
 | Prefrontal Cortex | Executive function, planning, impulse control | Agent Zero core (LLM) |
@@ -424,6 +454,7 @@ This mapping informed the architecture but doesn't dictate deployment:
 | **Feedback** | None — weekly doesn't influence daily behavior | Self-Learning Loop adjusts drives, thresholds, salience |
 | **Proactive outreach** | None — user must check in | WhatsApp push, engagement-calibrated |
 | **User modeling** | None | Synthesized from memory, used for salience + simulation |
+| **Cognitive focus** | Fragmented across 6 services, health-check-heavy | User value + self-improvement dominant, health reactive-only |
 | **Adding new behavior** | New service class + wiring + interval + contention management | New prompt section in Reflection Engine or new MCP tool |
 | **Procedural learning** | Narratives in episodic memory | Structured procedural records, directly retrievable |
 | **World model** | None | Social simulation (imagine user reaction) |
@@ -505,6 +536,49 @@ The "make it happen" abstraction requires these always-on behaviors behind the s
 
 6. **Graceful degradation** — If a preferred tool is unavailable, Genesis routes to the next best option without telling the user unless it affects quality or timeline. The fallback chain: Claude SDK → Bedrock → Vertex → OpenCode.
 
+### Execution Trace Schema
+
+Every task execution is stored in memory-mcp as an episodic record:
+
+```json
+{
+  "task_id": "task_abc123",
+  "user_request": "Build and test a web scraper for Y",
+  "plan": ["browser: understand target structure", "claude_code: write scraper", "computer_use: verify output"],
+  "sub_agents": [
+    {"type": "browser", "input": "...", "output": "...", "status": "success", "cost_usd": 0.02, "duration_s": 45},
+    {"type": "claude_code", "input": "...", "output": "...", "status": "success", "cost_usd": 0.34, "session_id": "sess_xyz"},
+    {"type": "computer_use", "input": "...", "output": "...", "status": "failed", "error": "permission denied"}
+  ],
+  "quality_gate": {"passed": false, "reason": "computer_use failed — permission issue", "action": "surfaced to user"},
+  "total_cost_usd": 0.36,
+  "procedural_extractions": ["proc_def456"],
+  "retrospective_id": "retro_ghi789"
+}
+```
+
+### Governance at Capability Boundaries
+
+Before spawning any sub-agent, a programmatic check runs (not LLM — too slow for every spawn):
+
+1. Check autonomy permissions for the capability type (code_edit, browser, computer_use, external_api)
+2. Check budget: cumulative task cost + estimated sub-agent cost < task budget
+3. Check reversibility flag on the capability type (code_edit = reversible via git, computer_use = NOT reversible, external_api = depends on endpoint)
+
+If all pass → spawn. If budget fails → downgrade model or surface to user. If reversibility fails on a non-approved capability → surface to user.
+
+The LLM-based governance check (permissions + precedent + social simulation) runs only for OUTREACH and STRATEGIC decisions, not for every sub-agent spawn.
+
+### Quality Gate
+
+After each sub-agent returns, a lightweight check (utility model, cheap):
+- Code sub-agents: "Does this code run? Does it address the stated requirement?"
+- Browser sub-agents: "Did we get the information we needed?"
+- Computer use: "Did the UI reach the expected state?"
+
+Failure → retry with error context (max 2 retries) → if still failing, surface to user.
+Success → proceed to next sub-agent or deliver result.
+
 ---
 
 ## Memory Separation: Conversational vs. Task-System
@@ -536,7 +610,7 @@ Claude SDK sessions have their own deep context (file-level understanding of a c
 
 **The handshake:** Genesis owns the persistent layer. Claude SDK owns the deep-context layer for the duration of a task. Before invoking Claude SDK, Genesis writes a dynamic CLAUDE.md populated with relevant Genesis memories (past retrospectives, known patterns, procedural memory about this codebase). After the session, Genesis extracts learnings back into memory-mcp.
 
-**What never crosses into Claude SDK:** User model data, salience weights, outreach preferences, system health data. Claude SDK is a specialist tool — it needs task context, not cognitive system state.
+**What doesn't cross into Claude SDK by default:** User model data, salience weights, outreach preferences, system health data. Claude SDK is a specialist tool — it needs task context, not cognitive system state. Exception: if the task itself involves these systems (e.g., "fix the outreach timing"), relevant data is included in the dynamic CLAUDE.md.
 
 ---
 
@@ -571,6 +645,15 @@ Actions are stratified by their blast radius and reversibility. Autonomy grows w
 - User explicitly acknowledging the autonomy grant (not just absence of correction)
 
 The last point matters. Silence ≠ approval. The system should periodically ask: "I've been handling [category] autonomously for [period] with [X% success rate]. Would you like me to continue, or do you want to adjust my autonomy for this?"
+
+### Autonomy Regression
+
+Trust is harder to build than to lose. Regression triggers:
+- 2 consecutive user corrections at a level → drop one level, require re-earning
+- 1 user-reported harmful action → drop to default for that category, full re-earn
+- System detects its own systematic error (e.g., 5 ignored outreach in a row at a topic) → self-proposes regression for that category
+
+Regression is announced: "I've been making mistakes with [category]. Dropping back to [level] until I rebuild confidence. You can override this."
 
 ### What "Learns HOW to Learn" Actually Means in Practice
 
@@ -707,28 +790,52 @@ urgency_score(depth) = Σ(signal_value_i × weight_i) × time_multiplier(depth)
 Where `time_multiplier` rises as time passes since last reflection at that depth:
 
 ```
+Micro time_multiplier:
+  At 0min since last Micro:  0.3x  (just reflected)
+  At 15min:                  0.7x
+  At 30min (floor):          1.0x  (baseline)
+  At 45min:                  1.5x
+  At 60min:                  2.5x  (overdue)
+
 At 0h since last Light:   0.5x  (suppressed — just reflected)
 At 3h:                    1.0x  (baseline)
 At 6h (floor):            1.5x  (heightened)
 At 8h:                    2.0x  (approaching overdue)
 At 12h:                   3.0x  (something is wrong if this is reached)
+
+Deep time_multiplier:
+  At 0h since last Deep:    0.3x  (heavily suppressed)
+  At 24h:                   0.7x
+  At 48h (floor start):     1.0x  (baseline)
+  At 72h (floor end):       1.5x  (heightened)
+  At 96h:                   2.5x  (overdue)
+
+Strategic time_multiplier:
+  At 0d since last Strategic:  0.2x  (heavily suppressed)
+  At 3d:                       0.5x
+  At 7d (floor start):         1.0x  (baseline)
+  At 10d:                      1.5x
+  At 14d (floor end):          2.0x  (heightened)
+  At 21d:                      3.0x  (overdue)
 ```
 
 When `urgency_score ≥ threshold_for_depth` → trigger that depth. Calendar floor is implicit in the rising multiplier — even weak signals eventually cross the threshold.
 
 ### Signal Sources and Initial Weights
 
-| Signal | Source | Initial Weight | Feeds |
-|--------|--------|---------------|-------|
-| Conversations since last reflection | Agent Zero | 0.30 | Light |
-| Errors / failures logged | health-mcp | 0.80 | Light/Deep |
-| Unprocessed memory backlog | memory-mcp | 0.40 | Deep |
-| Recon findings pending triage | recon-mcp | 0.30 | Light/Deep |
-| Budget % consumed since check | health-mcp | 0.60 | Light/Deep |
-| Health alert fired | health-mcp | 0.90 | Light (immediate) |
-| Time since last Strategic | Clock | 0.50 | Strategic |
-| Outreach engagement anomaly | outreach-mcp | 0.40 | Deep |
-| Task completion rate decline | Agent Zero | 0.50 | Deep |
+| Signal | Source | Initial Weight | Feeds | Rationale |
+|--------|--------|---------------|-------|-----------|
+| Conversations since last reflection | Agent Zero | 0.40 | Micro/Light | User interaction is the primary input — the thing we're here for |
+| Task completion / quality signal | Agent Zero | 0.50 | Micro/Light | "Am I actually helping? Am I getting better?" |
+| Outreach engagement data | outreach-mcp | 0.45 | Micro/Deep | "Are my proactive suggestions landing?" — core learning signal |
+| Recon findings pending triage | recon-mcp | 0.35 | Light/Deep | New intelligence that might help the user |
+| Unprocessed memory backlog | memory-mcp | 0.30 | Deep | Learning debt — things experienced but not consolidated |
+| Budget % consumed since check | health-mcp | 0.40 | Light/Deep | Cost awareness, but not the main event |
+| Software error spike | health-mcp | 0.70 | Micro/Light | Something broke — fix it. But only fires when errors actually happen. |
+| Critical failure (crash, dead API) | health-mcp | 0.90 | Light (immediate) | Reactive — fire fast, fix fast, move on |
+| Time since last Strategic | Clock | 0.50 | Strategic | Ensure periodic big-picture thinking happens |
+
+**Design intent:** The top 4 signals by weight are all about **user value and self-improvement**. Health signals are reactive (high weight but only fire when something is actually wrong). Genesis should spend 80%+ of its cognitive budget thinking about how to be more useful, not whether its processes are running.
 
 ### How Weights Adapt
 
@@ -750,15 +857,15 @@ A per-depth boolean resets after each reflection: "Has this depth fired within i
 
 2. **User model persistence format:** Lean toward: structured JSON (machine-queryable) as the source of truth, with a periodically-regenerated human-readable summary document (USER_MODEL.md equivalent) for transparency.
 
-3. **Drive weight initialization:** Bias toward preservation early (0.4 preservation, 0.2 each others) since the system is new and fragile. Rebalances as the system proves stability.
+3. **Drive weight initialization:** DECIDED — Initial weights: preservation 0.35, curiosity 0.25, cooperation 0.25, competence 0.15. Bounds: no drive below 0.10 or above 0.50. See Drive Weighting section.
 
-4. **Per-channel engagement inference:** Each channel reports differently. Telegram: reactions are explicit, reliable. WhatsApp: read receipts + reply. No reply within 24h on non-urgent = neutral. No reply on a question = negative. Formalize as per-adapter heuristics.
+4. ~~**Per-channel engagement inference:**~~ DECIDED — Promoted to design decision. See "Engagement Signal Heuristics (Per-Channel)" in the Self-Learning Loop section.
 
 5. **Outreach rate limiting:** Max 3 proactive messages/day (not counting blockers/alerts). Prevents well-calibrated suggestions from becoming noise at volume.
 
 6. **Health-mcp → outreach routing:** Critical alerts bypass the pipeline and go directly to outreach. Non-critical go through Awareness Loop → Reflection Engine for contextual assessment.
 
-7. **Reflection Engine model selection:** Light = utility model (cheap). Deep = chat model (capable). Strategic = most capable available (high-stakes reasoning about system configuration).
+7. **Reflection Engine model selection:** Micro = local 20-30B or Gemini Flash free tier (near-zero cost). Light = utility model (cheap cloud). Deep = chat model (capable). Strategic = most capable available (high-stakes reasoning about system configuration).
 
 8. **Activation-based memory retrieval:** ACT-R's activation model (recency + frequency + connectivity) vs. pure embedding similarity. Explore hybrid during implementation — embedding for semantic match, activation for retrieval priority.
 
