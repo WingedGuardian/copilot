@@ -223,12 +223,38 @@ class WebToolsConfig(BaseModel):
 class ExecToolConfig(BaseModel):
     """Shell exec tool configuration."""
     timeout: int = 60
+    mode: str = "allowlist"  # "allowlist" or "denylist"
+    allowed_commands: list[str] = Field(default_factory=lambda: [
+        "ls", "cat", "grep", "find", "wc", "head", "tail",
+        "python", "python3", "pip", "pip3",
+        "gh", "sqlite3", "curl", "wget", "git",
+        "diff", "patch", "sort", "uniq", "awk", "sed",
+        "date", "echo", "printf", "test", "stat", "file",
+        "jq", "bc", "tr", "cut", "tee", "mkdir", "cp", "mv", "touch",
+        "chmod", "basename", "dirname", "realpath", "xargs",
+        "tar", "gzip", "gunzip", "zip", "unzip",
+    ])
+    output_limit_bytes: int = 524_288  # 512KB hard cap on stdout+stderr
+
+
+class ResourceLimitConfig(BaseModel):
+    """Global resource limits for all tools."""
+    default_timeout: int = 60  # seconds
+    default_output_limit: int = 50_000  # chars returned to LLM
+    max_file_read_bytes: int = 5_242_880  # 5MB
+    max_file_write_bytes: int = 1_048_576  # 1MB
+    max_web_fetch_bytes: int = 10_485_760  # 10MB
+    max_clone_size_mb: int = 50
+    tool_timeouts: dict[str, int] = Field(default_factory=lambda: {
+        "exec": 60, "git": 120, "web_fetch": 30, "web_search": 15,
+    })
 
 
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    resource_limits: ResourceLimitConfig = Field(default_factory=ResourceLimitConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 

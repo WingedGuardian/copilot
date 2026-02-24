@@ -214,7 +214,11 @@ class AgentLoop:
 
         self.context = extended_context or ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
-        self.tools = ToolRegistry(sanitizer=self.sanitizer)
+        from nanobot.agent.tools.limiter import ResourceLimitingWrapper
+        self.tools = ToolRegistry(
+            sanitizer=self.sanitizer,
+            limiter=ResourceLimitingWrapper(),
+        )
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -275,6 +279,9 @@ class AgentLoop:
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
             restrict_to_workspace=self.restrict_to_workspace,
+            mode=getattr(self.exec_config, "mode", "allowlist"),
+            allowed_commands=list(getattr(self.exec_config, "allowed_commands", [])) or None,
+            output_limit_bytes=getattr(self.exec_config, "output_limit_bytes", 524_288),
         ))
 
         # Web tools
