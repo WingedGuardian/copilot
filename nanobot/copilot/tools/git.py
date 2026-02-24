@@ -18,7 +18,7 @@ class GitTool(Tool):
         self,
         default_repo: str | None = None,
         allow_clone: bool = False,
-        max_clone_size_mb: int = 100,
+        max_clone_size_mb: int = 50,
         clone_timeout: int = 120,
     ):
         self._default_repo = default_repo
