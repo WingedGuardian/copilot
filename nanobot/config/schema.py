@@ -241,10 +241,10 @@ class ResourceLimitConfig(BaseModel):
     """Global resource limits for all tools."""
     default_timeout: int = 60  # seconds
     default_output_limit: int = 50_000  # chars returned to LLM
-    max_file_read_bytes: int = 5_242_880  # 5MB
-    max_file_write_bytes: int = 1_048_576  # 1MB
+    max_file_read_bytes: int = 10_485_760  # 10MB
+    max_file_write_bytes: int = 2_097_152  # 2MB
     max_web_fetch_bytes: int = 10_485_760  # 10MB
-    max_clone_size_mb: int = 50
+    max_clone_size_mb: int = 100
     tool_timeouts: dict[str, int] = Field(default_factory=lambda: {
         "exec": 60, "git": 120, "web_fetch": 30, "web_search": 15,
     })

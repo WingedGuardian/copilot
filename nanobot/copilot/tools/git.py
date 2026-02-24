@@ -18,7 +18,7 @@ class GitTool(Tool):
         self,
         default_repo: str | None = None,
         allow_clone: bool = False,
-        max_clone_size_mb: int = 50,
+        max_clone_size_mb: int = 100,
         clone_timeout: int = 120,
     ):
         self._default_repo = default_repo
@@ -220,6 +220,8 @@ class GitTool(Tool):
             return "Error: URL required for clone"
 
         if not self._allow_clone:
+            from nanobot.agent.tools.limiter import log_guardrail_block
+            await log_guardrail_block("git", "clone_disabled", url[:60], "allow_clone=False")
             return "Error: git clone is disabled. Enable allow_clone in config."
 
         # Size pre-check for GitHub repos
@@ -263,6 +265,8 @@ class GitTool(Tool):
                     size_kb = r.json().get("size", 0)
                     size_mb = size_kb / 1024
                     if size_mb > self._max_clone_size_mb:
+                        from nanobot.agent.tools.limiter import log_guardrail_block
+                        await log_guardrail_block("git", "repo_too_large", f"{size_mb:.0f}MB", f"{self._max_clone_size_mb}MB")
                         return (
                             f"Error: Repository is {size_mb:.0f}MB, "
                             f"exceeds {self._max_clone_size_mb}MB limit"

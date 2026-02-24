@@ -84,6 +84,8 @@ class ExecTool(Tool):
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:
+            from nanobot.agent.tools.limiter import log_guardrail_block
+            await log_guardrail_block("exec", "command_blocked", command[:80], guard_error[:80])
             return guard_error
 
         try:

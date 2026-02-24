@@ -46,7 +46,7 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
 class ReadFileTool(Tool):
     """Tool to read file contents."""
 
-    def __init__(self, allowed_dir: Path | None = None, max_read_bytes: int = 5_242_880):
+    def __init__(self, allowed_dir: Path | None = None, max_read_bytes: int = 10_485_760):
         self._allowed_dir = allowed_dir
         self._max_read_bytes = max_read_bytes
 
@@ -81,6 +81,8 @@ class ReadFileTool(Tool):
 
             size = file_path.stat().st_size
             if size > self._max_read_bytes:
+                from nanobot.agent.tools.limiter import log_guardrail_block
+                await log_guardrail_block("read_file", "file_too_large", size, self._max_read_bytes)
                 return f"Error: File is {size:,} bytes, exceeds {self._max_read_bytes:,} byte limit"
 
             content = file_path.read_text(encoding="utf-8")
@@ -94,7 +96,7 @@ class ReadFileTool(Tool):
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
 
-    def __init__(self, allowed_dir: Path | None = None, max_write_bytes: int = 1_048_576):
+    def __init__(self, allowed_dir: Path | None = None, max_write_bytes: int = 2_097_152):
         self._allowed_dir = allowed_dir
         self._max_write_bytes = max_write_bytes
 
@@ -127,6 +129,8 @@ class WriteFileTool(Tool):
         try:
             content_size = len(content.encode("utf-8"))
             if content_size > self._max_write_bytes:
+                from nanobot.agent.tools.limiter import log_guardrail_block
+                await log_guardrail_block("write_file", "content_too_large", content_size, self._max_write_bytes)
                 return f"Error: Content is {content_size:,} bytes, exceeds {self._max_write_bytes:,} byte limit"
             file_path = _resolve_path(path, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +145,7 @@ class WriteFileTool(Tool):
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
 
-    def __init__(self, allowed_dir: Path | None = None, max_read_bytes: int = 5_242_880):
+    def __init__(self, allowed_dir: Path | None = None, max_read_bytes: int = 10_485_760):
         self._allowed_dir = allowed_dir
         self._max_read_bytes = max_read_bytes
 
@@ -182,6 +186,8 @@ class EditFileTool(Tool):
 
             size = file_path.stat().st_size
             if size > self._max_read_bytes:
+                from nanobot.agent.tools.limiter import log_guardrail_block
+                await log_guardrail_block("edit_file", "file_too_large", size, self._max_read_bytes)
                 return f"Error: File is {size:,} bytes, exceeds {self._max_read_bytes:,} byte limit"
 
             content = file_path.read_text(encoding="utf-8")

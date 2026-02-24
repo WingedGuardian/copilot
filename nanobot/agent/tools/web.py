@@ -213,6 +213,8 @@ class WebFetchTool(Tool):
                     # Check Content-Length header first
                     cl = r.headers.get("content-length")
                     if cl and int(cl) > self._max_response_bytes:
+                        from nanobot.agent.tools.limiter import log_guardrail_block
+                        await log_guardrail_block("web_fetch", "response_too_large", int(cl), self._max_response_bytes)
                         return json.dumps({"error": f"Response too large: {cl} bytes (limit {self._max_response_bytes})", "url": url})
 
                     # Stream with byte cap
