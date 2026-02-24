@@ -134,7 +134,8 @@ class SubagentManager:
 
         try:
             # Build subagent tools (no message tool, no spawn tool)
-            tools = ToolRegistry()
+            from nanobot.agent.tools.limiter import ResourceLimitingWrapper
+            tools = ToolRegistry(limiter=ResourceLimitingWrapper())
             allowed_dir = self.workspace if self.restrict_to_workspace else None
             tools.register(ReadFileTool(allowed_dir=allowed_dir))
             tools.register(WriteFileTool(allowed_dir=allowed_dir))
@@ -144,6 +145,9 @@ class SubagentManager:
                 working_dir=str(self.workspace),
                 timeout=self.exec_config.timeout,
                 restrict_to_workspace=self.restrict_to_workspace,
+                mode=getattr(self.exec_config, "mode", "allowlist"),
+                allowed_commands=list(getattr(self.exec_config, "allowed_commands", [])) or None,
+                output_limit_bytes=getattr(self.exec_config, "output_limit_bytes", 524_288),
             ))
             tools.register(WebSearchTool(api_key=self.brave_api_key))
             tools.register(WebFetchTool())
