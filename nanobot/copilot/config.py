@@ -71,6 +71,10 @@ class CopilotConfig(BaseModel):
     big_model: str = "anthropic/claude-sonnet-4-6"
 
     # ── Routing Plan ───────────────────────────────────────────────────
+    # Router deactivation flag.  When False (default), _make_provider()
+    # returns a plain LiteLLMProvider and all router machinery is bypassed.
+    routing_enabled: bool = False
+
     # LLM-generated, user-approved routing plan.  When set, the router
     # follows this plan instead of the default model.  Empty list = use default.
     default_conversation_model: str = "MiniMax-M2.5"

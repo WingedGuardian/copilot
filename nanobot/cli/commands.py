@@ -292,7 +292,7 @@ def _make_provider(config, cost_logger=None):
         provider_name=config.get_provider_name(),
     )
 
-    if not config.copilot.enabled or cost_logger is None:
+    if not config.copilot.enabled or cost_logger is None or not config.copilot.routing_enabled:
         return base_provider
 
     # --- Copilot routing ---
