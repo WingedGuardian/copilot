@@ -328,11 +328,20 @@ def _make_provider(config, cost_logger=None):
             _directs[name] = provider
     fallbacks: dict[str, LiteLLMProvider] = {**_gateways, **_directs}
 
+    # Build per-provider default models from config
+    _provider_models: dict[str, str] = {}
+    for name in type(config.providers).model_fields:
+        pcfg = getattr(config.providers, name)
+        dm = getattr(pcfg, 'default_model', None)
+        if dm:
+            _provider_models[name] = dm
+
     return SimpleFailoverProvider(
         primary=base_provider,
         fallbacks=fallbacks,
         cost_logger=cost_logger,
         primary_name=config.get_provider_name() or "primary",
+        provider_models=_provider_models,
     )
 
     # --- RouterProvider (deactivated — kept for reference) ---
@@ -921,7 +930,7 @@ def gateway(
                 lm_studio_url=config.providers.vllm.api_base or "http://192.168.50.100:1234",
                 qdrant_url=config.copilot.qdrant_url,
                 memory_manager=memory_manager,
-                router=provider if hasattr(provider, '_default_model') else None,
+                router=provider if hasattr(provider, 'last_decision') else None,
                 timezone_name=config.copilot.timezone,
                 copilot_config=config.copilot,
             )

@@ -23,13 +23,16 @@ class SimpleFailoverProvider(LLMProvider):
         cost_logger=None,
         *,
         primary_name: str = "primary",
+        provider_models: dict[str, str] | None = None,
     ):
         super().__init__()
         self.primary = primary
         self.fallbacks = fallbacks          # name → LiteLLMProvider
         self.cost_logger = cost_logger
         self.primary_name = primary_name
-        self.last_decision: str | None = None  # which provider served last call
+        self.provider_models = provider_models or {}  # name → configured default model
+        self.last_decision: str | None = None   # which provider served last call
+        self.last_model_used: str | None = None  # actual model that served last call
 
     async def chat(
         self,
@@ -60,7 +63,7 @@ class SimpleFailoverProvider(LLMProvider):
         for name, provider in self.fallbacks.items():
             attempts.append((name, provider, model))
 
-        last_error = None
+        errors: list[tuple[str, str]] = []  # (provider_name, error_message)
         t0 = time.monotonic()
         for provider_name, provider, use_model in attempts:
             try:
@@ -71,48 +74,71 @@ class SimpleFailoverProvider(LLMProvider):
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
+
+                # LiteLLMProvider swallows exceptions → finish_reason="error".
+                # Treat as failure and try next provider.
+                if response.finish_reason == "error":
+                    err_msg = (response.content or "Unknown error")[:200]
+                    errors.append((provider_name, err_msg))
+                    elapsed_ms = int((time.monotonic() - t0) * 1000)
+                    logger.warning(f"Provider {provider_name} returned error ({elapsed_ms}ms): {err_msg}")
+                    if self.cost_logger:
+                        try:
+                            await self.cost_logger.log_route(
+                                input_length=sum(len(str(m.get("content", ""))) for m in messages),
+                                routed_to=provider_name, provider=provider_name,
+                                model_used=use_model or provider.get_default_model(),
+                                route_reason="failover_attempt", success=False,
+                                latency_ms=elapsed_ms, failure_reason=err_msg,
+                            )
+                        except Exception:
+                            pass
+                    continue  # try next provider
+
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
                 self.last_decision = provider_name
-
-                # Log to routing_log for cost tracking
-                if self.cost_logger:
-                    try:
-                        await self.cost_logger.log_route(
-                            input_length=sum(len(str(m.get("content", ""))) for m in messages),
-                            routed_to=provider_name,
-                            provider=provider_name,
-                            model_used=response.model_used or use_model or provider.get_default_model(),
-                            route_reason="failover" if last_error else "primary",
-                            success=True,
-                            latency_ms=elapsed_ms,
-                        )
-                    except Exception:
-                        pass  # cost logging should never break the request
-
-                return response
-
-            except Exception as e:
-                last_error = e
-                elapsed_ms = int((time.monotonic() - t0) * 1000)
-                logger.warning(f"Provider {provider_name} failed ({elapsed_ms}ms): {e}")
+                self.last_model_used = response.model_used or use_model or provider.get_default_model()
 
                 if self.cost_logger:
                     try:
                         await self.cost_logger.log_route(
                             input_length=sum(len(str(m.get("content", ""))) for m in messages),
-                            routed_to=provider_name,
-                            provider=provider_name,
-                            model_used=use_model or provider.get_default_model(),
-                            route_reason="failover_attempt",
-                            success=False,
-                            latency_ms=elapsed_ms,
-                            failure_reason=str(e)[:200],
+                            routed_to=provider_name, provider=provider_name,
+                            model_used=self.last_model_used,
+                            route_reason="failover" if errors else "primary",
+                            success=True, latency_ms=elapsed_ms,
                         )
                     except Exception:
                         pass
 
-        # All providers failed
-        raise last_error or RuntimeError("All providers failed")
+                return response
+
+            except Exception as e:
+                err_msg = str(e)[:200]
+                errors.append((provider_name, err_msg))
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                logger.warning(f"Provider {provider_name} failed ({elapsed_ms}ms): {e}")
+                if self.cost_logger:
+                    try:
+                        await self.cost_logger.log_route(
+                            input_length=sum(len(str(m.get("content", ""))) for m in messages),
+                            routed_to=provider_name, provider=provider_name,
+                            model_used=use_model or provider.get_default_model(),
+                            route_reason="failover_attempt", success=False,
+                            latency_ms=elapsed_ms, failure_reason=err_msg,
+                        )
+                    except Exception:
+                        pass
+
+        # All providers failed — return diagnostic response (don't raise,
+        # so the agent loop can display the message to the user).
+        diagnostics = [f"  {name}: {err}" for name, err in errors]
+        return LLMResponse(
+            content=f"All {len(errors)} providers failed:\n" + "\n".join(diagnostics)
+                    + "\n\nCheck /status for provider health.",
+            finish_reason="error",
+            model_used="none",
+        )
 
     def check_use_override_timeout(
         self, metadata: dict, timeout_s: int
