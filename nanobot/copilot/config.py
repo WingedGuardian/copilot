@@ -70,17 +70,11 @@ class CopilotConfig(BaseModel):
     #   "google/gemini-2.0-pro"               — large context window
     big_model: str = "anthropic/claude-sonnet-4-6"
 
-    # ── Routing Plan ───────────────────────────────────────────────────
-    # Router deactivation flag.  When False (default), _make_provider()
-    # returns a plain LiteLLMProvider and all router machinery is bypassed.
-    routing_enabled: bool = False
-
-    # LLM-generated, user-approved routing plan.  When set, the router
-    # follows this plan instead of the default model.  Empty list = use default.
+    # ── Routing (RouterProvider deactivated — SimpleFailoverProvider active) ──
     default_conversation_model: str = "MiniMax-M2.5"
     escalation_model: str = "anthropic/claude-sonnet-4-6"
     routing_plan: list[dict] = Field(default_factory=list)
-    routing_plan_notify: bool = True  # inline failover notes (toggle off later)
+    routing_plan_notify: bool = True
 
     # ── Background Extraction ───────────────────────────────────────────
     # Runs after every exchange to extract facts/decisions/entities/sentiment.
