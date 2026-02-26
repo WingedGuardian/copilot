@@ -125,6 +125,7 @@ class MemoryManager:
             await get_alert_bus().alert("memory", "medium", f"FTS extraction storage: {fts_failures} item(s) failed", "fts_extraction")
 
         # Also upsert into SQLite structured items
+        tags = extractions.get("tags", [])
         for key in ("facts", "decisions", "entities"):
             for item in extractions.get(key, []):
                 category = {"facts": "fact", "decisions": "decision", "entities": "entity"}[key]
@@ -134,6 +135,7 @@ class MemoryManager:
                     value=item,
                     session_key=session_key,
                     source="extraction",
+                    tags=tags,
                 )
         return ids
 

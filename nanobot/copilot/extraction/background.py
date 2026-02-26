@@ -26,6 +26,7 @@ Return ONLY valid JSON matching this schema — no markdown, no explanation:
   "decisions": ["decisions made or agreed to"],
   "constraints": ["limitations, deadlines, requirements mentioned"],
   "entities": ["names, values, URLs, specific references"],
+  "tags": ["3-5 keyword tags for the main topics discussed"],
   "sentiment": "positive|negative|neutral|frustrated",
   "topic_shift": true or false,
   "suggested_topic": "new topic name if shifted, else null"
