@@ -566,77 +566,59 @@ class StatusAggregator:
             return []
 
     async def _check_cloud_models(self) -> list[ModelInfo]:
-        """Check configured model tiers and probe cloud provider health."""
+        """Check configured providers and probe health."""
         import httpx
 
         router = self._router
-        # Show plan-based routing info if available, otherwise default/escalation
-        if hasattr(router, '_routing_plan') and router._routing_plan:
-            tiers = []
-            for entry in router._routing_plan:
-                tiers.append((f"plan:{entry.get('provider', '?')}", entry.get("model", "?")))
-            tiers.append(("escalation", getattr(router, "_escalation_model", "?")))
-            tiers.append(("local", router._local_model))
-        else:
-            tiers = [
-                ("default", getattr(router, "_default_model", router._fast_model)),
-                ("escalation", getattr(router, "_escalation_model", router._big_model)),
-                ("local", router._local_model),
-            ]
+        provider_models = getattr(router, 'provider_models', {})
 
-        # Collect unique cloud provider base URLs to probe
-        provider_health: dict[str, bool | None] = {}
-        provider_latency: dict[str, int] = {}
+        # Build list of all providers to check: primary + fallbacks
+        all_providers: list[tuple[str, Any]] = []
+        if hasattr(router, 'primary_name'):
+            all_providers.append((router.primary_name, router.primary))
+            for name, prov in router.fallbacks.items():
+                all_providers.append((name, prov))
 
-        for name, provider in router._cloud.items():
-            if name in provider_health:
-                continue
-            base_url = getattr(provider, "api_base", "") or ""
-            if not base_url:
-                provider_health[name] = None
-                continue
-            # Probe /v1/models (works for OpenRouter, OpenAI-compatible APIs)
-            try:
-                start = time.time()
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    r = await client.get(
-                        f"{base_url.rstrip('/')}/models",
-                        headers={"Authorization": f"Bearer {getattr(provider, 'api_key', '') or ''}"},
-                    )
-                latency = int((time.time() - start) * 1000)
-                provider_health[name] = r.status_code == 200
-                provider_latency[name] = latency
-            except Exception:
-                provider_health[name] = False
-
-        # Also check local provider
-        if router._local:
-            local_base = getattr(router._local, "api_base", "") or self._lm_studio_url
-            try:
-                start = time.time()
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    r = await client.get(f"{local_base.rstrip('/')}/v1/models")
-                latency = int((time.time() - start) * 1000)
-                provider_health["local"] = r.status_code == 200
-                provider_latency["local"] = latency
-            except Exception:
-                provider_health["local"] = False
-
-        # Map tiers to health
-        first_cloud = next(iter(router._cloud), None) or "cloud"
         results = []
-        for tier, model in tiers:
-            if tier == "local":
-                healthy = provider_health.get("local")
-                latency = provider_latency.get("local", 0)
-                provider_name = "lm_studio"
-            else:
-                healthy = provider_health.get(first_cloud) if first_cloud else None
-                latency = provider_latency.get(first_cloud, 0) if first_cloud else 0
-                provider_name = first_cloud
+        for name, provider in all_providers:
+            model = provider_models.get(name, provider.get_default_model())
+            base_url = getattr(provider, "api_base", "") or ""
+
+            healthy: bool | None = None
+            latency = 0
+            if base_url:
+                try:
+                    start = time.time()
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        r = await client.get(
+                            f"{base_url.rstrip('/')}/models",
+                            headers={"Authorization": f"Bearer {getattr(provider, 'api_key', '') or ''}"},
+                        )
+                    latency = int((time.time() - start) * 1000)
+                    healthy = r.status_code == 200
+                except Exception:
+                    healthy = False
+
+            tier = "primary" if name == getattr(router, 'primary_name', '') else "fallback"
             results.append(ModelInfo(
-                tier=tier, model=model, provider=provider_name,
+                tier=tier, model=model, provider=name,
                 healthy=healthy, latency_ms=latency,
+            ))
+
+        # Also check local LM Studio
+        try:
+            start = time.time()
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{self._lm_studio_url}/v1/models")
+            latency = int((time.time() - start) * 1000)
+            results.append(ModelInfo(
+                tier="local", model="lm_studio", provider="lm_studio",
+                healthy=(r.status_code == 200), latency_ms=latency,
+            ))
+        except Exception:
+            results.append(ModelInfo(
+                tier="local", model="lm_studio", provider="lm_studio",
+                healthy=False,
             ))
 
         return results
@@ -716,49 +698,23 @@ class StatusAggregator:
         """Determine current routing mode from session metadata and router."""
         router = self._router
         meta = session_metadata or {}
-        first_cloud = next(iter(router._cloud), None) or ""
 
-        if meta.get("private_mode"):
-            return RoutingState(
-                mode="private", active_tier="local",
-                active_provider="lm_studio", active_model=router._local_model,
-            )
-
+        # /use override active
         force_provider = meta.get("force_provider")
         if force_provider:
-            tier = meta.get("force_tier", "big")
-            default_m = getattr(router, "_default_model", router._fast_model)
-            escalation_m = getattr(router, "_escalation_model", router._big_model)
-            model = meta.get("force_model") or (
-                default_m if tier == "fast" else escalation_m
-            )
+            model = meta.get("force_model") or router.get_default_model()
             return RoutingState(
-                mode="override", active_tier=tier,
+                mode="override", active_tier="big",
                 active_provider=force_provider, active_model=model,
                 override_detail=f"/use {force_provider}",
             )
 
         # Auto mode — show last decision if available
-        last = router.last_decision
-        if last:
-            winning = getattr(router, "_last_winning_provider", "")
-            is_emergency = winning.startswith("emergency:")
-            if winning:
-                clean_provider = winning.removeprefix("plan:").removeprefix("safety:")
-            else:
-                clean_provider = "lm_studio" if last.target == "local" else first_cloud
-            provider = clean_provider
-            if is_emergency:
-                # Emergency routing fired — show the actual fallback that was used
-                actual_provider = winning.removeprefix("emergency:")
-                return RoutingState(
-                    mode="emergency", active_tier=last.target,
-                    active_provider=actual_provider, active_model=last.model,
-                    override_detail="EMERGENCY FALLBACK (configured models unavailable)",
-                )
+        if router.last_decision:
+            model = getattr(router, 'last_model_used', None) or router.get_default_model()
             return RoutingState(
-                mode="auto", active_tier=last.target,
-                active_provider=provider, active_model=last.model,
+                mode="auto", active_tier="default",
+                active_provider=router.last_decision, active_model=model,
             )
 
         # No in-memory decision (e.g. after restart) — check routing_log DB
@@ -773,7 +729,7 @@ class StatusAggregator:
                     if row:
                         return RoutingState(
                             mode="auto", active_tier=row[0] or "",
-                            active_provider=row[1] or first_cloud,
+                            active_provider=row[1] or "",
                             active_model=row[2] or "",
                         )
             except Exception:

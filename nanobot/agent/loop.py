@@ -52,6 +52,11 @@ MODEL_ALIASES: dict[str, str] = {
     "flash": "google/gemini-2.5-flash",
     "deepseek": "deepseek/deepseek-chat",
     "r1": "deepseek/deepseek-r1",
+    "minimax": "MiniMax-M2.5",
+    "m25": "MiniMax-M2.5",
+    "kimi": "moonshotai/kimi-k2.5",
+    "llama": "meta-llama/llama-4-scout",
+    "glm": "THUDM/glm-5",
 }
 
 # Error response prefixes (used for is_error tagging)
@@ -500,76 +505,63 @@ class AgentLoop:
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="Weekly review started. Results will be delivered when complete.")
         elif cmd == "/use" or cmd == "/model" or cmd.startswith("/use ") or cmd.startswith("/model "):
-            parts = cmd.split(None, 2)  # /use provider [tier_or_model]
+            parts = cmd.split(None, 2)  # /use provider [model]
             args = parts[1:] if len(parts) > 1 else []
+            router = self.provider
+            # All known providers: primary + fallbacks
+            all_providers: dict[str, Any] = {}
+            if hasattr(router, 'primary_name'):
+                all_providers[router.primary_name] = router.primary
+                all_providers.update(router.fallbacks)
+            provider_models = getattr(router, 'provider_models', {})
+
             if not args:
-                router = self.provider
-                cloud = getattr(router, '_cloud', {})
-                provider_models = getattr(router, '_provider_models', {})
                 lines = ["Usage: /use <provider> [model] or /use auto", ""]
                 current = session.metadata.get("force_provider")
                 if current:
                     lines.append(f"Current: {current}")
                 lines.append("Available providers:")
-                for name in cloud:
+                for name in all_providers:
                     m = provider_models.get(name, "")
-                    tag = f" → {m}" if m else ""
+                    tag = f" -> {m}" if m else ""
                     marker = " (active)" if name == current else ""
                     lines.append(f"  {name}{tag}{marker}")
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                       content="\n".join(lines))
-            provider = args[0]
-            if provider == "auto":
+            provider_arg = args[0]
+            if provider_arg == "auto":
                 session.deactivate_use_override()
                 self.sessions.save(session)
-                router = self.provider
-                fast = getattr(router, '_fast_model', '?')
-                big = getattr(router, '_big_model', '?')
-                local = getattr(router, '_local_model', '?')
-                primary = next(iter(getattr(router, '_cloud', {})), 'cloud')
+                default_model = router.get_default_model() if hasattr(router, 'get_default_model') else '?'
+                primary = getattr(router, 'primary_name', 'primary')
+                fallback_names = ", ".join(getattr(router, 'fallbacks', {}).keys()) or "none"
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                      content=f"🐈 Switched to auto-routing.\n"
-                                              f"  fast: {primary}/{fast}\n"
-                                              f"  big: {primary}/{big}\n"
-                                              f"  local: {local}")
+                                      content=f"Switched to auto-routing.\n"
+                                              f"  default: {primary}/{default_model}\n"
+                                              f"  fallbacks: {fallback_names}")
             tier = "big"
             model = None
             if len(args) > 1:
-                if args[1] == "fast":
-                    tier = "fast"
-                else:
-                    raw = args[1]
-                    model = MODEL_ALIASES.get(raw.lower(), raw)
-                    if model == raw and "/" not in model:
-                        valid = ", ".join(sorted(MODEL_ALIASES.keys()))
-                        return OutboundMessage(
-                            channel=msg.channel, chat_id=msg.chat_id,
-                            content=f"Unknown model '{raw}'. Short names: {valid}\n"
-                                    f"Or use full ID like 'anthropic/claude-haiku-4-5'.",
-                        )
-            # Resolve the actual model that will be used
-            router = self.provider
-            provider_models = getattr(router, '_provider_models', {})
-            cloud = getattr(router, '_cloud', {})
-            if provider not in cloud:
-                known = ", ".join(sorted(cloud.keys())) or "none"
+                raw = args[1]
+                model = MODEL_ALIASES.get(raw.lower(), raw)
+                if model == raw and "/" not in model:
+                    valid = ", ".join(sorted(MODEL_ALIASES.keys()))
+                    return OutboundMessage(
+                        channel=msg.channel, chat_id=msg.chat_id,
+                        content=f"Unknown model '{raw}'. Short names: {valid}\n"
+                                f"Or use full ID like 'anthropic/claude-haiku-4-5'.",
+                    )
+            if provider_arg not in all_providers:
+                known = ", ".join(sorted(all_providers.keys())) or "none"
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                      content=f"Unknown provider '{provider}'. Available: {known}")
-            if not model and provider in provider_models:
-                model = provider_models[provider]
-            session.activate_use_override(provider, tier, model)
+                                      content=f"Unknown provider '{provider_arg}'. Available: {known}")
+            if not model:
+                model = provider_models.get(provider_arg) or router.get_default_model()
+            session.activate_use_override(provider_arg, tier, model)
             self.sessions.save(session)
-            # Show what model will actually be used
-            if model:
-                desc = model
-            elif provider in provider_models:
-                desc = provider_models[provider]
-            else:
-                fallback = getattr(router, '_fast_model', '?') if tier == "fast" else getattr(router, '_big_model', '?')
-                desc = f"{fallback} (no default_model set for {provider})"
             timeout_min = self._copilot_config.use_override_timeout // 60 if self._copilot_config else 30
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content=f"🐈 Routing to {provider} ({desc}). Auto-expires after {timeout_min}min idle. /use auto to revert.")
+                                  content=f"Routing to {provider_arg} ({model}). Auto-expires after {timeout_min}min idle. /use auto to revert.")
 
         # Consolidate memory before processing if session is too large
         if len(session.messages) > self.memory_window:
@@ -865,6 +857,17 @@ class AgentLoop:
                 from nanobot.copilot.alerting.bus import get_alert_bus
                 await get_alert_bus().alert("llm", "medium", f"LLM call timed out ({self._llm_timeout}s) in agent loop", "llm_timeout")
                 final_content = "I'm sorry, the response timed out. Please try again."
+                break
+            except Exception as exc:
+                logger.error(f"Provider error in agent loop: {exc}")
+                from nanobot.copilot.alerting.bus import get_alert_bus
+                await get_alert_bus().alert("llm", "high", f"Provider error: {str(exc)[:200]}", "provider_error")
+                final_content = "Something went wrong with the LLM provider. Check /status for details."
+                break
+
+            # All-providers-failed diagnostic from SimpleFailoverProvider
+            if response.finish_reason == "error":
+                final_content = response.content
                 break
 
             # Handle tool calls
