@@ -88,10 +88,12 @@ class MemoryManager:
         conversation_ts: float | None = None,
     ) -> list[str]:
         """Store extractions to Qdrant + FTS5 + SQLite structured items."""
+        tags = extractions.get("tags", [])
         ids = []
         try:
             ids = await self._episodic.store_extractions(
                 extractions, session_key, conversation_ts=conversation_ts,
+                tags=tags,
             )
         except Exception as e:
             logger.warning(f"Extraction storage failed: {e}")
@@ -125,7 +127,6 @@ class MemoryManager:
             await get_alert_bus().alert("memory", "medium", f"FTS extraction storage: {fts_failures} item(s) failed", "fts_extraction")
 
         # Also upsert into SQLite structured items
-        tags = extractions.get("tags", [])
         for key in ("facts", "decisions", "entities"):
             for item in extractions.get(key, []):
                 category = {"facts": "fact", "decisions": "decision", "entities": "entity"}[key]
@@ -207,8 +208,8 @@ class MemoryManager:
                                value = excluded.value,
                                confidence = MAX(confidence, excluded.confidence),
                                access_count = access_count + 1,
-                               tier = excluded.tier,
-                               tags = excluded.tags,
+                               tier = CASE WHEN excluded.tier = 'domain' THEN tier ELSE excluded.tier END,
+                               tags = CASE WHEN excluded.tags = '[]' THEN tags ELSE excluded.tags END,
                                updated_at = CURRENT_TIMESTAMP""",
                         (category, key, value, session_key, source, tier, tags_json, confidence),
                     )
@@ -220,8 +221,8 @@ class MemoryManager:
                                value = excluded.value,
                                confidence = MIN(confidence + 0.1, 1.0),
                                access_count = access_count + 1,
-                               tier = excluded.tier,
-                               tags = excluded.tags,
+                               tier = CASE WHEN excluded.tier = 'domain' THEN tier ELSE excluded.tier END,
+                               tags = CASE WHEN excluded.tags = '[]' THEN tags ELSE excluded.tags END,
                                updated_at = CURRENT_TIMESTAMP""",
                         (category, key, value, session_key, source, tier, tags_json),
                     )
