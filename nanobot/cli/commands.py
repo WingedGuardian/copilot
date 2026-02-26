@@ -292,23 +292,26 @@ def _make_provider(config, cost_logger=None):
         provider_name=config.get_provider_name(),
     )
 
-    if not config.copilot.enabled or cost_logger is None or not config.copilot.routing_enabled:
+    if not config.copilot.enabled or cost_logger is None:
         return base_provider
 
-    # --- Copilot routing ---
-    from nanobot.copilot.routing.router import RouterProvider
-
-    # Build cloud providers from ALL configured providers with API keys.
-    # Gateways (OpenRouter, AiHubMix) go first — they can route any model.
-    # Direct providers (OpenAI, Anthropic) follow as fallbacks.
+    # --- Copilot: simple failover across all configured providers ---
+    from nanobot.copilot.routing.simple_provider import SimpleFailoverProvider
     from nanobot.providers.registry import find_by_name as _find_by_name
+
+    # Build fallback providers from ALL configured providers with API keys.
+    # Gateways (OpenRouter, AiHubMix) go first — they can route any model.
+    # Direct providers (OpenAI, Anthropic) follow.
     _gateways: dict[str, LiteLLMProvider] = {}
     _directs: dict[str, LiteLLMProvider] = {}
     for name in type(config.providers).model_fields:
         if name in ("vllm", "custom"):
-            continue  # local / special
+            continue
         pcfg = getattr(config.providers, name)
         if not pcfg.api_key:
+            continue
+        # Skip the primary provider — it's already base_provider
+        if name == config.get_provider_name():
             continue
         spec = _find_by_name(name)
         api_base = pcfg.api_base or (spec.default_api_base if spec else None) or None
@@ -323,46 +326,55 @@ def _make_provider(config, cost_logger=None):
             _gateways[name] = provider
         else:
             _directs[name] = provider
-    cloud_providers: dict[str, LiteLLMProvider] = {**_gateways, **_directs}
+    fallbacks: dict[str, LiteLLMProvider] = {**_gateways, **_directs}
 
-    # Build per-provider default models from config
-    _provider_models: dict[str, str] = {}
-    for name in type(config.providers).model_fields:
-        pcfg = getattr(config.providers, name)
-        if pcfg.default_model:
-            _provider_models[name] = pcfg.default_model
-
-    # Local provider — always LM Studio via vllm config
-    vllm_cfg = config.providers.vllm
-    if vllm_cfg.api_key or vllm_cfg.api_base:
-        local_provider = LiteLLMProvider(
-            api_key=vllm_cfg.api_key or "lm-studio",
-            api_base=vllm_cfg.api_base,
-            default_model=config.copilot.local_model,
-            provider_name="vllm",
-        )
-    else:
-        # No local LLM configured — use base_provider as fallback
-        local_provider = base_provider
-
-    copilot = config.copilot
-    return RouterProvider(
-        local_provider=local_provider,
-        cloud_providers=cloud_providers,
+    return SimpleFailoverProvider(
+        primary=base_provider,
+        fallbacks=fallbacks,
         cost_logger=cost_logger,
-        local_model=copilot.local_model,
-        fast_model=copilot.fast_model,
-        big_model=copilot.big_model,
-        default_model=copilot.default_conversation_model,
-        escalation_model=copilot.escalation_model,
-        strongest_model=copilot.strongest_model,
-        emergency_cloud_model=copilot.emergency_cloud_model,
-        escalation_enabled=copilot.escalation_enabled,
-        escalation_marker=copilot.escalation_marker,
-        provider_models=_provider_models,
-        routing_plan=copilot.routing_plan,
-        notify_on_failover=copilot.routing_plan_notify,
+        primary_name=config.get_provider_name() or "primary",
     )
+
+    # --- RouterProvider (deactivated — kept for reference) ---
+    # from nanobot.copilot.routing.router import RouterProvider
+    #
+    # # Build per-provider default models from config
+    # _provider_models: dict[str, str] = {}
+    # for name in type(config.providers).model_fields:
+    #     pcfg = getattr(config.providers, name)
+    #     if pcfg.default_model:
+    #         _provider_models[name] = pcfg.default_model
+    #
+    # # Local provider — always LM Studio via vllm config
+    # vllm_cfg = config.providers.vllm
+    # if vllm_cfg.api_key or vllm_cfg.api_base:
+    #     local_provider = LiteLLMProvider(
+    #         api_key=vllm_cfg.api_key or "lm-studio",
+    #         api_base=vllm_cfg.api_base,
+    #         default_model=config.copilot.local_model,
+    #         provider_name="vllm",
+    #     )
+    # else:
+    #     local_provider = base_provider
+    #
+    # copilot = config.copilot
+    # return RouterProvider(
+    #     local_provider=local_provider,
+    #     cloud_providers=cloud_providers,
+    #     cost_logger=cost_logger,
+    #     local_model=copilot.local_model,
+    #     fast_model=copilot.fast_model,
+    #     big_model=copilot.big_model,
+    #     default_model=copilot.default_conversation_model,
+    #     escalation_model=copilot.escalation_model,
+    #     strongest_model=copilot.strongest_model,
+    #     emergency_cloud_model=copilot.emergency_cloud_model,
+    #     escalation_enabled=copilot.escalation_enabled,
+    #     escalation_marker=copilot.escalation_marker,
+    #     provider_models=_provider_models,
+    #     routing_plan=copilot.routing_plan,
+    #     notify_on_failover=copilot.routing_plan_notify,
+    # )
 
 
 def _register_copilot_tools(agent, config):
