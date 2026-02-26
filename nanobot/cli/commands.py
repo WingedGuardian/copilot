@@ -535,6 +535,7 @@ def gateway(
             migrate_alert_resolution,
             migrate_alerts,
             migrate_heartbeat_events,
+            migrate_memory_tiers,
             migrate_navigator,
             migrate_recon,
             migrate_routing_preferences,
@@ -555,6 +556,7 @@ def gateway(
         _aio.run(migrate_webui(db_path))
         _aio.run(migrate_task_pause(db_path))
         _aio.run(migrate_recon(db_path))
+        _aio.run(migrate_memory_tiers(db_path))
         cost_logger = CostLogger(db_path)
         console.print("[green]✓[/green] Copilot enabled (routing + cost tracking)")
         # Normalize monitor_chat_id for WhatsApp (must be JID format)
