@@ -36,6 +36,21 @@ def test_extraction_empty_lists():
     assert result.entities == []
 
 
+def test_extraction_result_has_tags():
+    """ExtractionResult includes tags field."""
+    result = ExtractionResult(
+        facts=["hiccups are caused by diaphragm spasms"],
+        tags=["hiccups", "diaphragm", "medical"],
+    )
+    assert result.tags == ["hiccups", "diaphragm", "medical"]
+
+
+def test_extraction_result_tags_default_empty():
+    """Tags default to empty list."""
+    result = ExtractionResult()
+    assert result.tags == []
+
+
 def test_sentiment_values():
     """Valid sentiment values are accepted."""
     valid_sentiments = ["positive", "negative", "neutral", "frustrated"]

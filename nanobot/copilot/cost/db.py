@@ -683,6 +683,27 @@ async def migrate_recon(db_path: str | Path) -> None:
     logger.info(f"Recon migration complete in {db_path}")
 
 
+async def migrate_memory_tiers(db_path: str | Path) -> None:
+    """Add tier and tags columns to memory_items.
+
+    Safe to call repeatedly.
+    """
+    db_path = Path(db_path)
+    async with aiosqlite.connect(str(db_path)) as db:
+        for col, default in [
+            ("tier TEXT", "'domain'"),
+            ("tags TEXT", "'[]'"),
+        ]:
+            try:
+                await db.execute(
+                    f"ALTER TABLE memory_items ADD COLUMN {col} DEFAULT {default}"
+                )
+            except Exception:
+                pass  # Column already exists
+        await db.commit()
+    logger.info(f"Memory tiers migration complete in {db_path}")
+
+
 async def log_llm_trace(
     db_path: str | Path,
     *,

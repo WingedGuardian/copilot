@@ -10,6 +10,7 @@ class ExtractionResult(BaseModel):
     decisions: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     sentiment: str = "neutral"  # positive, negative, neutral, frustrated
     topic_shift: bool = False
     suggested_topic: str | None = None
