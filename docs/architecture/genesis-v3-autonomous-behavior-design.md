@@ -91,6 +91,18 @@ The Awareness Loop is pure perception — it collects signals and decides which 
 - Check time-since-last-reflection at each depth level
 - Apply calendar floor/ceiling schedule (see below)
 - When thresholds crossed → trigger Reflection Engine at appropriate depth
+- Process escalation flags from previous Reflection Engine runs (see Depth Escalation Protocol below)
+
+### Depth Escalation Protocol
+
+The Awareness Loop is the SOLE authority that invokes the Reflection Engine. But Reflection Engine runs can flag that a deeper pass is warranted (e.g., Micro discovers a pattern that needs Light-depth analysis). The protocol:
+
+1. Reflection Engine sets an **escalation flag** with target depth and reason (stored in extension state, not MCP)
+2. Awareness Loop checks escalation flags on its NEXT tick (max 5-minute delay)
+3. If flag is set and target depth isn't on cooldown → trigger that depth
+4. **Critical escalation override:** If the Reflection Engine flags `critical=true` (e.g., cascading failure pattern), the Awareness Loop runs an immediate out-of-cycle tick. This is the ONLY case where the 5-minute interval is bypassed.
+
+**Why this matters:** Without this protocol, either the Awareness Loop is the single coordinator (but can't respond to escalations faster than 5 minutes) or the Reflection Engine can self-trigger (but then you have two scheduling authorities). This gives clean ownership with a safety valve.
 
 ### Hybrid Scheduling: Event-Driven + Calendar Guardrails
 
@@ -146,7 +158,8 @@ Events set the tempo, calendar sets the minimum BPM.
 - MANAGER role (weekly cadence): architecture review, memory quality, recon triage, cost analysis
 - DIRECTOR role (monthly cadence): audits weekly findings, adjusts budgets, strategic assessment
 - **Can modify system parameters:** adjust Awareness Loop thresholds, Reflection Engine drive weights, outreach preferences
-- Output: strategic adjustments, configuration changes, high-level observations
+- **Capability gap review:** Reviews accumulated capability gaps since last Strategic. For each: (1) How many times was this gap hit? (2) What would it take to close it (new tool, MCP integration, skill)? (3) Is the investment justified by frequency and user impact? Proposes capability acquisitions for user approval (L5+ autonomy).
+- Output: strategic adjustments, configuration changes, high-level observations, capability acquisition proposals
 
 Strategic reflections track an internal counter. Every Strategic reflection runs MANAGER-scope work. Every 4th Strategic reflection (or when >28 days since last DIRECTOR pass) also runs DIRECTOR-scope work. This gives roughly weekly MANAGER and monthly DIRECTOR cadence while keeping them in a single depth level.
 
@@ -177,6 +190,8 @@ Weights are initial-configured but adjusted by the Self-Learning Loop based on f
 
 **Bounds:** No single drive may drop below 0.10 or rise above 0.50. This prevents any drive from being effectively silenced or from dominating all reflection. Initial weights: preservation 0.35, curiosity 0.25, cooperation 0.25, competence 0.15.
 
+**Normalization:** Drive weights are **independent sensitivity multipliers**, NOT a normalized budget that must sum to 1.0. "Preservation at 0.45" means health signals weigh 0.45x in reflection focus. This can coexist with "cooperation at 0.40" without conflict. If drives were normalized (zero-sum), raising one would necessarily lower others — preventing the system from responding to "I need more preservation AND more cooperation" simultaneously. The initial values happen to sum to 1.0 but this is coincidental, not a constraint.
+
 ---
 
 ## Layer 3: Self-Learning Loop
@@ -188,8 +203,13 @@ Weights are initial-configured but adjusted by the Self-Learning Loop based on f
 ### After Every Interaction
 
 1. **Task retrospective:** What was attempted? What succeeded/failed? What was surprising? → store in memory-mcp (episodic)
-2. **Lessons extraction:** Any reusable procedures learned? → store in memory-mcp (procedural)
-3. **Prediction error logging:** "Expected X, got Y" → used by Reflection Engine to calibrate future expectations
+2. **Root-cause classification:** Categorize the outcome to route feedback correctly:
+   - `approach_failure` — Genesis tried an approach that didn't work. Feeds procedural memory adjustment (update procedure confidence, record failure mode).
+   - `capability_gap` — Genesis lacked a tool, integration, or skill needed for the task. Does NOT penalize procedural memory. Logged to a capability gap accumulator for Strategic reflection review (see Capability Expansion in Loop Taxonomy).
+   - `external_blocker` — Something outside Genesis's control blocked the task (user decision needed, API down, permission denied). Categorized further: (a) user-rectifiable (surface to user as a blocker), (b) current technology limitation that may become feasible later (parked as a future capability gap with a `revisit_after` date), (c) permanent constraint (logged, no action).
+   - `success` — Task completed. Feeds procedural memory confidence increase.
+3. **Lessons extraction:** Any reusable procedures learned? → store in memory-mcp (procedural). Only `approach_failure` and `success` outcomes update existing procedure confidence. `capability_gap` and `external_blocker` do not — the system shouldn't "learn" that it's bad at tasks it simply can't do yet.
+4. **Prediction error logging:** "Expected X, got Y" → used by Reflection Engine to calibrate future expectations
 
 ### After Every Outreach Event
 
@@ -673,6 +693,8 @@ Claude SDK sessions have their own deep context (file-level understanding of a c
 
 **The handshake:** Genesis owns the persistent layer. Claude SDK owns the deep-context layer for the duration of a task. Before invoking Claude SDK, Genesis writes a dynamic CLAUDE.md populated with relevant Genesis memories (past retrospectives, known patterns, procedural memory about this codebase). After the session, Genesis extracts learnings back into memory-mcp.
 
+**Per-task isolation:** Agent Zero can spawn concurrent subordinates. If two tasks both invoke Claude SDK, their CLAUDE.md contexts must be isolated — otherwise the second write overwrites the first and the first session reads wrong context. Implementation: per-task CLAUDE.md files (e.g., `CLAUDE-{task_id}.md`) or per-sub-agent working directories. The handshake cycle (write → invoke → extract) is per-task, not global.
+
 **What doesn't cross into Claude SDK by default:** User model data, salience weights, outreach preferences, system health data. Claude SDK is a specialist tool — it needs task context, not cognitive system state. Exception: if the task itself involves these systems (e.g., "fix the outreach timing"), relevant data is included in the dynamic CLAUDE.md.
 
 ---
@@ -748,6 +770,8 @@ At L6, the system can observe that its own learning is working or not:
 - "The Strategic reflection is generating useful findings but they're not influencing my Light reflections at all. Proposing: add a step to Light reflections that checks for pending Strategic recommendations before completing."
 
 These are proposals — concrete, evidence-based, with a stated rationale — surfaced via outreach for user review. The user can approve, reject, or modify. Over time, if proposals are consistently approved, some bounded class of them (e.g., ±threshold adjustments) might become auto-approved. But never the structural ones.
+
+**Measuring learning value:** The meta-learning loop must measure **downstream utility**, not output volume. "Did this reflection produce observations?" is the wrong metric — it optimizes for busywork. The right metric: "Were the outputs of this reflection USED? Did an observation get retrieved by a subsequent reflection or task? Did an outreach item get acted on? Did a configuration change produce measurably different behavior?" Observations that accumulate without being retrieved or acted upon are evidence of waste, regardless of quantity. Track observation utility (retrieved, influenced a decision, acted on) not just creation count.
 
 ---
 
@@ -933,13 +957,271 @@ A per-depth boolean resets after each reflection: "Has this depth fired within i
 
 ---
 
+## Loop Taxonomy: Complete Feedback Cycle Inventory
+
+This section maps every feedback cycle in the Genesis v3 architecture — autonomous processes, integrated operational cycles, calibration feedback loops, and emergent spirals that arise from their interaction. The taxonomy serves two purposes: (1) a mental model for reasoning about how the system improves over time, and (2) a checklist ensuring no feedback cycle falls through the cracks during implementation.
+
+### How to Read This Map
+
+Loops are organized by **what drives them**, not by implementation type. Each tier depends on the tier below it:
+
+- **Tier 0** — The metronome. Ticks autonomously. Everything else is downstream.
+- **Tier 1** — The cognitive engines. Triggered by Tier 0.
+- **Tier 2** — Operational cycles. Driven by events, user actions, or Tier 1.
+- **Tier 3** — Calibration loops. Feedback cycles embedded in Tiers 1-2 that tune the system.
+- **Tier 4** — Emergent spirals. No dedicated code — they arise from the interaction of everything above.
+
+**Tiers 0-2 are what the system DOES. Tiers 3-4 are how the system IMPROVES at what it does.** Most AI systems only have Tiers 0-2. The calibration and emergent layers are what make Genesis a learning system rather than just an executing system.
+
+```
+Tier 4 (Emergent)     ┌─────────────────────────────────────────────┐
+                      │  User Model    Identity    Meta-Learning     │
+                      │  Deepening     Evolution   Loop              │
+                      │  Spiral        Spiral      ("learn to learn")│
+                      │                                              │
+                      │  Capability                                  │
+                      │  Expansion                                   │
+                      └──────────────────┬──────────────────────────┘
+                                         │ emerge from
+Tier 3 (Calibration)  ┌──────────────────┴──────────────────────────┐
+                      │  Salience      Drive Weight   Signal Weight   │
+                      │  Learning      Loop           Adaptation      │
+                      │                                              │
+                      │  Autonomy      Procedural                    │
+                      │  Progression   Memory Loop                   │
+                      └──────────────────┬──────────────────────────┘
+                                         │ tune
+Tier 2 (Operational)  ┌──────────────────┴──────────────────────────┐
+                      │  Memory         Task          Recon           │
+                      │  Store/Recall   Execution     Gathering       │
+                      │  Cycle          Cycle         Cycle           │
+                      │                                              │
+                      │  CLAUDE.md Handshake Cycle                   │
+                      └──────────────────┬──────────────────────────┘
+                                         │ driven by
+Tier 1 (Cognitive)    ┌──────────────────┴──────────────────────────┐
+                      │  Reflection Engine    Self-Learning Loop      │
+                      │  (Micro→Light→        (Dopaminergic —         │
+                      │   Deep→Strategic)      after interactions)    │
+                      └──────────────────┬──────────────────────────┘
+                                         │ triggered by
+Tier 0 (Foundation)   ┌──────────────────┴──────────────────────────┐
+                      │           AWARENESS LOOP                     │
+                      │      5min tick, programmatic, zero LLM       │
+                      └──────────────────────────────────────────────┘
+```
+
+### Tier 0: The Metronome
+
+**Loop 1: Awareness Loop** — 5-minute tick, programmatic, zero LLM cost.
+
+The metronome. Everything else either IS this loop, is triggered BY this loop, or feeds data BACK to this loop. Cycle: collect signals → compute composite urgency scores per depth → compare against thresholds → trigger Reflection Engine (or don't) → process escalation flags → wait 5 minutes → repeat.
+
+What it tunes: nothing. It's pure perception. It fires and forgets.
+
+*Detailed design: see Layer 1: Awareness Loop section above.*
+
+### Tier 1: The Cognitive Engines
+
+**Loop 2: Reflection Engine** — triggered by Awareness Loop, adaptive depth.
+
+Where cognition happens. Cycle: triggered at a depth → assemble context (signals, memory, user model) → reason about what matters → produce observations, outreach, configuration changes → write outputs to memory/outreach → done until next trigger.
+
+This is NOT a fixed-interval loop. Its frequency is emergent from signal urgency + time multipliers. Could fire 4 times in a busy hour or once in a quiet day. It also HOSTS the inline prompt patterns (salience eval, user model synthesis, governance, drive weighting) that feed the calibration loops — but the Reflection Engine itself doesn't tune parameters. It reads them.
+
+*Detailed design: see Layer 2: Reflection Engine section above.*
+
+**Loop 3: Self-Learning Loop** — event-driven, fires after interactions and outreach events.
+
+The "dopaminergic system." Cycle: interaction completes → task retrospective with root-cause classification → lessons extracted → prediction errors logged → drive weights adjusted → salience model updated → procedural memory updated → capability gaps accumulated.
+
+This is the ONLY loop that writes to calibration parameters. The Reflection Engine reads them; the Self-Learning Loop writes them. This clean separation prevents conflicting writes.
+
+*Detailed design: see Layer 3: Self-Learning Loop section above.*
+
+### Tier 2: The Operational Cycles
+
+**Loop 4: Memory Store/Recall Cycle** — integrated into every conversation turn.
+
+Cycle: message arrives → proactive recall injects relevant context → core facts loaded → response generated → exchange stored → facts/entities extracted → new memories linked to related existing memories (lightweight A-MEM pass).
+
+Highest-frequency loop in the system (every conversation turn). Invisible to the user. This is what gives the system continuity across sessions.
+
+**Loop 5: Task Execution Cycle** — on-demand, per user request.
+
+Cycle: user request → planning pass (retrieve procedural memory) → spawn sub-agents → governance check at each capability boundary → quality gate per sub-agent → retry on failure (max 2) → deliver result → retrospective with root-cause classification → procedural memory extraction.
+
+Each execution is a single pass, not a recurring loop. But across many executions, the retrospective → procedural memory → future planning chain creates a feedback cycle that spans tasks.
+
+*Detailed design: see Task Execution Architecture section above.*
+
+**Loop 6: Recon Gathering Cycle** — self-scheduled (recon-mcp manages its own cron).
+
+Cycle: scan configured sources on schedule → store findings → push high-priority to Awareness Loop → low-priority accumulates → triage during Deep/Strategic reflection → acted-on findings feed future source prioritization.
+
+The ONLY operational loop with its own internal scheduler, independent from the Awareness Loop. It pushes signals TO the Awareness Loop rather than being triggered BY it. Potential concurrent access during Deep reflection triage is handled by recon-mcp being the single writer; the Reflection Engine is a reader.
+
+*Detailed design: see recon-mcp in 4 MCP Servers section above.*
+
+**Loop 7: CLAUDE.md Handshake Cycle** — per Claude SDK invocation.
+
+Cycle: Genesis recalls relevant memories → writes per-task dynamic CLAUDE.md → invokes Claude SDK → Claude SDK works with full persistent context → session completes → Genesis extracts learnings back into memory-mcp → next invocation's CLAUDE.md is richer.
+
+The cross-engine learning bridge. Without it, Claude SDK sessions are stateless tools. With it, each invocation benefits from everything every previous invocation learned. Per-task isolation required for concurrent sub-agents (see Memory Separation section above).
+
+### Tier 3: The Calibration Loops
+
+These are not autonomous processes. They are **feedback cycles embedded within Tiers 1-2**, driven primarily by the Self-Learning Loop (Loop 3). Each follows the pattern: act → observe outcome → adjust parameter → future actions are different.
+
+**Loop 8: Salience Learning** — tunes the world model that generates salience scores.
+
+Cycle: world model predicts engagement for a signal → Reflection Engine uses prediction to decide outreach → outreach delivered → user engages or ignores → Self-Learning Loop computes prediction error → world model updated → future predictions are more accurate.
+
+Timescale: days to weeks. Needs ~20-30 data points per topic category before calibration is meaningful. Thresholds can't drop below a noise floor (prevents spam) or rise above a ceiling (prevents going silent).
+
+**Design note:** This loop merges what were originally two separate concepts — engagement calibration (adjusting thresholds) and world model refinement (improving the prediction model). They were merged because separating them creates a double-adjustment problem: if the prediction model gets more pessimistic AND the threshold rises independently, the system over-corrects and permanently suppresses certain topic types. The learning happens in the prediction model (world model); the threshold is fixed or very slowly adjusted at Strategic depth.
+
+**Loop 9: Drive Weight Loop** — tunes the four drives (curiosity, competence, cooperation, preservation).
+
+Cycle: drives shape Reflection Engine focus → actions taken → outcomes tracked → positive outcomes on cooperation-driven actions → cooperation sensitivity rises → Reflection Engine prioritizes cooperation signals → more cooperation actions.
+
+Timescale: weeks. Slow-moving by design. Independent sensitivity multipliers, not a normalized budget (see Drive Weighting clarification in Reflection Engine section).
+
+**Loop 10: Signal Weight Adaptation** — tunes Awareness Loop signal weights.
+
+Cycle: signal X triggers reflection → reflection produces value (or doesn't) → Self-Learning Loop adjusts signal X's weight → signal X is more/less likely to trigger future reflections.
+
+Timescale: days. Faster than drive weights because it's more granular. Strategic reflection can set temporary overrides ("raise error weight this week because we're deploying") that decay after the stated period.
+
+**Loop 11: Autonomy Progression** — tunes per-category autonomy levels (L1-L7).
+
+Cycle: action at current autonomy level → outcome (success/correction/failure) → evidence accumulates → N successes without correction → propose level increase → user explicitly approves → autonomy rises → more actions taken autonomously.
+
+Regression: 2 corrections → drop one level. 1 harmful action → full reset. Self-detected systematic error → self-proposed regression. Silence ≠ approval — system periodically asks for explicit confirmation.
+
+Timescale: weeks to months. Slowest calibration loop, by design.
+
+*Detailed design: see Self-Evolving Learning: The Autonomy Hierarchy section above.*
+
+**Loop 12: Procedural Memory Loop** — tunes "how to do things."
+
+Cycle: novel approach tried → outcome with root-cause classification → if `success` or `approach_failure`: procedure extracted or updated → future similar task retrieves procedure → procedure used/adapted → outcome updates confidence → N failures → flagged for deprecation → Deep reflection reviews.
+
+Dual-level: stores both specific steps AND underlying principle. Steps decay; principles persist. Procedures are always advisory context, never imperative instructions.
+
+`capability_gap` and `external_blocker` outcomes do NOT feed into procedural memory adjustment — the system shouldn't "learn" that it's bad at tasks it simply can't do yet.
+
+*Detailed design: see Procedural Memory Design section above.*
+
+### Tier 4: The Emergent Spirals
+
+These have no dedicated code. They arise from the interaction of the loops above. Calling them "spirals" rather than "loops" because they don't return to the same starting point — they compound.
+
+**Spiral 13: User Model Deepening**
+
+Powered by: Memory Store/Recall (4) + Salience Learning (8) + Reflection Engine user model synthesis.
+
+Motion: interactions → user model synthesis → richer model → better salience evaluation → better outreach → user engages more meaningfully → richer interaction data → even richer model.
+
+Timescale: Month 1 = shallow profile. Month 3 = calibrated. Month 6+ = anticipatory. Diminishing returns after ~6 months of active interaction.
+
+**Spiral 14: Identity Evolution**
+
+Powered by: Reflection Engine observations + Self-Learning Loop + user approval.
+
+Motion: behavior produces observations → patterns accumulate → Deep/Strategic reflection proposes SOUL.md changes → user approves/rejects/modifies → identity files change → LLM reads different identity context → behavior shifts → new observations.
+
+Timescale: months. Slowest spiral. Always requires user's hand on the steering wheel (L7 — never autonomous). This is the spiral that determines what KIND of system Genesis becomes. Everything else determines how well it performs; this determines what it IS.
+
+**Spiral 15: Meta-Learning ("Learning how to learn")**
+
+Powered by: Self-Learning Loop (3) observing its OWN effectiveness.
+
+Motion: learning system produces calibration changes → changes produce outcomes → outcomes are measured by downstream utility (not output volume) → Self-Learning Loop notices effectiveness drift → proposes adjustment to learning parameters (trigger thresholds, damping factors, review structure) → user approves → learning system changes → different calibrations → different outcomes.
+
+Timescale: months. Always user-approved for structural changes. Bounded self-adjustment (±20% on parameters) possible at L6.
+
+Why this matters: without this, every other calibration loop has a fixed learning rate. With this, the learning rates themselves are learned.
+
+*Detailed design: see "What 'Learns HOW to Learn' Actually Means in Practice" in the Autonomy Hierarchy section above.*
+
+**Spiral 16: Capability Expansion**
+
+Powered by: Task Execution Cycle (5) + Self-Learning Loop root-cause classification + Strategic reflection.
+
+Motion: task attempted → capability gap discovered (root-cause = `capability_gap` or `external_blocker` with future feasibility) → gap logged to accumulator → Strategic reflection reviews accumulated gaps → evaluates ROI: "How many times was this gap hit? What would it take to close it? Is the investment justified?" → proposes capability acquisition (new tool, MCP integration, skill) → user approves → capability added → future tasks succeed → new gaps discovered at the frontier.
+
+`external_blocker` outcomes with `revisit_after` dates are re-evaluated during Strategic reflection: "Has the technology landscape changed? Is this now feasible?" Blockers that become feasible are promoted to capability gaps.
+
+Autonomy: L5 for proposing acquisitions, L6+ for self-acquiring (e.g., installing a new tool). User always approves new external integrations.
+
+Why this matters: without this, the system gets better at what it already CAN do but never expands WHAT it can do. This is what prevents capability plateaus.
+
+### Loop Interaction Map
+
+How the loops feed each other:
+
+```
+                    ┌─── Loop 1: Awareness Loop ───┐
+                    │         (5min tick)            │
+                    │    collects signals from:      │
+                    │    • Loop 4 (memory backlog)   │
+                    │    • Loop 6 (recon findings)   │
+                    │    • Loop 8 (engagement data)  │
+                    │    • health-mcp                │
+                    └──────────┬────────────────────┘
+                               │ triggers
+                    ┌──────────▼────────────────────┐
+                    │ Loop 2: Reflection Engine      │
+                    │  reads from:                   │
+                    │  • Loop 9 (drive weights)      │
+                    │  • Loop 13 (user model)        │
+                    │  • Loop 12 (procedures)        │
+                    │  • Loop 11 (autonomy levels)   │
+                    │  writes to:                    │
+                    │  • Observations (memory-mcp)   │
+                    │  • Outreach queue              │
+                    │  • Loop 14 (evolution proposals)│
+                    │  • Escalation flags (Loop 1)   │
+                    └──────────┬────────────────────┘
+                               │ feeds
+                    ┌──────────▼────────────────────┐
+                    │ Loop 3: Self-Learning Loop     │
+                    │  THE KEYSTONE — sole writer to:│
+                    │  • Loop 8 (salience model)     │
+                    │  • Loop 9 (drive weights)      │
+                    │  • Loop 10 (signal weights)    │
+                    │  • Loop 11 (autonomy evidence) │
+                    │  • Loop 12 (procedures)        │
+                    │  • Spiral 16 (capability gaps)  │
+                    └───────────────────────────────┘
+```
+
+The Self-Learning Loop is the keystone. Remove it and Tiers 0-2 still work — the system perceives, thinks, and acts. But nothing improves. The system is frozen at its initial calibration forever.
+
+### Design Caveats
+
+**Salience learning is a single adjustment, not two.** Engagement calibration and world model refinement share one parameter space. The learning happens in the world model (prediction accuracy); thresholds are fixed or adjusted only at Strategic depth. Separate adjustment creates oscillation through double-punishment of topics.
+
+**Meta-learning measures downstream utility, not output.** "Did this reflection produce observations?" is the wrong metric. The right metric: "Were the outputs USED? Retrieved by a subsequent process? Acted on by the user?" Volume of observations is not evidence of value.
+
+**Root-cause classification prevents false learning.** `capability_gap` and `external_blocker` outcomes bypass procedural memory adjustment. Without this distinction, the system "learns" it's bad at tasks it simply lacks tools for, creating a negative prior that persists even after the capability is added.
+
+**External blockers have a lifecycle.** They aren't dead ends. Classification: (a) user-rectifiable — surface as blocker via outreach; (b) future capability gap — parked with `revisit_after` date, re-evaluated during Strategic reflection as technology landscape changes; (c) permanent constraint — logged and accepted.
+
+**Depth escalation preserves single-coordinator authority.** The Reflection Engine can flag that deeper analysis is needed, but the Awareness Loop is ALWAYS the one that invokes it. Critical escalations get an immediate out-of-cycle tick; everything else waits for the next 5-minute tick. No self-triggering.
+
+**Per-task CLAUDE.md isolation.** Concurrent sub-agents each get their own CLAUDE.md context to prevent overwrite races. The handshake cycle is per-task, not global.
+
+---
+
 ## Open Design Questions (For Future Implementation Planning)
 
 1. **Procedural memory confidence decay:** How does confidence decay without creating amnesia? Deferred — known to be complex, needs its own design session.
 
 2. **User model persistence format:** Lean toward: structured JSON (machine-queryable) as the source of truth, with a periodically-regenerated human-readable summary document (USER_MODEL.md equivalent) for transparency.
 
-3. **Drive weight initialization:** DECIDED — Initial weights: preservation 0.35, curiosity 0.25, cooperation 0.25, competence 0.15. Bounds: no drive below 0.10 or above 0.50. See Drive Weighting section.
+3. **Drive weight initialization:** DECIDED — Initial weights: preservation 0.35, curiosity 0.25, cooperation 0.25, competence 0.15. Bounds: no drive below 0.10 or above 0.50. Weights are independent sensitivity multipliers, NOT normalized (sum-to-1 is coincidental). See Drive Weighting section.
 
 4. ~~**Per-channel engagement inference:**~~ DECIDED — Promoted to design decision. See "Engagement Signal Heuristics (Per-Channel)" in the Self-Learning Loop section.
 
@@ -952,3 +1234,9 @@ A per-depth boolean resets after each reflection: "Has this depth fired within i
 8. **Activation-based memory retrieval:** ACT-R's activation model (recency + frequency + connectivity) vs. pure embedding similarity. Explore hybrid during implementation — embedding for semantic match, activation for retrieval priority.
 
 9. **Memory linking at storage time:** A-MEM's approach of linking new memories to related existing ones at write time (not just during dream cycle cleanup). Lightweight pass on every memory store — feasibility and cost to be validated during implementation.
+
+10. **Capability gap accumulator schema:** What's the minimal schema for tracking capability gaps? Needs: task context, gap description, frequency count, first_seen/last_seen, feasibility assessment, `revisit_after` date for external blockers. Where does it live — memory-mcp as a memory type, or a dedicated SQLite table?
+
+11. **Relationship rhythm loop (post-v3):** Dynamic interaction rhythm matching — "user is less responsive on weekends" → shift outreach timing. "User has been quiet for 3 days" → contextual check-in. Static quiet-hours config is v3; dynamic rhythm learning is deferred to post-v3.
+
+12. **Observation utility tracking:** How to measure whether observations produced by the Reflection Engine are subsequently USED (retrieved, influenced a decision, acted upon). Needed for meta-learning loop (Spiral 15) to measure downstream utility rather than output volume. Possible: tag observations on creation, increment a `retrieved_count` on recall, track if retrieval led to action.
