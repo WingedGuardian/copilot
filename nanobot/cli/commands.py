@@ -943,7 +943,11 @@ def gateway(
 
             from nanobot.copilot.tools.use_model import UseModelTool
             _timeout_min = (config.copilot.use_override_timeout or 1800) // 60
-            agent.tools.register(UseModelTool(session_manager, timeout_minutes=_timeout_min))
+            _configured: set[str] = set()
+            if hasattr(provider, 'primary_name'):
+                _configured.add(provider.primary_name)
+                _configured.update(provider.fallbacks.keys())
+            agent.tools.register(UseModelTool(session_manager, timeout_minutes=_timeout_min, configured_providers=_configured))
             console.print("[green]v[/green] Model override tool enabled")
 
             from nanobot.config.loader import get_config_path as _gcp

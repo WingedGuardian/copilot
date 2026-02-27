@@ -36,9 +36,10 @@ class UseModelTool(Tool):
     Override auto-expires after the configured idle timeout.
     """
 
-    def __init__(self, session_manager, timeout_minutes: int = 30):
+    def __init__(self, session_manager, timeout_minutes: int = 30, configured_providers: set[str] | None = None):
         self._sessions = session_manager
         self._timeout_min = timeout_minutes
+        self._configured_providers = configured_providers or set()
         self._current_session_key: str = ""  # Set by loop before processing
 
     @property
@@ -110,6 +111,11 @@ class UseModelTool(Tool):
         direct_providers = {"anthropic", "openai", "google", "deepseek", "groq"}
         if provider not in direct_providers:
             provider = "openrouter"
+
+        # Validate provider is actually configured with an API key
+        if self._configured_providers and provider not in self._configured_providers:
+            available = ", ".join(sorted(self._configured_providers))
+            return f"Provider '{provider}' is not configured (no API key). Available: {available}"
 
         session.activate_use_override(provider, "big", model)
         self._sessions.save(session)

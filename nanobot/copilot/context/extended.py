@@ -133,6 +133,16 @@ class ExtendedContextBuilder:
         if memory_context:
             self._inject_into_system(messages, memory_context)
 
+        # Inject model identity (so the LLM knows what it's running on)
+        if session_metadata:
+            model_id = session_metadata.get("last_model_used")
+            provider_id = session_metadata.get("last_provider_used")
+            if model_id:
+                identity = f"## Model Identity\nYou are running on: {model_id}"
+                if provider_id:
+                    identity += f" (via {provider_id})"
+                self._inject_into_system(messages, identity)
+
         # Orientation hint when context may be incomplete (< 3 exchanges)
         real_history = [m for m in history if m.get("role") in ("user", "assistant")]
         if 0 < len(real_history) < 6:

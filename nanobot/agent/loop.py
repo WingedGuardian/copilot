@@ -522,8 +522,8 @@ class AgentLoop:
                     lines.append(f"Current: {current}")
                 lines.append("Available providers:")
                 for name in all_providers:
-                    m = provider_models.get(name, "")
-                    tag = f" -> {m}" if m else ""
+                    m = provider_models.get(name) or all_providers[name].get_default_model()
+                    tag = f" -> {m}"
                     marker = " (active)" if name == current else ""
                     lines.append(f"  {name}{tag}{marker}")
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
@@ -556,7 +556,7 @@ class AgentLoop:
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                       content=f"Unknown provider '{provider_arg}'. Available: {known}")
             if not model:
-                model = provider_models.get(provider_arg) or router.get_default_model()
+                model = provider_models.get(provider_arg) or all_providers[provider_arg].get_default_model()
             session.activate_use_override(provider_arg, tier, model)
             self.sessions.save(session)
             timeout_min = self._copilot_config.use_override_timeout // 60 if self._copilot_config else 30
@@ -820,6 +820,7 @@ class AgentLoop:
         _turn_start = __import__('time').monotonic()
         final_content = None
         tools_used: list[str] = []
+        actual_model = self.model  # updated from API response if available
         is_router = hasattr(self.provider, 'last_decision')
 
         while iteration < self.max_iterations:
@@ -852,6 +853,8 @@ class AgentLoop:
                 chat_kwargs["session_metadata"] = session.metadata
             try:
                 response = await asyncio.wait_for(self.provider.chat(**chat_kwargs), timeout=self._llm_timeout)
+                if response.model_used:
+                    actual_model = response.model_used
             except asyncio.TimeoutError:
                 logger.warning(f"LLM call timed out after {self._llm_timeout}s in agent loop")
                 from nanobot.copilot.alerting.bus import get_alert_bus
@@ -936,9 +939,11 @@ class AgentLoop:
         session.add_message("user", msg.content)
         is_error = final_content.startswith(_ERROR_PREFIXES)
 
-        # Track which model handled this turn (for orientation hints on switches)
+        # Track which model/provider handled this turn (ground truth from API response)
         if not is_error:
-            session.metadata["last_model_used"] = self.model
+            session.metadata["last_model_used"] = actual_model
+            if hasattr(self.provider, 'last_decision') and self.provider.last_decision:
+                session.metadata["last_provider_used"] = self.provider.last_decision
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None,
                             **({"is_error": True} if is_error else {}))
