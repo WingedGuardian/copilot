@@ -383,6 +383,28 @@ What's the error isolation strategy? Can a bad signal be corrected retroactively
 Does the Self-Learning Loop have any mechanism to detect that its training data
 was corrupted by a false signal?
 
+### Q6. Knowledge Base Groundwork Scope
+
+The memory-mcp design now includes placeholder tools for a post-v3 knowledge base
+(immutable reference material — course content, specs, docs — stored alongside but
+separate from episodic memory). The v3 groundwork requirements are documented in the
+memory-mcp section of the autonomous behavior design.
+
+Questions to resolve during v3 implementation:
+- What's the minimum viable Qdrant client abstraction that supports multiple named
+  collections without over-engineering? (Parameter on existing methods vs. a collection
+  registry?)
+- Should the FTS5 schema use a `collection` column filter or separate virtual tables
+  per collection? (Column filter is simpler; separate tables scale better)
+- How does the token budget system allocate between memory and (future) knowledge
+  injection when both are active? (Fixed split? Dynamic based on query relevance?)
+- Should raw text be stored in Qdrant payload, a separate SQLite table, or both?
+  (Qdrant payload is simpler but increases collection size; SQLite is cheaper for bulk
+  re-embedding operations)
+
+These don't block v3 but must be answered when implementing memory-mcp to avoid
+groundwork that doesn't actually ground anything.
+
 ---
 
 ## Document Hierarchy

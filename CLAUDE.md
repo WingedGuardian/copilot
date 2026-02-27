@@ -59,6 +59,25 @@ Always be trying to "one up" the user's ideas when there's a good opportunity th
   2. [Step] → verify: [check]
   3. [Step] → verify: [check]
 
+# Groundwork Code Protection
+
+Code is sometimes written as **intentional foundational infrastructure** for a planned feature that isn't fully connected yet. This is deliberate forward-engineering, not dead code.
+
+**When writing groundwork code:**
+- Tag it with an inline comment: `# GROUNDWORK(<feature-id>): <why this exists>`
+- Example: `# GROUNDWORK(post-v3-knowledge-base): Collection param enables future KB retrieval alongside memory`
+- Example: `# GROUNDWORK(v3-authority-tags): source_type field lets LLM distinguish memory from reference material`
+- The `<feature-id>` must correspond to a documented feature in the project docs directory
+
+**When you encounter GROUNDWORK-tagged code:**
+- **NEVER delete or refactor it as "dead code."** It exists because a previous session laid infrastructure for a planned feature.
+- **NEVER remove the GROUNDWORK comment** — it's cross-session memory that explains why unused-looking code exists.
+- If the code appears unused, check the project docs for the referenced `<feature-id>` before making any judgment.
+- If you're unsure whether the feature is still planned, **ASK the user** rather than removing it.
+- Only remove GROUNDWORK code if: (a) the feature it supports is now fully implemented (the code is active, remove only the tag), or (b) the user explicitly says the feature is cancelled.
+
+**Why this matters:** Multi-session development means session N+1 has no memory of session N's intent. Without these tags, foundational code looks like dead code and gets cleaned up, destroying deliberate architectural preparation. This has happened multiple times — this rule prevents it.
+
 # Documentation — SINGLE SOURCE OF TRUTH
 
 **All project documentation lives in ONE place:**

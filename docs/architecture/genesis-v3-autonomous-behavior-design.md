@@ -229,8 +229,8 @@ This loop makes proactive behavior increasingly accurate:
 - **Observations:** Folded in from the separate genesis-observations concept. Observations are processed reflections — a form of memory, not a separate concern.
 - **User model cache:** Periodically synthesized user profile stored as a semantic record, refreshed by Reflection Engine during Light+ reflections.
 
-**Tools:**
-- `memory_recall` — Hybrid search (Qdrant vectors + FTS5 full-text, RRF fusion)
+**Memory tools:**
+- `memory_recall` — Hybrid search (Qdrant vectors + FTS5 full-text, RRF fusion). Accepts `source` param: `memory | knowledge | both`
 - `memory_store` — Store with source metadata + memory type tag
 - `memory_extract` — Store fact/decision/entity extractions
 - `memory_proactive` — Cross-session context injection
@@ -240,6 +240,29 @@ This loop makes proactive behavior increasingly accurate:
 - `observation_query` — Query by type/priority/source
 - `observation_resolve` — Mark resolved with notes
 - `evolution_propose` — Write identity evolution proposal (for SOUL.md / identity file changes)
+
+**Knowledge base tools (post-v3 feature, groundwork laid in v3):**
+- `knowledge_recall` — Hybrid search scoped by project/domain, authority-tagged results
+- `knowledge_ingest` — Store distilled knowledge units with full provenance metadata
+- `knowledge_status` — Collection stats, staleness report, project index
+
+**Knowledge base concept:** A separate-but-colocated data layer for **immutable reference material** — course content, specs, reference docs — that Genesis treats as authoritative source of truth (not subject to memory consolidation, decay, or revision). Distilled by LLM into structured knowledge units before storage. Primary consumers are background agents, task execution sub-agents, and the Self-Learning Loop audit trail — not main conversation context injection (avoids context window budget pressure). See `post-v3-knowledge-pipeline.md` in project docs for full design.
+
+> **V3 groundwork requirements (implement during v3, not post-v3):**
+> - Retrieval interface accepts `source` parameter (`memory | knowledge | both`)
+> - Qdrant client wrapper supports multiple named collections (not hardcoded to `episodic_memory`)
+> - Context injection tags each block with `source_type` so the LLM distinguishes recalled memory from reference material
+> - Token budget system for context injection is shared across memory AND knowledge retrieval
+> - Raw text stored alongside vectors in knowledge collection (enables re-embedding on model change without re-ingestion)
+> - FTS5 table schema supports a `collection` column for knowledge vs memory separation
+>
+> These are design decisions, not extra code: an enum instead of a hardcoded string, a collection name parameter instead of a constant, a `source_type` field on injected blocks.
+>
+> **Why knowledge lives in memory-mcp, not a separate server:** Applying the same test used
+> to reject other servers: "Does this need its own process, persistent state, and lifecycle?"
+> No. Knowledge shares infrastructure (Qdrant, embedder, FTS5, SQLite pool) and retrieval
+> patterns (hybrid search, RRF fusion). It needs its own Qdrant collection, FTS5 table, and
+> retrieval filter — not its own process.
 
 ### 2. recon-mcp
 
@@ -308,6 +331,7 @@ We considered 7 (adding user-model, tasks, salience as servers). Each was reject
 | **tasks-mcp** | Agent Zero has native task management. A separate MCP server duplicates framework capability. |
 | **salience-mcp** | It's an LLM evaluation (a prompt), not a service. The inputs (signals + user model + engagement data) come from other servers. The output (scores) is ephemeral. No persistent state to manage. |
 | **observations-mcp** | Observations are a type of memory (processed reflections). Folded into memory-mcp with a type tag. |
+| **knowledge-mcp** | Knowledge is stored information with different lifecycle rules (immutable, project-scoped, no decay) but shares all infrastructure (Qdrant, embedder, FTS5, SQLite pool) and retrieval patterns (hybrid search, RRF). Needs its own collection and filter, not its own process. Folded into memory-mcp as a namespace. |
 
 ---
 
