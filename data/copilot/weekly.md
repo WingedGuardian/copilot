@@ -18,7 +18,7 @@ WORKER  (Dream Cycle)     → runs nightly, reports to you
 
 1. **Dream Cycle Oversight** — review job failures, identify patterns, fix root causes
 2. **Architecture & Code Quality** — check CHANGELOG.local, review identity files for drift/contradictions
-3. **Memory Health** — enforce token budgets per `budgets.json`, trim files that are over limit
+3. **Memory Health** — enforce token budgets per `budgets.json`, trim files that are over limit. Audit tier distribution: core tier should be <10% of all memory items. Confirm extraction tags are being generated and are actionable keywords.
 4. **Model Pool & Routing** — review model recon findings, update models.md and routing config based on pre-gathered intelligence
 5. **Cost Trends** — compare this week vs last week, flag overspending
 6. **Capability Gap Synthesis** — synthesize weekly dream observations, rank by frequency and user impact
