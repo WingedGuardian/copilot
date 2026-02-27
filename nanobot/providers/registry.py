@@ -51,6 +51,9 @@ class ProviderSpec:
     # per-model param overrides, e.g. (("kimi-k2.5", {"temperature": 1.0}),)
     model_overrides: tuple[tuple[str, dict[str, Any]], ...] = ()
 
+    # sensible default model for this provider (used when config has none)
+    suggested_model: str = ""
+
     # OAuth-based providers (e.g., OpenAI Codex) don't use API keys
     is_oauth: bool = False                   # if True, uses OAuth flow instead of API key
 
@@ -155,6 +158,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+        suggested_model="claude-sonnet-4-6",
     ),
 
     # OpenAI: LiteLLM recognizes "gpt-*" natively, no prefix needed.
@@ -173,6 +177,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+        suggested_model="gpt-4o",
     ),
 
     # OpenAI Codex: uses OAuth, not API key.
@@ -229,6 +234,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+        suggested_model="deepseek-chat",
     ),
 
     # Gemini: needs "gemini/" prefix for LiteLLM.
@@ -247,6 +253,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+        suggested_model="gemini-2.5-flash",
     ),
 
     # Zhipu: LiteLLM uses "zai/" prefix.
@@ -269,6 +276,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+        suggested_model="glm-5",
     ),
 
     # DashScope: Qwen models, needs "dashscope/" prefix.
@@ -311,6 +319,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(
             ("kimi-k2.5", {"temperature": 1.0}),
         ),
+        suggested_model="kimi-k2.5",
     ),
 
     # MiniMax: needs "minimax/" prefix for LiteLLM routing.
@@ -330,6 +339,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="https://api.minimax.io/v1",
         strip_model_prefix=False,
         model_overrides=(),
+        suggested_model="MiniMax-M2.5",
     ),
 
     # Venice AI: OpenAI-compatible API.
@@ -355,6 +365,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         litellm_prefix="nvidia_nim",
         skip_prefixes=("nvidia_nim/",),
         default_api_base="https://integrate.api.nvidia.com/v1",
+        suggested_model="meta/llama-3.3-70b-instruct",
     ),
 
     # === Local deployment (matched by config key, NOT by api_base) =========
@@ -397,6 +408,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+        suggested_model="llama-3.3-70b-versatile",
     ),
 )
 

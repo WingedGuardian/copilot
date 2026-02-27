@@ -34,30 +34,9 @@ from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.agent.tools.youtube import YouTubeTranscriptTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.copilot.routing.aliases import MODEL_ALIASES, resolve_model  # noqa: F401
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import SessionManager
-
-# Short model names → full litellm identifiers
-MODEL_ALIASES: dict[str, str] = {
-    "haiku": "anthropic/claude-haiku-4-5",
-    "sonnet": "anthropic/claude-sonnet-4-6",
-    "opus": "anthropic/claude-opus-4-6",
-    "claude": "anthropic/claude-sonnet-4-6",
-    "gpt4": "openai/gpt-4o",
-    "gpt4o": "openai/gpt-4o",
-    "gpt4mini": "openai/gpt-4o-mini",
-    "o1": "openai/o1",
-    "o3": "openai/o3-mini",
-    "gemini": "google/gemini-2.5-flash",
-    "flash": "google/gemini-2.5-flash",
-    "deepseek": "deepseek/deepseek-chat",
-    "r1": "deepseek/deepseek-r1",
-    "minimax": "MiniMax-M2.5",
-    "m25": "MiniMax-M2.5",
-    "kimi": "moonshotai/kimi-k2.5",
-    "llama": "meta-llama/llama-4-scout",
-    "glm": "THUDM/glm-5",
-}
 
 # Error response prefixes (used for is_error tagging)
 _ERROR_PREFIXES = (
@@ -529,7 +508,7 @@ class AgentLoop:
                     lines.append(f"Current: {current}")
                 lines.append("Available providers:")
                 for name in all_providers:
-                    m = provider_models.get(name) or all_providers[name].get_default_model()
+                    m = provider_models.get(name) or "(any model)"
                     tag = f" -> {m}"
                     marker = " (active)" if name == current else ""
                     lines.append(f"  {name}{tag}{marker}")
@@ -549,15 +528,16 @@ class AgentLoop:
             tier = "big"
             model = None
             if len(args) > 1:
-                raw = args[1]
-                model = MODEL_ALIASES.get(raw.lower(), raw)
-                if model == raw and "/" not in model:
-                    valid = ", ".join(sorted(MODEL_ALIASES.keys()))
+                raw = " ".join(args[1:])  # rejoin so "glm 5" works
+                resolved, info = resolve_model(raw)
+                if resolved:
+                    model = resolved
+                else:
                     return OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
-                        content=f"Unknown model '{raw}'. Short names: {valid}\n"
-                                f"Or use full ID like 'anthropic/claude-haiku-4-5'.",
+                        content=info,
                     )
+            provider_arg = provider_arg.lower()
             if provider_arg not in all_providers:
                 known = ", ".join(sorted(all_providers.keys())) or "none"
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,

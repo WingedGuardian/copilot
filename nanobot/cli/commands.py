@@ -328,11 +328,14 @@ def _make_provider(config, cost_logger=None):
             _directs[name] = provider
     fallbacks: dict[str, LiteLLMProvider] = {**_gateways, **_directs}
 
-    # Build per-provider default models from config
+    # Build per-provider default models from config, falling back to registry
     _provider_models: dict[str, str] = {}
     for name in type(config.providers).model_fields:
         pcfg = getattr(config.providers, name)
         dm = getattr(pcfg, 'default_model', None)
+        if not dm:
+            spec = _find_by_name(name)
+            dm = spec.suggested_model if spec else None
         if dm:
             _provider_models[name] = dm
 

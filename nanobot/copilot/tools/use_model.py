@@ -5,28 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
-
-# Short model names → full litellm identifiers (mirrors loop.py MODEL_ALIASES)
-_ALIASES: dict[str, str] = {
-    "haiku": "anthropic/claude-haiku-4-5",
-    "sonnet": "anthropic/claude-sonnet-4-6",
-    "opus": "anthropic/claude-opus-4-6",
-    "claude": "anthropic/claude-sonnet-4-6",
-    "gpt4": "openai/gpt-4o",
-    "gpt4o": "openai/gpt-4o",
-    "gpt4mini": "openai/gpt-4o-mini",
-    "o1": "openai/o1",
-    "o3": "openai/o3-mini",
-    "gemini": "google/gemini-2.5-flash",
-    "flash": "google/gemini-2.5-flash",
-    "deepseek": "deepseek/deepseek-chat",
-    "r1": "deepseek/deepseek-r1",
-    "minimax": "MiniMax-M2.5",
-    "m25": "MiniMax-M2.5",
-    "kimi": "moonshotai/kimi-k2.5",
-    "llama": "meta-llama/llama-4-scout",
-    "glm": "THUDM/glm-5",
-}
+from nanobot.copilot.routing.aliases import MODEL_ALIASES, resolve_model
 
 
 class UseModelTool(Tool):
@@ -52,7 +31,7 @@ class UseModelTool(Tool):
             "Temporarily switch this session to a specific model. "
             "Pass 'auto' to revert to automatic routing. "
             f"Override expires after {self._timeout_min}min of inactivity. "
-            f"Short names: {', '.join(sorted(_ALIASES.keys()))}. "
+            f"Short names: {', '.join(sorted(MODEL_ALIASES.keys()))}. "
             "Or use full model ID like 'anthropic/claude-sonnet-4-6'."
         )
 
@@ -94,18 +73,14 @@ class UseModelTool(Tool):
             self._sessions.save(session)
             return "Switched to auto-routing."
 
-        # Resolve model name
-        resolved = _ALIASES.get(raw_model.lower())
+        # Resolve model name (fuzzy matching)
+        resolved, info = resolve_model(raw_model)
         if resolved:
             model = resolved
             # Infer provider from full ID
-            provider = kwargs.get("provider", "").strip() or resolved.split("/")[0]
-        elif "/" in raw_model:
-            model = raw_model
-            provider = kwargs.get("provider", "").strip() or raw_model.split("/")[0]
+            provider = kwargs.get("provider", "").strip() or (resolved.split("/")[0] if "/" in resolved else "")
         else:
-            valid = ", ".join(sorted(_ALIASES.keys()))
-            return f"Unknown model '{raw_model}'. Short names: {valid}. Or use full ID like 'anthropic/claude-sonnet-4-20250514'."
+            return info  # error/suggestion message from resolve_model
 
         # For non-direct providers, route through openrouter
         direct_providers = {"anthropic", "openai", "google", "deepseek", "groq"}

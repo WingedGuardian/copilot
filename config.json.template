@@ -24,14 +24,16 @@
       "defaultModel": "gpt-4o"
     },
     "openrouter": {
-      "apiBase": null
+      "apiBase": null,
+      "defaultModel": "anthropic/claude-sonnet-4-6"
     },
     "deepseek": {
       "apiBase": null,
       "defaultModel": "deepseek-chat"
     },
     "groq": {
-      "apiBase": null
+      "apiBase": null,
+      "defaultModel": "llama-3.3-70b-versatile"
     },
     "gemini": {
       "apiBase": null,
