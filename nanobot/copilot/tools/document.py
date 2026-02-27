@@ -7,12 +7,15 @@ from typing import Any
 
 from nanobot.agent.tools.base import Tool
 
+_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
 
 class DocumentTool(Tool):
     """Tool for parsing documents: PDF, Excel, images, and text files."""
 
-    def __init__(self, max_chars: int = 10000):
+    def __init__(self, max_chars: int = 10000, max_file_size: int = _MAX_FILE_SIZE):
         self._max_chars = max_chars
+        self._max_file_size = max_file_size
 
     @property
     def name(self) -> str:
@@ -56,6 +59,10 @@ class DocumentTool(Tool):
         path = Path(file_path)
         if not path.exists():
             return f"Error: file not found: {file_path}"
+
+        size = path.stat().st_size
+        if size > self._max_file_size:
+            return f"Error: file is {size:,} bytes, exceeds {self._max_file_size:,} byte limit"
 
         max_chars = kwargs.get("max_chars", self._max_chars)
         ext = path.suffix.lower()

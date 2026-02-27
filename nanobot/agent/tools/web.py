@@ -1,17 +1,22 @@
 """Web tools: web_search and web_fetch."""
 
+from __future__ import annotations
+
 import html
 import ipaddress
 import json
 import os
 import re
 import socket
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
 
 from nanobot.agent.tools.base import Tool
+
+if TYPE_CHECKING:
+    from nanobot.agent.safety.secrets import SecretsProvider
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -105,7 +110,7 @@ def _validate_url(url: str, deny_list: list[str] | None = None) -> tuple[bool, s
 
 class WebSearchTool(Tool):
     """Search the web using Brave Search API."""
-    
+
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
     parameters = {
@@ -116,7 +121,7 @@ class WebSearchTool(Tool):
         },
         "required": ["query"]
     }
-    
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -130,11 +135,11 @@ class WebSearchTool(Tool):
         else:
             self.api_key = os.environ.get("BRAVE_API_KEY", "")
         self.max_results = max_results
-    
+
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         if not self.api_key:
             return "Error: BRAVE_API_KEY not configured"
-        
+
         try:
             n = min(max(count or self.max_results, 1), 10)
             async with httpx.AsyncClient() as client:
@@ -145,11 +150,11 @@ class WebSearchTool(Tool):
                     timeout=10.0
                 )
                 r.raise_for_status()
-            
+
             results = r.json().get("web", {}).get("results", [])
             if not results:
                 return f"No results for: {query}"
-            
+
             lines = [f"Results for: {query}\n"]
             for i, item in enumerate(results[:n], 1):
                 lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
@@ -162,7 +167,7 @@ class WebSearchTool(Tool):
 
 class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
-    
+
     name = "web_fetch"
     description = "Fetch URL and extract readable content (HTML → markdown/text)."
     parameters = {
@@ -174,11 +179,17 @@ class WebFetchTool(Tool):
         },
         "required": ["url"]
     }
-    
-    def __init__(self, max_chars: int = 50000, deny_list: list[str] | None = None):
+
+    def __init__(
+        self,
+        max_chars: int = 50000,
+        deny_list: list[str] | None = None,
+        max_response_bytes: int = 10_485_760,  # 10MB
+    ):
         self.max_chars = max_chars
         self._deny_list = deny_list
-    
+        self._max_response_bytes = max_response_bytes
+
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         from readability import Document
 
@@ -193,10 +204,40 @@ class WebFetchTool(Tool):
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 max_redirects=MAX_REDIRECTS,
-                timeout=30.0
+                timeout=httpx.Timeout(30.0, connect=10.0),
             ) as client:
-                r = await client.get(url, headers={"User-Agent": USER_AGENT})
-                r.raise_for_status()
+                # Stream response to enforce byte cap
+                async with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as r:
+                    r.raise_for_status()
+
+                    # Check Content-Length header first
+                    cl = r.headers.get("content-length")
+                    if cl and int(cl) > self._max_response_bytes:
+                        from nanobot.agent.tools.limiter import log_guardrail_block
+                        await log_guardrail_block("web_fetch", "response_too_large", int(cl), self._max_response_bytes)
+                        return json.dumps({"error": f"Response too large: {cl} bytes (limit {self._max_response_bytes})", "url": url})
+
+                    # Stream with byte cap
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in r.aiter_bytes(8192):
+                        total += len(chunk)
+                        if total <= self._max_response_bytes:
+                            chunks.append(chunk)
+                        else:
+                            break
+                    body = b"".join(chunks)
+
+                # Build a minimal response-like object for downstream code
+                class _Resp:
+                    def __init__(self, r, body):
+                        self.url = r.url
+                        self.status_code = r.status_code
+                        self.headers = r.headers
+                        self.text = body.decode("utf-8", errors="replace")
+                    def json(self):
+                        return json.loads(self.text)
+                r = _Resp(r, body)
 
             # Re-validate final URL after redirects (SSRF via redirect)
             final_url = str(r.url)
@@ -204,9 +245,9 @@ class WebFetchTool(Tool):
                 is_valid, error_msg = _validate_url(final_url, deny_list=self._deny_list)
                 if not is_valid:
                     return json.dumps({"error": f"Redirect blocked: {error_msg}", "url": url, "redirectedTo": final_url})
-            
+
             ctype = r.headers.get("content-type", "")
-            
+
             # JSON
             if "application/json" in ctype:
                 text, extractor = json.dumps(r.json(), indent=2), "json"
@@ -218,16 +259,16 @@ class WebFetchTool(Tool):
                 extractor = "readability"
             else:
                 text, extractor = r.text, "raw"
-            
+
             truncated = len(text) > max_chars
             if truncated:
                 text = text[:max_chars]
-            
+
             return json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
                               "extractor": extractor, "truncated": truncated, "length": len(text), "text": text})
         except Exception as e:
             return json.dumps({"error": str(e), "url": url})
-    
+
     def _to_markdown(self, html: str) -> str:
         """Convert HTML to markdown."""
         # Convert links, headings, lists before stripping tags

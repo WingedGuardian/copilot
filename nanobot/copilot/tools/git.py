@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
+import functools
 from typing import Any
+
+from loguru import logger
 
 from nanobot.agent.tools.base import Tool
 
@@ -11,8 +14,17 @@ from nanobot.agent.tools.base import Tool
 class GitTool(Tool):
     """Tool for Git repository operations."""
 
-    def __init__(self, default_repo: str | None = None):
+    def __init__(
+        self,
+        default_repo: str | None = None,
+        allow_clone: bool = False,
+        max_clone_size_mb: int = 50,
+        clone_timeout: int = 120,
+    ):
         self._default_repo = default_repo
+        self._allow_clone = allow_clone
+        self._max_clone_size_mb = max_clone_size_mb
+        self._clone_timeout = clone_timeout
 
     @property
     def name(self) -> str:
@@ -83,7 +95,7 @@ class GitTool(Tool):
             elif action == "stash":
                 return self._stash(repo, args)
             elif action == "clone":
-                return self._clone(args, repo_path)
+                return await self._clone_safe(args, repo_path)
             else:
                 return f"Unknown git action: {action}"
         except Exception as e:
@@ -201,10 +213,65 @@ class GitTool(Tool):
         else:
             return f"Unknown stash command: {subcmd}"
 
-    @staticmethod
-    def _clone(url: str, dest: str) -> str:
-        if not url.strip():
+    async def _clone_safe(self, url: str, dest: str) -> str:
+        """Clone with size pre-check, async execution, timeout, and shallow default."""
+        url = url.strip()
+        if not url:
             return "Error: URL required for clone"
+
+        if not self._allow_clone:
+            from nanobot.agent.tools.limiter import log_guardrail_block
+            await log_guardrail_block("git", "clone_disabled", url[:60], "allow_clone=False")
+            return "Error: git clone is disabled. Enable allow_clone in config."
+
+        # Size pre-check for GitHub repos
+        size_error = await self._check_repo_size(url)
+        if size_error:
+            return size_error
+
+        # Run blocking clone in executor with timeout
         import git
-        repo = git.Repo.clone_from(url.strip(), dest)
-        return f"Cloned {url.strip()} to {dest}"
+
+        loop = asyncio.get_event_loop()
+        clone_fn = functools.partial(
+            git.Repo.clone_from, url, dest, depth=1,  # shallow clone by default
+        )
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, clone_fn),
+                timeout=self._clone_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"git clone timed out after {self._clone_timeout}s: {url}")
+            return f"Error: git clone timed out after {self._clone_timeout}s"
+
+        return f"Cloned {url} to {dest} (shallow, depth=1)"
+
+    async def _check_repo_size(self, url: str) -> str | None:
+        """Check GitHub repo size before cloning. Returns error string or None."""
+        import re
+
+        m = re.match(r"https?://github\.com/([^/]+)/([^/.]+)", url)
+        if not m:
+            return None  # Non-GitHub — can't pre-check, allow with timeout protection
+
+        owner, repo = m.group(1), m.group(2)
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(f"https://api.github.com/repos/{owner}/{repo}")
+                if r.status_code == 200:
+                    size_kb = r.json().get("size", 0)
+                    size_mb = size_kb / 1024
+                    if size_mb > self._max_clone_size_mb:
+                        from nanobot.agent.tools.limiter import log_guardrail_block
+                        await log_guardrail_block("git", "repo_too_large", f"{size_mb:.0f}MB", f"{self._max_clone_size_mb}MB")
+                        return (
+                            f"Error: Repository is {size_mb:.0f}MB, "
+                            f"exceeds {self._max_clone_size_mb}MB limit"
+                        )
+        except Exception as e:
+            logger.debug(f"GitHub size check failed (allowing clone): {e}")
+
+        return None

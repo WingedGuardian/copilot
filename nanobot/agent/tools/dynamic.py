@@ -195,15 +195,17 @@ class DynamicTool(Tool):
     def code(self) -> str:
         return self._code
 
+    # Shared executor — avoids per-call thread leak from shutdown(wait=False)
+    _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dynamic_tool")
+
     async def execute(self, **kwargs: Any) -> str:
         """Execute the dynamic tool code with the given parameters."""
         loop = asyncio.get_event_loop()
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(
-                    executor, _run_in_sandbox, self._code, kwargs, self._timeout
+                    self._executor, _run_in_sandbox, self._code, kwargs, self._timeout
                 ),
                 timeout=self._timeout,
             )
@@ -212,8 +214,6 @@ class DynamicTool(Tool):
             return f"Error: Tool execution timed out after {self._timeout} seconds"
         except Exception as e:
             return f"Error: {type(e).__name__}: {e}"
-        finally:
-            executor.shutdown(wait=False)
 
         # Enforce output limit
         if len(result) > self._output_limit:

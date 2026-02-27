@@ -31,6 +31,8 @@ class MCPToolWrapper(Tool):
     def parameters(self) -> dict[str, Any]:
         return self._parameters
 
+    _MAX_OUTPUT = 102_400  # 100KB
+
     async def execute(self, **kwargs: Any) -> str:
         from mcp import types
         result = await self._session.call_tool(self._original_name, arguments=kwargs)
@@ -40,7 +42,10 @@ class MCPToolWrapper(Tool):
                 parts.append(block.text)
             else:
                 parts.append(str(block))
-        return "\n".join(parts) or "(no output)"
+        output = "\n".join(parts) or "(no output)"
+        if len(output) > self._MAX_OUTPUT:
+            output = output[: self._MAX_OUTPUT] + f"\n... (truncated, {len(output) - self._MAX_OUTPUT} more chars)"
+        return output
 
 
 async def connect_mcp_servers(
