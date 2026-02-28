@@ -10,60 +10,91 @@
 # Genesis v3 Build Context
 
 You are building Genesis v3 — an autonomous executive copilot system on the Agent Zero framework.
+V3 is the first of three planned versions (V3→V4→V5), each independently complete.
+
+**Your scope is V3 only.** V4/V5 features are intentionally excluded. Do not build them.
 
 ## Key Design Documents
 
 All design documents live in `docs/architecture/`:
-- `genesis-v3-vision.md` — Core philosophy and identity. READ THIS FIRST. It defines who Genesis is and what it aspires to be. Every implementation decision should be consistent with this document.
-- `genesis-v3-build-phases.md` — Safety-ordered build plan. This is your roadmap. Build in phase order. Do not skip phases or start a phase before its dependencies are verified.
-- `genesis-v3-autonomous-behavior-design.md` — Full architectural reference. The master design document with detailed specifications for every component. Consult this for implementation details, schemas, and rationale.
+- `genesis-v3-vision.md` — Core philosophy and identity. READ THIS FIRST. It defines who Genesis
+  is and what it aspires to be. Every implementation decision should be consistent with this doc.
+- `genesis-v3-build-phases.md` — Safety-ordered build plan with V3/V4/V5 versioning. Your
+  roadmap. Build V3 phases in order. Do not skip phases or start one before its dependencies
+  are verified.
+- `genesis-v3-autonomous-behavior-design.md` — Full architectural reference. Master design doc
+  with detailed specifications. Consult for implementation details, schemas, rationale.
 - `genesis-v3-dual-engine-plan.md` — Framework decisions, container architecture, migration plan.
 
-## Build Order: Safety First
+## V3 Build Order: Safety First
 
-Phases are ordered from safest to riskiest. Each phase's verification criteria MUST pass before starting the next phase. The phases:
+Phases are ordered safest → riskiest. Verification criteria MUST pass before starting the next.
 
 0. Data Foundation (schemas, MCP stubs) — pure CRUD, no LLM
-1. The Metronome (awareness loop) — programmatic signal processing
+1. Awareness Loop (5-min tick, signal processing) — programmatic, no LLM
 2. Compute Routing (model hierarchy, fallback) — infrastructure plumbing
-3. Perception (micro/light reflection) — first LLM calls, low stakes
-4. Memory Operations (store, retrieve, activation) — extending existing system
-5. Learning Fundamentals (outcome classification, procedures) — feedback loops
-6. Surplus Infrastructure (queue, staging, cost rules) — free compute utilization
-7. Deep Cognition (meta-prompting, strategic reflection) — complex LLM orchestration
-8. Outreach (proactive messaging, engagement tracking) — user-facing, highest blast radius
-9. Autonomy System (permission hierarchy, progression/regression) — trust management
-10. Calibration & Evolution (drive/signal adaptation, meta-learning) — requires real data
+3. Surplus Infrastructure (queue, staging, daily brainstorms) — free compute from day 1
+4. Perception (micro/light reflection) — first LLM calls, low stakes
+5. Memory Operations (activation scoring, hybrid retrieval) — extending existing system
+6. Learning Fundamentals (outcome classification, procedures) — feedback loops, highest-leverage
+7. Simple Deep Reflection (single Sonnet call, triggered by urgency) — "Dream Cycle 2.0"
+8. Basic Outreach (alerts/blockers + 1/day surplus, engagement tracking) — user-facing
+9. Basic Autonomy (L1-L4 fixed, regression, trust ceilings) — trust management
+
+Phases 1, 2, 3 can be built in parallel. Critical sequential path: 4→5→6→7→8→9.
+
+## What V3 Does NOT Build (Intentionally)
+
+These are V4/V5 features. Do NOT implement them — V3 ships with conservative fixed defaults:
+- Meta-prompting protocol (V4) — use static prompt templates
+- Strategic reflection / MANAGER / DIRECTOR reviews (V4)
+- Signal/drive weight adaptation (V4) — use fixed weights from design doc
+- Channel learning (V4) — use config-driven channel preferences
+- Procedural confidence decay (V4) — procedures don't decay in V3
+- Finding/Insight/Opportunity outreach categories (V4) — V3 only does Blocker/Alert + 1/day surplus
+- L5-L7 autonomy (V5) — V3 stops at L4
+- Autonomy progression (V5) — levels are fixed, user-managed
+- Identity evolution (V5) — static identity
+- Anticipatory intelligence (V5) — no "predict what user needs"
+- Meta-learning (V5) — no "learn how to learn"
 
 ## Critical Principles
 
-- **LLM-first solutions**: Code handles structure (timeouts, validation, event wiring). Judgment calls belong to the LLM. Don't build code that overrides LLM judgment.
-- **Verify before proceeding**: Each phase has verification criteria in the build phases doc. Run them. "It looks right" is not verification.
-- **Simplicity**: If 50 lines solve it, don't write 200. If a simple heuristic works 95% of the time, ship it. Build the complex version when you have evidence the 5% matters.
-- **Rollback readiness**: Each phase should be independently disableable via config. If Phase 7 breaks, you fall back to Phase 3 without losing anything.
-- **3B model constraints**: The 3B model runs on CPU only. It handles embeddings and light extraction ONLY. No reflection, no reasoning, no surplus tasks. When in doubt, escalate to 20-30B or Gemini.
-- **Local model is not 24/7**: The local machine running 20-30B models is intermittently available. Gemini Flash free tier is the default fallback. Build availability detection and automatic failover from day 1.
-- **Null hypothesis**: Default to "current behavior is correct" until evidence says otherwise. Early system = aggressive learning (most things are novel). Mature system = conservative learning (most things are known).
+- **LLM-first**: Code handles structure (timeouts, validation, wiring). Judgment → LLM.
+- **Verify before proceeding**: Each phase has verification criteria. Run them.
+- **Simplicity**: 50 lines > 200 lines. Simple heuristic > complex system.
+- **Rollback readiness**: Each phase independently disableable via config.
+- **3B model = embeddings/extraction ONLY**: CPU-only, must stay responsive. No reflection,
+  no reasoning, no surplus. When in doubt, escalate to 20-30B or Gemini.
+- **Local model NOT 24/7**: Gemini Flash free tier is the default fallback. Build availability
+  detection and automatic failover from day 1.
+- **Null hypothesis**: "Current behavior is correct" until evidence says otherwise.
+- **Free compute = always run**: Surplus tasks on free compute (local 20-30B, Gemini free)
+  run always. Above cost threshold = never for surplus.
+- **Daily brainstorms are mandatory**: At least 2/day ("upgrade user" + "upgrade self") on
+  free compute, from day 1. These are the last surplus tasks to skip.
 ```
 
 ---
 
 ## Notes for the User
 
-This CLAUDE.md section is deliberately concise — it gives the building instance enough context to make correct decisions without overwhelming its context window. The detail lives in the design docs it references.
+This CLAUDE.md section is deliberately concise. The detail lives in the design docs.
 
-If the building instance needs more context on a specific component, it should read the relevant section of `genesis-v3-autonomous-behavior-design.md`. The section headers map cleanly to build phases:
+### Phase-to-Design-Doc Mapping
 
 | Build Phase | Design Doc Section |
 |-------------|-------------------|
-| Phase 0 | §4 MCP Servers, §Execution Trace Schema, §Procedural Memory Design |
-| Phase 1 | §Layer 1: Awareness Loop, §Signal-Weighted Trigger System |
-| Phase 2 | §LLM Weakness Compensation → Pattern 1: Compute Hierarchy |
-| Phase 3 | §Layer 2: Reflection Engine → Depth Levels (Micro, Light) |
-| Phase 4 | §Memory Separation, §What We Learned (Gap fixes: A-MEM, ACT-R) |
-| Phase 5 | §Layer 3: Self-Learning Loop, §Procedural Memory Design, §LLM Weakness → Pattern 6 |
-| Phase 6 | §Cognitive Surplus |
-| Phase 7 | §Reflection Engine (Deep, Strategic), §LLM Weakness → Patterns 2-5 |
-| Phase 8 | §Proactive Outreach, §Bootstrap / Cold Start Strategy |
-| Phase 9 | §Self-Evolving Learning: The Autonomy Hierarchy |
-| Phase 10 | §Loop Taxonomy → Tiers 3-4 |
+| V3 Phase 0 | §4 MCP Servers, §Execution Trace Schema, §Procedural Memory Design |
+| V3 Phase 1 | §Layer 1: Awareness Loop, §Signal-Weighted Trigger System |
+| V3 Phase 2 | §LLM Weakness Compensation → Pattern 1: Compute Hierarchy |
+| V3 Phase 3 | §Cognitive Surplus |
+| V3 Phase 4 | §Layer 2: Reflection Engine → Depth Levels (Micro, Light) |
+| V3 Phase 5 | §Memory Separation, §What We Learned (A-MEM, ACT-R gaps) |
+| V3 Phase 6 | §Layer 3: Self-Learning Loop, §Procedural Memory, §LLM Weakness → Pattern 6 |
+| V3 Phase 7 | §Reflection Engine (Deep), current Dream Cycle jobs |
+| V3 Phase 8 | §Proactive Outreach, §Bootstrap / Cold Start Strategy |
+| V3 Phase 9 | §Self-Evolving Learning: Autonomy Hierarchy (L1-L4 only) |
+| V4 features | §LLM Weakness → Patterns 2-5, §Loop Taxonomy → Tier 3 |
+| V5 features | §Autonomy Hierarchy (L5-L7), §Loop Taxonomy → Tier 4 |
+| KB (parallel) | `post-v3-knowledge-pipeline.md` in project docs |
