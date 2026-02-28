@@ -1215,6 +1215,290 @@ The Self-Learning Loop is the keystone. Remove it and Tiers 0-2 still work — t
 
 ---
 
+## LLM Weakness Compensation: Architectural Patterns
+
+LLMs are remarkably good at the things Genesis needs most — contextual reasoning, pattern recognition, natural language understanding, flexible judgment. But an autonomous system that runs for months amplifies specific weaknesses that are tolerable in single conversations. This section documents the weaknesses that matter, the compensating patterns adopted, and the patterns considered but deferred.
+
+**Core principle:** The architecture doesn't "fix" the LLM. It plays to its strengths (judgment, interpretation, synthesis) and puts guardrails on the specific situations where it predictably fails (computation, calibration, confabulation under uncertainty). LLMs interpret; code computes.
+
+### The Weaknesses That Compound Over Time
+
+These are ranked by damage to a system that runs autonomously for months, not by frequency in single conversations.
+
+**1. Confabulation under uncertainty (CRITICAL).** LLMs fabricate plausible answers rather than saying "I don't know." In a conversation this is annoying. In an autonomous system that writes to persistent memory, it's corrosive. Confabulated user preferences get stored → retrieved as facts → inform future reasoning → produce more confident (but still wrong) conclusions → stored again. The system drifts from reality through accumulated micro-confabulations that reinforce each other. Affects: user model synthesis, procedural memory extraction, recon triage.
+
+**2. Tunnel vision / anchoring in long contexts (HIGH).** The LLM that produced reasoning is anchored to it. A fresh LLM seeing only the output often reaches a completely different conclusion. Affects: quality gates, Deep reflection (early jobs color late jobs), identity evolution proposals (anchored to existing SOUL.md framing).
+
+**3. Overconfidence / poor calibration (HIGH).** LLMs express certainty regardless of actual reliability. Salience scores, confidence values, and prediction errors LOOK precise but have wide error bars. Learning from the "error" between two poorly calibrated numbers is learning from noise. Affects: salience scoring, procedural memory confidence, Self-Learning Loop prediction errors.
+
+**4. Mode collapse under repetition (MEDIUM-HIGH).** Same prompt running repeatedly → outputs converge to formulaic patterns. By day 3, Micro reflections will sound identical: "No significant anomalies detected. System operating normally." Even when there IS something worth noticing. Affects: Micro reflection, task retrospectives, engagement prediction.
+
+**5. Sycophancy / prompt compliance bias (MEDIUM).** LLMs produce outputs matching what the prompt seems to want. "Find problems" → problems found (even when there aren't any). "Evaluate how well you're doing" → favorable self-assessment. Affects: Self-Learning Loop self-evaluation, identity evolution (always proposes changes because the prompt asks), Reflection Engine productivity (always finds something "worth noting").
+
+**6. Temporal reasoning weakness (MEDIUM).** LLMs are bad at sequences, trends, and causality over time. Affects: trend detection in reflection, engagement trajectory analysis, cost projection.
+
+**7. Positional bias — "lost in the middle" (LOW-MEDIUM).** LLMs pay more attention to the beginning and end of context. Middle content gets underweighted. Affects: memory injection, multi-job reflection, recon triage with multiple findings.
+
+### Adopted Patterns
+
+#### Pattern 1: Compute Hierarchy — Right Model for Each Job
+
+The foundation runs on free/cheap compute. Expensive models are used surgically for judgment calls. This is not "good, cheap, fast — pick two." It's using the right tool for each job.
+
+**Availability note:** The local machine that runs 20-30B models is NOT available 24/7. When local models are unavailable, their tasks fall back to cheap cloud models (Gemini Flash free tier, GLM5, or equivalent). The system must detect local model availability and route accordingly. Gemini's free API tier (~10-30 calls/day) is a valuable resource — use it rather than leaving it idle.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  ALWAYS ON (24/7, zero marginal cost)                    │
+│                                                          │
+│  Programmatic layer (no LLM)                             │
+│  • Awareness Loop signal collection + urgency scoring    │
+│  • Engagement statistics (rates, trends, moving averages)│
+│  • Cost tracking + budget arithmetic                     │
+│  • Confidence score calculation (success_count / total)  │
+│  • Trend detection (change point detection, baselines)   │
+│  • Context assembly with position weighting              │
+│  • Root-cause classification routing (once classified)   │
+│  • Maturity metrics (data volume tracking — see below)   │
+│                                                          │
+│  Local 3B model (when local machine available)           │
+│  • JSON/structured output parsing and validation         │
+│  • Binary classification ("is this well-formed?")        │
+│  • Simple tagging (memory type, source type)             │
+│  • Keyword/entity extraction from short text             │
+│  Fallback when unavailable: regex/heuristic or skip      │
+│                                                          │
+│  ⚠ 3B models CANNOT reliably:                           │
+│  • Evaluate quality or relevance of content              │
+│  • Perform root-cause classification (judgment call)     │
+│  • Synthesize across multiple inputs                     │
+│  • Generate natural language that will be user-facing     │
+│  • Assess salience, urgency, or importance               │
+│  If in doubt about 3B capability → escalate to 20-30B    │
+└──────────────────────────────┬──────────────────────────┘
+                               │ escalates to
+┌──────────────────────────────▼──────────────────────────┐
+│  HIGH FREQUENCY, LOW COST                                │
+│                                                          │
+│  Local 20-30B model (when available)                     │
+│  • Micro reflections (every 30min)                       │
+│  • Task retrospective drafting + root-cause classification│
+│  • Routine procedural memory extraction                  │
+│  • Memory consolidation (batch processing)               │
+│  • Fact/entity/relationship extraction from conversations │
+│  • Speculative hypothesis generation (with tags)         │
+│  Fallback when unavailable: Gemini Flash free tier / GLM5│
+│                                                          │
+│  Gemini Flash free tier (~10-30 calls/day)               │
+│  • Default fallback for local 20-30B when unavailable    │
+│  • Light reflections (every 6h) when local unavailable   │
+│  • Recon finding preliminary evaluation                  │
+│  • Cross-check on 20-30B outputs (cheap second opinion)  │
+│  • Outreach draft generation (not final review)          │
+│                                                          │
+│  GLM5 / other affordable API models                      │
+│  • Overflow when Gemini free tier exhausted               │
+│  • Routine task execution for simple tasks               │
+│  • Bulk memory operations                                │
+│                                                          │
+│  ⚠ 20-30B / Flash-class models CANNOT reliably:         │
+│  • Complex multi-step reasoning chains                   │
+│  • Nuanced judgment about user intent or preferences     │
+│  • Architectural or strategic analysis                   │
+│  • Identity evolution proposals (stakes too high)        │
+│  • Quality gates on complex task outputs                 │
+│  If in doubt → escalate to Sonnet-class                  │
+└──────────────────────────────┬──────────────────────────┘
+                               │ escalates to
+┌──────────────────────────────▼──────────────────────────┐
+│  JUDGMENT CALLS (surgical, high-value)                   │
+│                                                          │
+│  Sonnet / GPT-4o class                                   │
+│  • Deep reflection (adaptive, only when warranted)       │
+│  • Light reflection (when local models unavailable)      │
+│  • Fresh-eyes review on outreach before sending          │
+│  • Quality gates on complex task outputs                 │
+│  • Cross-model review (different provider than primary)  │
+│  • Meta-prompting for Deep/Strategic reflection          │
+│  • User model synthesis (nuanced judgment required)      │
+│                                                          │
+│  Opus / best-available                                   │
+│  • Strategic reflection                                  │
+│  • Identity evolution proposals + second opinion         │
+│  • Complex task planning and orchestration               │
+│  • Capability gap ROI assessment                         │
+│  • Configuration change review (high blast radius)       │
+│  • The decisions that shape everything downstream        │
+└─────────────────────────────────────────────────────────┘
+```
+
+**The operating principle:** Classification and computation don't need intelligence. Routine extraction needs moderate intelligence. Judgment calls that persist or are hard to reverse need the best available. The 3B + programmatic layer handles ~80% of all "calls" at zero cost. The 20-30B / Flash tier handles ~15%. The expensive models handle ~5% — but those are the 5% that shape the system's trajectory.
+
+**Default: escalate when uncertain.** If there's any doubt about whether a smaller model can handle a task, escalate. A wasted Sonnet call costs cents. A bad judgment from a 3B model that gets stored in memory costs far more to fix downstream.
+
+#### Pattern 2: Meta-Prompting for Adaptive Reflection
+
+Instead of hardcoding what Deep/Strategic reflection should focus on, a cheap model examines the signal landscape and generates the reflection questions. An LLM that prompts an LLM.
+
+This solves two problems simultaneously:
+- **Mode collapse:** Questions are different each time because the signal landscape is different
+- **Decomposition vs. synthesis:** The meta-prompter sees everything (holistic), generates focused questions (decomposed), and a synthesis pass catches cross-cutting patterns
+
+```
+Step 1: Meta-prompt (cheap — 20-30B local or Gemini Flash)
+  Input: Full signal landscape from Awareness Loop
+  Task: "Given these signals, what are the 3-5 most important
+         questions this reflection should answer? Consider
+         cross-cutting patterns across signals, not just
+         individual items. What might connect seemingly
+         unrelated signals?"
+  Output: 3-5 focused questions with relevant context scope
+
+Step 2: Deep reflection (capable — Sonnet or Opus)
+  Input: Each question + only its relevant context (from MCP)
+  Task: Answer each question with grounded evidence
+  Output: Observations, proposals, actions per question
+
+Step 3: Synthesis (capable — fresh call, same or different model)
+  Input: ONLY the answers from Step 2 (not the reasoning)
+  Task: "Do any of these answers interact? Are there patterns
+         across them that the individual answers missed?"
+  Output: Cross-cutting insights, integrated observations
+```
+
+**Why the meta-prompter is the most critical call in the system:** If the meta-prompter asks the wrong questions, the entire reflection is wasted regardless of how capable the answering model is. A brilliant answer to the wrong question is worthless. The meta-prompter should err toward breadth — it's better to ask one unnecessary question (cheap to answer, easily discarded) than to miss a question that mattered.
+
+**Cost profile:** Step 1 is cheap (~100-500 tokens output). Step 2 is the expensive part but is focused and efficient. Step 3 is moderate. Total cost is often LESS than a single monolithic Deep reflection prompt because each step's context is smaller.
+
+#### Pattern 3: Speculative vs. Grounded Claims
+
+Every factual claim written to persistent memory must be either grounded in evidence or explicitly tagged as speculative.
+
+**Grounded claims:** The Reflection Engine prompt includes the constraint:
+> "For factual claims about the user, the system, or patterns, cite the specific memory ID, observation ID, or data point that supports them. If you have evidence, cite it. If you're inferring from indirect signals, say so explicitly."
+
+**Speculative claims (hypotheses):** The LLM's ability to notice fuzzy patterns IS its superpower — don't suppress it. But speculative insights get stored differently:
+- Tagged with `speculative: true`
+- Given a `hypothesis_expiry` timestamp (e.g., 14 days from creation)
+- Stored with `evidence_count: 0`
+- NEVER used as context for future reasoning UNTIL confirmed
+
+**Confirmation cycle:** When new evidence appears that supports a hypothesis, `evidence_count` increments and `speculative` can be flipped to `false` once count reaches a threshold (default: 3 independent evidence points). Hypotheses that expire without confirmation are archived, not used as context.
+
+**This breaks the confabulation compound loop.** Hallucinated preferences can't propagate into future context because they're quarantined until confirmed. They die in one generation instead of compounding.
+
+#### Pattern 4: Fresh-Eyes Review (Selective)
+
+A separate LLM call reviews ONLY the output, without the reasoning chain. Applied selectively to high-stakes, persistent, or hard-to-reverse outputs.
+
+| Process | Primary Model | Reviewer | What reviewer sees |
+|---------|--------------|----------|-------------------|
+| Identity evolution proposals | Opus (Strategic) | Sonnet (different provider preferred) | Current SOUL.md + proposed changes only. NOT the observations that led there |
+| Strategic config changes | Opus (Strategic) | Sonnet (fresh call) | Current config + proposed change + stated rationale only |
+| Outreach before sending | Sonnet (Reflection Engine) | Flash/20-30B (cheap) | Draft message + user model summary. "Would the user want to receive this?" |
+| Complex task quality gate | Claude SDK (task agent) | Different model (Gemini/GPT) | Original request + final output only. NOT the execution trace |
+
+**Cross-model review is stronger than same-model review.** Same model shares training biases. Different providers catch different blind spots. The multi-model capability through LiteLLM exists for this purpose.
+
+**NOT applied to:** Micro reflections (defeats zero-cost purpose), intermediate reasoning, memory recalls, routine procedural extraction. The cost of review must be justified by the blast radius of the output.
+
+#### Pattern 5: Prompt Variation for High-Frequency Loops
+
+Micro reflection and task retrospectives use rotating prompt framings to fight mode collapse.
+
+**Micro reflection pool (rotate through):**
+1. "What would surprise the user if they looked at the system right now?"
+2. "What's the weakest link in the system's current state?"
+3. "If I had to bet on what will go wrong in the next 6 hours, what would it be?"
+4. "What signal am I NOT paying attention to that I should be?"
+5. "What's the most valuable thing I could do right now that I'm NOT doing?"
+6. "What assumption am I making that I haven't verified recently?"
+7. "If a new operator took over right now, what would they notice first?"
+
+**Task retrospective framings (rotate):**
+1. "What surprised me about this task?"
+2. "What would I do differently next time?"
+3. "What did I assume that turned out to be wrong?"
+4. "What capability would have made this easier?"
+
+Each framing biases the LLM toward different types of observations. The aggregate across rotations gives broader coverage than any single prompt repeated indefinitely.
+
+**Note:** With meta-prompting (Pattern 2) applied to Deep/Strategic reflections, prompt variation is only needed for the high-frequency loops (Micro, retrospectives) where meta-prompting would be overkill. The meta-prompter provides natural variation for the deeper reflections.
+
+#### Pattern 6: Null Hypothesis with Maturity Calibration
+
+For evaluative prompts, explicitly offer "nothing to report" as a valid — even preferred — output. But calibrate the threshold to the system's maturity, measured by DATA VOLUME rather than time elapsed.
+
+**The framing:**
+> "Review recent activity. The default answer is 'no significant patterns.' Only override this default if you find something meeting ALL of these criteria: [specific, evidence-backed criteria]. If nothing meets ALL criteria, output exactly: `NO_SIGNAL`."
+
+**Why data volume, not time:** Time is an unreliable proxy for system maturity. A system that processes 500 interactions in week 1 is more mature than one that processes 50 interactions in month 2. The relevant maturity milestones are:
+
+| Metric | "Early" (low threshold) | "Calibrated" (moderate) | "Mature" (high threshold) |
+|--------|------------------------|------------------------|--------------------------|
+| Procedural memory entries | < 50 | 50-200 | 200+ |
+| User model evidence points | < 30 | 30-100 | 100+ |
+| Outreach engagement data points | < 20 | 20-80 | 80+ |
+| Task execution traces | < 100 | 100-500 | 500+ |
+| Total memory items | < 500 | 500-2000 | 2000+ |
+
+**Extraction threshold calibration:**
+- **Early:** Most tasks WILL produce novel procedures or lessons. Threshold for "this is worth extracting" should be LOW. You're building the foundation.
+- **Calibrated:** Common patterns are captured. Threshold rises. Looking for genuine novelty or refinements to existing procedures.
+- **Mature:** Genuine novelty is rare. Threshold is high. Most extractions should be updates to existing procedures, not new entries.
+
+**Predicting data milestones:** The system should track its own data accumulation rate and estimate when it will transition between maturity phases. This is purely programmatic: `current_procedural_count / daily_accumulation_rate = days_to_next_milestone`. Strategic reflection can use these projections to plan ahead ("approaching calibrated phase — tighten extraction threshold in ~2 weeks").
+
+**The Self-Learning Loop tracks extraction utility over time.** If novel procedure discovery drops to near-zero but task quality isn't improving, that signals either: procedures aren't being used effectively, or the system is failing to learn from genuinely new situations. If discovery stays HIGH after reaching "mature" data volumes, that signals either: genuinely novel domains (good), or failure to recognize variants of existing procedures (dedup problem).
+
+#### Pattern 7: LLM Interprets, Code Computes
+
+The LLM should NEVER perform arithmetic, statistical analysis, or trend detection. These are computed programmatically and presented to the LLM as data to interpret.
+
+| Ask the LLM | Compute programmatically |
+|-------------|------------------------|
+| "Is engagement declining?" | `engagement_rate_last_7d` vs `engagement_rate_prior_7d`. Present: "Engagement: 54% (last 7d) vs 72% (prior 7d). Delta: -18pp." |
+| "Am I within budget?" | `spend_today / daily_budget`. Present: "Spent $4.20 of $8.00 daily budget (52.5%)." |
+| "Is this error rate unusual?" | `current_rate` vs `30d_moving_avg`. Present: "Error rate 3.2%, vs 30-day avg 0.8% — 4x elevated." |
+| "How confident is this procedure?" | `success_count / total_count`. Present: "4 successes, 1 failure (80%)." |
+| "Salience of this signal?" | Compute base from historical engagement for similar topic. LLM adjusts ±contextual modifier. Present: "Base salience 0.70 (historical). Your contextual adjustment: [LLM fills in]." |
+
+**Present computed data as measurements, not facts.** Include possible confounds: "Measurement: engagement dropped 18pp. Note: user was traveling last week — this may not reflect actual preference change." The LLM's job is to interpret in context, not to trust blindly.
+
+### Failure Modes of These Patterns (Honest Assessment)
+
+**Programmatic scaffolding creates rigidity.** Pre-computed metrics become unquestionable axioms. The LLM loses the ability to question whether the measurement ITSELF is meaningful. Mitigation: always present with confounds and interpretation framing.
+
+**Grounded claims can suppress genuine intuition.** The speculative/grounded split helps, but the LLM may learn to avoid speculative claims to seem "more rigorous." Mitigation: explicitly prompt for hypotheses in addition to grounded observations. "What do you SUSPECT but can't prove?"
+
+**Fresh-eyes review can create false confidence.** "Two models agreed, so it must be right." Two models sharing similar training data have correlated blind spots. Agreement doesn't equal correctness. Mitigation: treat agreement as higher confidence, not certainty. Track review agreement rate — if it's >95%, the review is probably not adding value.
+
+**Meta-prompting adds a new failure mode: wrong questions.** If the meta-prompter asks the wrong questions, the entire reflection is misdirected. A brilliant answer to the wrong question is worthless. Mitigation: Strategic reflection periodically audits meta-prompt question quality — "Were the questions I asked last Deep reflection the right ones, in hindsight?"
+
+**Maturity calibration requires accurate data volume tracking.** If the system miscounts its own data, it miscalibrates its thresholds. A data corruption event could reset maturity perception. Mitigation: data volume metrics are computed from actual MCP queries, not maintained counters. Can't drift from reality.
+
+**Over-verification creates decision paralysis.** Every review pass, confidence check, and grounding requirement adds latency and creates opportunities to defer action. For a proactive assistant, being too cautious may be worse than being too confident — a system that never reaches out because it's never confident enough generates no engagement data to learn from. Mitigation: verification budget. Each loop gets a maximum number of review passes. After that, act on best available judgment.
+
+### Deferred Patterns (Considered, Not Adopted)
+
+These patterns were evaluated and deferred — either because they're lower-impact than initially assessed, introduce more complexity than they're worth at v3 scope, or are premature before real operational data exists.
+
+**Position-aware context assembly.** Placing high-salience memories at the start/end of injection blocks to compensate for "lost in the middle" bias. Status: LOW-MEDIUM impact. The effect is real but smaller than the other patterns. Salience-ranked inclusion (already in design) matters more than position within the included set. **Revisit when:** operational data shows that mid-position memories are systematically underweighted in reflection outputs.
+
+**Disagreement-as-signal tracking.** When primary and reviewer LLMs disagree, storing both assessments with a disagreement flag for later adjudication. Status: interesting but adds schema complexity for uncertain gain. **Revisit when:** fresh-eyes review is operational and disagreement rates can be measured. If disagreement is rare (>90% agreement), the tracking adds no value. If frequent (<70% agreement), the system has bigger problems than tracking can solve.
+
+**Per-claim citation verification.** Programmatically parsing every LLM output to verify that cited memory IDs actually exist. Status: too rigid. Kills soft pattern recognition. The speculative/grounded tag system (Pattern 3) achieves the same goal with less brittleness — it doesn't verify citations, it separates claims into different trust tiers. **Revisit when:** confabulation is observed to be a real problem despite Pattern 3. If speculative tagging successfully prevents compound confabulation, this isn't needed.
+
+**Full decomposition of Deep reflection into independent calls.** Running each of Deep reflection's jobs as a separate focused LLM call. Status: overengineered. Loses cross-cutting insights (the monolithic prompt's weakness is also its strength). Meta-prompting (Pattern 2) provides better decomposition — the meta-prompter sees everything holistically while the answerer gets focused questions. **Revisit when:** Deep reflection quality is observably poor due to tunnel vision or positional bias. Meta-prompting should be tried first.
+
+**Adversarial "devil's advocate" pass.** A separate prompt that asks "what could go wrong with this?" before committing to an action. Status: redundant with fresh-eyes review (Pattern 4). The reviewer already provides a different perspective. Adding a dedicated adversarial pass on top of that is diminishing returns. **Revisit when:** fresh-eyes review is consistently failing to catch problems that an adversarial framing would catch. Possible indicator: user corrections on reviewed outputs.
+
+**Relationship rhythm loop.** Dynamic matching of the system's interaction rhythm to the user's life patterns ("less responsive on weekends → shift outreach"). Status: deferred to post-v3. Static quiet-hours config is sufficient for v3. Dynamic rhythm learning requires substantial engagement data that won't exist until post-bootstrap. **Revisit when:** 3+ months of engagement data with clear temporal patterns. See Open Design Questions #11.
+
+**Cost optimization loop.** Explicit feedback cycle for optimizing model/engine routing based on cost-per-value-delivered. Status: implicit in the compute hierarchy, not worth a dedicated loop at v3. Budget tracking exists. Engine selection exists. The explicit ROI optimization loop is premature before real cost data accumulates. **Revisit when:** 1+ month of per-engine cost tracking shows clear optimization opportunities.
+
+---
+
 ## Open Design Questions (For Future Implementation Planning)
 
 1. **Procedural memory confidence decay:** How does confidence decay without creating amnesia? Deferred — known to be complex, needs its own design session.
@@ -1229,7 +1513,7 @@ The Self-Learning Loop is the keystone. Remove it and Tiers 0-2 still work — t
 
 6. **Health-mcp → outreach routing:** Critical alerts bypass the pipeline and go directly to outreach. Non-critical go through Awareness Loop → Reflection Engine for contextual assessment.
 
-7. **Reflection Engine model selection:** Micro = local 20-30B or Gemini Flash free tier (near-zero cost). Light = utility model (cheap cloud). Deep = chat model (capable). Strategic = most capable available (high-stakes reasoning about system configuration).
+7. **Reflection Engine model selection:** DECIDED — See Compute Hierarchy in LLM Weakness Compensation section. Micro = local 20-30B (fallback: Gemini Flash free tier). Light = 20-30B or Gemini Flash. Deep = Sonnet-class. Strategic = Opus/best-available. Local model availability detection required (local machine not 24/7). Default: escalate when uncertain about model capability.
 
 8. **Activation-based memory retrieval:** ACT-R's activation model (recency + frequency + connectivity) vs. pure embedding similarity. Explore hybrid during implementation — embedding for semantic match, activation for retrieval priority.
 
@@ -1240,3 +1524,11 @@ The Self-Learning Loop is the keystone. Remove it and Tiers 0-2 still work — t
 11. **Relationship rhythm loop (post-v3):** Dynamic interaction rhythm matching — "user is less responsive on weekends" → shift outreach timing. "User has been quiet for 3 days" → contextual check-in. Static quiet-hours config is v3; dynamic rhythm learning is deferred to post-v3.
 
 12. **Observation utility tracking:** How to measure whether observations produced by the Reflection Engine are subsequently USED (retrieved, influenced a decision, acted upon). Needed for meta-learning loop (Spiral 15) to measure downstream utility rather than output volume. Possible: tag observations on creation, increment a `retrieved_count` on recall, track if retrieval led to action.
+
+13. **Speculative hypothesis schema:** Schema for storing speculative claims from Pattern 3 (LLM Weakness Compensation). Needs: claim text, `speculative: true/false`, `evidence_count`, `hypothesis_expiry` timestamp, `confirmed_by` (list of memory IDs that provided confirming evidence), `source_reflection_id`. Confirm or archive logic: evidence_count >= 3 → confirm; past expiry with evidence_count == 0 → archive. Default expiry: 14 days.
+
+14. **Local model availability detection:** The local machine running 20-30B models is not available 24/7. The system needs: (a) health check to detect whether local inference endpoint is reachable, (b) automatic fallback to Gemini Flash free tier / GLM5 when local is down, (c) re-routing back to local when it comes online, (d) tracking which model actually handled each call for cost/quality analysis. Implementation: likely a lightweight wrapper in the compute routing layer that checks endpoint health before dispatching.
+
+15. **Meta-prompt question quality audit:** Strategic reflection should periodically audit whether the meta-prompter (Pattern 2) is asking the right questions. Metric: did the Deep/Strategic reflection that followed produce observations that were subsequently used (ties into #12)? If meta-prompt questions consistently lead to unused observations, the meta-prompter's signal interpretation needs adjustment. Open question: how to audit the auditor without infinite regress.
+
+16. **Verification budget per loop:** Pattern failure mode: over-verification creates decision paralysis. Each loop needs a maximum review pass count. Proposed defaults: Micro = 0 review passes, Light = 0-1, Deep = 1 (meta-prompt + synthesis), Strategic = 2 (meta-prompt + synthesis + fresh-eyes on proposals), Outreach = 1 (fresh-eyes before sending). These should be configurable and auditable — if a loop consistently hits its review budget cap, either the cap is too low or the primary output quality needs investigation.
