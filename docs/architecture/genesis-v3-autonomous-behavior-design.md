@@ -1499,6 +1499,131 @@ These patterns were evaluated and deferred — either because they're lower-impa
 
 ---
 
+## Cognitive Surplus: Intentional Use of Free Compute
+
+The current architecture treats all compute as a budget — spend when triggered, conserve when not. But free compute (local models, free API tiers) creates a **cognitive surplus**: unused capacity that exists whether you use it or not. Not using it is waste.
+
+This section formalizes how Genesis intentionally uses surplus capacity to become better at its job and generate value for the user — not as a side effect, but as a designed behavior.
+
+### The Core Shift
+
+Most AI systems are purely reactive — they think when spoken to. Genesis already breaks this with the Awareness Loop (it thinks on a schedule). Cognitive surplus goes further: **Genesis thinks about what to think about, using compute that costs nothing.**
+
+This is the curiosity, competence, and cooperation drives operationalized. The drives shape WHAT the system focuses on; cognitive surplus provides the WHEN — during idle cycles that would otherwise be wasted.
+
+### Surplus Compute Tiers
+
+Surplus tasks are dispatched based on what free compute is available, with frequency proportional to cost. The bright line: models with meaningful marginal cost are NEVER used for surplus.
+
+| Tier | Availability | Surplus Frequency | Surplus Role |
+|------|-------------|-------------------|-------------|
+| **Local 20-30B** | When local machine is on | Always (primary surplus workhorse) | Gap pattern recognition, prompt effectiveness review, project trajectory extrapolation, anticipatory research, self-improvement brainstorming |
+| **Gemini free tier** | ~10-30 calls/day | Daily allocation for surplus (after active task needs) | Higher-quality ideation, cross-referencing, user value brainstorming, surplus outreach drafting |
+| **Local 3B** | When local machine is on | Light tasks only — must stay responsive | Memory cross-referencing (pre-computed, no generation), data counting, staleness flag checks |
+| **GLM5 / cheap API** | Available but has marginal cost | Rarely — only when surplus queue has high-priority items backed up | Overflow for high-value surplus tasks when local is unavailable |
+| **Sonnet+ class** | Available but expensive | **NEVER for surplus** | — |
+| **Opus class** | Available but expensive | **NEVER for surplus** | — |
+
+**Local 3B constraint:** The 3B model runs on CPU only and is already committed to embeddings and extraction for active operations. Surplus tasks on the 3B must be LIGHT — pre-computed cross-references, boolean checks, counting operations. No generation, no reasoning, no synthesis. If a surplus task requires any judgment, it waits for the 20-30B or Gemini free tier.
+
+**Local machine availability:** The machine running local models is NOT available 24/7. When it's offline, surplus capacity drops to whatever Gemini free tier calls remain for the day. When it comes back online, the surplus queue resumes. The system tracks local availability patterns and can learn to front-load surplus work during expected uptime windows.
+
+**Cost-frequency principle:** The lower the cost, the more often it runs.
+- Free (local) = always runs when idle
+- Nearly free (Gemini free tier) = runs daily, after active needs are met
+- Cheap (GLM5) = runs only for backed-up high-priority surplus items
+- Above cheap = never runs for surplus, period
+
+### What Surplus Thinking Does
+
+Three categories of spare-time computation, mapped to drives:
+
+**Self-Improvement (Curiosity + Competence drives):**
+- **Procedure audit:** Which procedures haven't been used or validated recently? Are they still valid given tool/environment changes? No signal will ever trigger "audit your stale procedures" — this only happens proactively.
+- **Memory quality scan:** What speculative hypotheses are approaching expiry? Can confirming/refuting evidence be found by cross-referencing existing memory (no new API calls needed)?
+- **Gap pattern clustering:** Looking at recent capability gap entries — are there clusters? Three tasks failing because of the same missing integration is one gap, not three.
+- **Prompt effectiveness review:** Which Micro prompt rotations produce NO_SIGNAL most often? Is that healthy quiet or a blind spot?
+- **Reflection quality self-audit:** Did observations from the last N reflections get retrieved or acted on? If not, why?
+- **Surplus retrospective:** Re-examine recent tasks from a different perspective than the primary retrospective used. Free compute second opinions catch things the first pass anchored away from. Especially valuable during the "early" maturity phase when most tasks genuinely DO produce novel lessons.
+
+**User Value Ideation (Cooperation drive):**
+- **Project trajectory extrapolation:** Based on the user's recent work patterns, what will they likely need next? Can anything be pre-researched?
+- **Cross-pollination:** The user solved problem A using technique T. Another project has a structurally similar problem. Worth flagging?
+- **Tooling opportunity detection:** The user does task Z manually. Could automation be built? What would it take?
+- **Anticipatory research:** The user mentioned interest in topic Q but hasn't followed up. Lightweight scan — anything worth surfacing?
+- **Skill/knowledge gap analysis:** Based on the user's goals, what capabilities would have the highest leverage?
+
+**System Optimization (Preservation drive):**
+- **Compute routing analysis:** Over recent tasks, how often did primary vs. fallback models handle work? Are there routing inefficiencies?
+- **Memory retrieval efficiency:** Which memories get recalled most? Which get recalled but never influence responses?
+- **Cost trajectory modeling:** At current rates, where will spend be in a week? A month?
+
+### Surplus Output Pipeline
+
+**All surplus outputs go to a staging area — never directly to active memory, observations, or outreach.** Surplus thinking has the lowest trust level in the system.
+
+```
+Surplus task runs on free compute
+         │
+         ▼
+    surplus_insights staging area
+    (tagged: source, category, confidence, drive)
+         │
+         ├── Next Light/Deep reflection reviews staging area
+         │   │
+         │   ├── Valuable → promote to observation/memory
+         │   ├── Speculative but interesting → keep in staging with extended TTL
+         │   └── Low value → discard
+         │
+         └── Surplus outreach candidate (see below)
+             │
+             ├── Meets outreach threshold → queue in outreach-mcp
+             └── Below threshold → stays in staging or discarded
+```
+
+**Why staging, not direct storage:** Free compute generates quantity, not guaranteed quality. Without staging, the system fills its own memory with self-generated noise, degrading retrieval quality for everything else. The staging area is a buffer that lets scheduled reflections (which use capable models) filter surplus outputs.
+
+### Surplus-Driven Proactive Outreach
+
+Surplus brainstorming SHOULD produce proactive outreach to the user — this is how the system develops its anticipatory capability. But it needs a growth ramp.
+
+**The bootstrap principle:** The system can't learn to be proactive without being given opportunities to try. A system that never sends surplus-driven outreach never gets engagement data to calibrate against. It can't grow if it's not given opportunities to grow.
+
+**Day 1 rule: Exactly 1 surplus-driven outreach per day.** Not "up to 1" — exactly 1. This forces the system to:
+1. Select the BEST surplus insight from the staging area each day
+2. Draft it as outreach and pass it through the standard pipeline (fresh-eyes review, governance check)
+3. Deliver it to the user, labeled as a surplus insight: *"Something I've been thinking about: [insight]. Useful? (👍/👎)"*
+4. Track engagement — this is the primary training signal for surplus outreach calibration
+
+**The labeling matters.** Surplus outreach is explicitly marked as such. The user knows this isn't a triggered alert or an urgent finding — it's the system's autonomous thinking. This sets expectations correctly: some will be brilliant, some will be irrelevant. The user's feedback shapes which category grows.
+
+**Growth ramp (tied to autonomy, not calendar):**
+
+| Phase | Surplus outreach frequency | Trigger |
+|-------|--------------------------|---------|
+| **Bootstrap** | Exactly 1/day | Default from day 1 |
+| **Calibrating** | 1-2/day | After 20+ surplus outreach data points AND engagement rate > 40% |
+| **Calibrated** | 1-3/day, self-regulated | After 50+ data points AND engagement rate > 50% AND user explicitly approves frequency increase |
+| **Autonomous** | Self-determined (bounded by daily outreach cap) | After 100+ data points AND consistent engagement AND Strategic reflection confirms calibration quality |
+
+**Regression:** If surplus outreach engagement drops below 25% over a 2-week window, frequency drops one phase. The system announces: "My proactive suggestions haven't been landing — scaling back to [frequency] until I recalibrate."
+
+**Self-rating:** The system tracks its own prediction accuracy for surplus outreach. Before sending, it predicts engagement probability. After engagement data arrives, it computes error. Over time, the system should be able to say "I'm 70% accurate at predicting which of my ideas the user will find valuable" — and that accuracy number determines how much autonomy it earns.
+
+**The aspiration:** A fully calibrated system with high engagement rates on surplus outreach IS anticipatory intelligence — it's generating insights the user didn't ask for, that the user finds valuable, at a frequency the user welcomes. That's the cooperation drive fully realized. Whether that constitutes "AGI" is a philosophical question, but it's the practical version of it: a system that thinks about your problems when you're not looking and gets it right often enough to be worth listening to.
+
+### The Meta-Brainstorm: "What Should I Be Thinking About?"
+
+One surplus task is special: the meta-task. Periodically (daily or when surplus queue is empty), a surplus call asks:
+
+> "Given the user's recent activity, the system's current state, and the surplus insights generated in the last [period]: What should I be thinking about that I'm NOT thinking about? What questions haven't I asked? What blind spots might I have?"
+
+This is the surplus-level equivalent of the meta-prompter for Deep reflection. It ensures surplus thinking doesn't converge on the same topics. The output goes into the surplus queue as high-priority items for subsequent surplus cycles.
+
+**This runs on the 20-30B local model or Gemini free tier** — never on the 3B (requires genuine reasoning) and never on paid models (it's speculative by nature).
+
+---
+
 ## Open Design Questions (For Future Implementation Planning)
 
 1. **Procedural memory confidence decay:** How does confidence decay without creating amnesia? Deferred — known to be complex, needs its own design session.
@@ -1532,3 +1657,11 @@ These patterns were evaluated and deferred — either because they're lower-impa
 15. **Meta-prompt question quality audit:** Strategic reflection should periodically audit whether the meta-prompter (Pattern 2) is asking the right questions. Metric: did the Deep/Strategic reflection that followed produce observations that were subsequently used (ties into #12)? If meta-prompt questions consistently lead to unused observations, the meta-prompter's signal interpretation needs adjustment. Open question: how to audit the auditor without infinite regress.
 
 16. **Verification budget per loop:** Pattern failure mode: over-verification creates decision paralysis. Each loop needs a maximum review pass count. Proposed defaults: Micro = 0 review passes, Light = 0-1, Deep = 1 (meta-prompt + synthesis), Strategic = 2 (meta-prompt + synthesis + fresh-eyes on proposals), Outreach = 1 (fresh-eyes before sending). These should be configurable and auditable — if a loop consistently hits its review budget cap, either the cap is too low or the primary output quality needs investigation.
+
+17. **Surplus staging area schema:** What's the minimal schema for `surplus_insights`? Needs: content, source_task_type (self-improvement / user-value / system-optimization), generating_model, drive_alignment (which drive motivated this), confidence, created_at, TTL, promoted_to (observation/memory ID if promoted, null if pending/discarded), engagement_prediction (for outreach candidates). Where does it live — memory-mcp staging namespace, or separate lightweight storage?
+
+18. **Surplus outreach self-rating calibration:** The system predicts engagement probability before sending surplus outreach, then compares against actual engagement. How to bootstrap this when there's no historical data? Start with a fixed prior (e.g., 0.3 — conservative, acknowledging ~1 in 3 will land per ProactiveBench data), then Bayesian update as engagement data accumulates. When does the self-rating become reliable enough to trust for autonomy expansion?
+
+19. **Local machine uptime pattern learning:** The system should learn when the local machine is typically available (e.g., "usually on 8AM-11PM weekdays, intermittent weekends") and front-load surplus work during expected uptime windows. How to represent this — fixed schedule config, or learned from availability observations? Probably start with config, learn refinements.
+
+20. **Surplus queue priority model:** When surplus capacity is available, which task from the queue runs? Needs a priority model that considers: (a) drive weights (what does the system currently value?), (b) recency of last audit for recurring tasks (procedure audit, memory scan), (c) user activity patterns (surplus value ideation is more useful when the user has been active recently), (d) time since last surplus outreach candidate was generated (ensure daily outreach quota is met).
