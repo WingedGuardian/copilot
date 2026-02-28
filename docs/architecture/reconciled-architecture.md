@@ -5,8 +5,9 @@
 > This is a read from the code, not from the plans.
 >
 > **V3 note (2026-02-23):** This document reflects nanobot v1/v2 current state.
-> For the Genesis v3 architecture replacing this system, see
-> `genesis-v3-dual-engine-plan.md` and `genesis-v3-autonomous-behavior-design.md`.
+> For the Genesis v3 architecture replacing this system, see the Genesis repo
+> (`WingedGuardian/GENesis`, local: `~/genesis/docs/architecture/`).
+> Genesis design docs no longer live in this (copilot) repo.
 
 ---
 

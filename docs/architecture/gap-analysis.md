@@ -7,7 +7,9 @@
 >
 > **V3 note (2026-02-23):** Most gaps in this document become irrelevant with the
 > Genesis v3 migration to Agent Zero. See `genesis-v3-dual-engine-plan.md` §4
-> "What This Migration Solves" for the full mapping.
+> "What This Migration Solves" in the Genesis repo (`WingedGuardian/GENesis`,
+> local: `~/genesis/docs/architecture/`). Genesis design docs no longer live
+> in this (copilot) repo.
 
 ---
 
