@@ -691,3 +691,29 @@ pip install claude-agent-sdk
 | Vendor lock-in | Partially (Claude-heavy) | LiteLLM + OpenCode fallback = fully flexible |
 
 **First step:** Spin up the Incus container and run Phase 0 validation tests.
+
+---
+
+## 13. Memory System — Deferred Improvements (from v2 audit, 2026-02-26)
+
+Identified during a memory audit when investigating whether the copilot actually stored a user-requested memory correctly. Three issues were fixed in v2 (tier separation, importance inversion, topic tagging). Three are deferred to v3:
+
+### Confidence Decay
+- `memory_items.access_count` exists but doesn't feed back into confidence
+- Items that are never recalled should have confidence decay over time
+- Items that are frequently recalled should see confidence increase
+- Implement as a periodic job in dream consolidation or a dedicated cron job
+- Design: exponential decay with floor (e.g., `confidence *= 0.95` per week, min 0.1)
+
+### Post-Hoc Tag Quality Improvement
+- SLM extraction now emits tags (implemented in v2, 2026-02-26)
+- After ~2 weeks of data, audit tag quality across memory_items
+- If tags are too generic or inaccurate, add a separate lightweight tagging pass
+- Can be batched in dream consolidation to avoid real-time latency
+- Decision point: evaluate at v3 kickoff whether SLM tags are sufficient
+
+### Deterministic Deduplication
+- Current dedup relies on LLM-driven dream consolidation (unreliable)
+- Add a deterministic merge pass: same category + high text similarity → merge
+- Could use Jaccard similarity on tag sets as a fast pre-filter
+- Run as a dream cycle job or standalone migration
