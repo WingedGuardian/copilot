@@ -37,8 +37,8 @@ Phases are ordered safest → riskiest. Verification criteria MUST pass before s
 4. Perception (micro/light reflection) — first LLM calls, low stakes
 5. Memory Operations (activation scoring, hybrid retrieval) — extending existing system
 6. Learning Fundamentals (outcome classification, procedures) — feedback loops, highest-leverage
-7. Simple Deep Reflection (single Sonnet call, triggered by urgency) — "Dream Cycle 2.0"
-8. Basic Outreach (alerts/blockers + 1/day surplus, engagement tracking) — user-facing
+7. Simple Deep Reflection (single Sonnet call, journal writes, weekly self-assessment) — "Dream Cycle 2.0"
+8. Basic Outreach (alerts/blockers + 1/day surplus, daily morning report, engagement tracking) — user-facing
 9. Basic Autonomy (L1-L4 fixed, regression, trust ceilings) — trust management
 
 Phases 1, 2, 3 can be built in parallel. Critical sequential path: 4→5→6→7→8→9.
@@ -73,6 +73,13 @@ These are V4/V5 features. Do NOT implement them — V3 ships with conservative f
   run always. Above cost threshold = never for surplus.
 - **Daily brainstorms are mandatory**: At least 2/day ("upgrade user" + "upgrade self") on
   free compute, from day 1. These are the last surplus tasks to skip.
+- **JOURNAL.md is a workspace file, not a database table**: Narrative self-model that
+  creates continuity across reflection sessions. Append-only with periodic consolidation
+  by Deep reflection. Keep under ~200 lines active.
+- **Morning report is outreach, not infrastructure**: Goes through the same pipeline as
+  all outreach (governance, channel selection, engagement tracking).
+- **Weekly self-assessment is mandatory**: Fires every week even during quiet periods.
+  Uses real data sources, not vague self-evaluation.
 ```
 
 ---
@@ -92,8 +99,8 @@ This CLAUDE.md section is deliberately concise. The detail lives in the design d
 | V3 Phase 4 | §Layer 2: Reflection Engine → Depth Levels (Micro, Light) |
 | V3 Phase 5 | §Memory Separation, §What We Learned (A-MEM, ACT-R gaps) |
 | V3 Phase 6 | §Layer 3: Self-Learning Loop, §Procedural Memory, §LLM Weakness → Pattern 6 |
-| V3 Phase 7 | §Reflection Engine (Deep), current Dream Cycle jobs |
-| V3 Phase 8 | §Proactive Outreach, §Bootstrap / Cold Start Strategy |
+| V3 Phase 7 | §Reflection Engine (Deep), §Narrative Self-Model, §Weekly Self-Assessment, current Dream Cycle jobs |
+| V3 Phase 8 | §Proactive Outreach, §Daily Morning Report, §Bootstrap / Cold Start Strategy |
 | V3 Phase 9 | §Self-Evolving Learning: Autonomy Hierarchy (L1-L4 only) |
 | V4 features | §LLM Weakness → Patterns 2-5, §Loop Taxonomy → Tier 3 |
 | V5 features | §Autonomy Hierarchy (L5-L7), §Loop Taxonomy → Tier 4 |

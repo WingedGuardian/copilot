@@ -1624,6 +1624,197 @@ This is the surplus-level equivalent of the meta-prompter for Deep reflection. I
 
 ---
 
+## Narrative Self-Model: The Running Journal (JOURNAL.md)
+
+A persistent narrative document that creates continuity across reflection sessions. Where memory-mcp stores facts, procedures, and episodes, the journal stores *narrative* — "what I was thinking, what I intended, what happened next." It is Genesis's stream of consciousness, externalized.
+
+### Why a Narrative File, Not a Database Table
+
+The journal is meant to be read by the LLM as a cohesive narrative. A Markdown file loads naturally into context and supports the kind of holistic reading that lets the LLM say "yesterday I was concerned about X, and today I learned Y, which changes my thinking about X." Structured data (observations, procedures, engagement metrics) belongs in the database. Narrative self-reflection belongs in a document the LLM can read as a whole.
+
+This is architecturally similar to SOUL.md (identity), USER.md (user model), and MEMORY.md (core facts) — workspace files that the LLM reads for context. JOURNAL.md is the self-model complement: where SOUL.md says "who I am" and USER.md says "who the user is," JOURNAL.md says "what I've been doing, thinking, and learning."
+
+### Structure
+
+```markdown
+# Genesis Journal
+
+## [2026-04-15 14:30] [reflection]
+Deep reflection completed. 47 observations consolidated, 3 new procedures extracted.
+The user has been focused on LinkedIn content this week — 4 requests in 3 days.
+I'm building a strong voice profile but my first drafts still need ~40% editing.
+Intent: prioritize voice profile refinement in next brainstorm session.
+
+## [2026-04-15 09:00] [morning_report]
+Morning report delivered. Highlighted overnight recon finding about competitor
+product launch. User engaged immediately — asked follow-up questions.
+Note: user responds well to competitive intelligence. Adjust brainstorm weighting.
+
+## [2026-04-14 22:15] [brainstorm]
+"Upgrade user" session produced 2 staging items:
+1. User's project timeline suggests a funding milestone in ~6 weeks — should I
+   start researching pitch deck patterns? (confidence: 0.4, speculative)
+2. User mentioned being overwhelmed by email 3 times this week — propose email
+   triage automation? (confidence: 0.7, grounded in evidence)
+
+## [2026-04-14 16:00] [retrospective]
+Task outcome: user asked for a market analysis report. I produced a 3-page
+summary. User's edits: removed 2 paragraphs of background context, added a
+competitor I missed. Root cause: I over-explained context the user already knew
+(cooperation drive over-firing) and missed a competitor because my recon sources
+don't cover that vertical. Lesson: check user model for domain expertise before
+including background. Capability gap: add [competitor name]'s blog to recon.
+```
+
+### Entry Types
+
+| Type | Tag | Written By | When |
+|------|-----|-----------|------|
+| `reflection` | `[reflection]` | Deep reflection (Phase 7) | After each deep reflection completes |
+| `morning_report` | `[morning_report]` | Morning report generation (Phase 8) | Daily, after report is delivered |
+| `brainstorm` | `[brainstorm]` | Daily brainstorm sessions (Phase 3) | After each brainstorm session |
+| `retrospective` | `[retrospective]` | Post-interaction learning (Phase 6) | After significant interaction outcomes |
+| `assessment` | `[assessment]` | Weekly self-assessment (Phase 7) | Weekly, mandatory |
+
+### Read Triggers
+
+| Reader | What It Reads | Why |
+|--------|-------------|-----|
+| Morning report generation | Last 2-3 days of entries | Context for producing a coherent, relevant morning brief |
+| Deep reflection | Last N entries (N ≈ 10-15) | Narrative continuity — "what was I thinking? what did I intend?" |
+| Weekly self-assessment | Full week's entries | Assess trajectory, identify patterns |
+| User on demand | Any section | User can ask "what have you been thinking about?" |
+
+### Size Management and Consolidation
+
+JOURNAL.md is append-only during normal operation. Deep reflection handles consolidation:
+
+1. Entries older than 2 weeks → summarized into a single "period summary" entry
+2. Original entries archived to memory-mcp as episodic observations (tagged `source: journal`)
+3. Active journal stays under ~200 lines — enough for 2-3 weeks of context
+4. The summary preserves key narrative threads: "In the first two weeks of April, I was focused on X, learned Y, and the user's priorities shifted from A to B."
+
+This prevents unbounded growth while preserving narrative continuity. The LLM reads a document with recent detail and older summaries — exactly how human journals work.
+
+### What Makes This Different from Observations
+
+Observations (memory-mcp) are structured data points: "user prefers plain language" (confidence: 0.8). The journal is narrative: "I noticed the user rewrote my hedge-heavy paragraph into direct statements for the third time. I think they prefer plain language. I've been updating the voice profile but I'm still defaulting to academic tone in first drafts." The journal captures *thinking about thinking* — the meta-cognitive layer that observations alone can't express.
+
+---
+
+## Daily Morning Report
+
+A daily communication from Genesis to the user — not a checklist, but a creative synthesis of what's relevant right now. Genesis has broad freedom to structure the report based on what's actually worth saying.
+
+### Design
+
+**Trigger:** First idle cycle after the user's configured "morning" time (default: 7:00 AM local), OR the first interaction of the day if the user engages before the idle trigger fires.
+
+**NOT a template-driven checklist.** The v2 dream cycle ran 13 fixed jobs regardless of whether they had anything useful to report. The morning report is the opposite: Genesis reads its recent journal entries, checks system state, reviews overnight activity, and decides what's worth telling the user about.
+
+### Possible Components (Genesis Chooses)
+
+The prompt gives Genesis a menu of possible components, but the system decides which to include based on what's actually relevant:
+
+- **What happened overnight** — reflections run, surplus outputs promoted, system events (only if something noteworthy occurred; "everything was quiet" is a valid report)
+- **What I learned recently** — distilled from journal entries, new observations, procedure updates
+- **What I'm thinking about** — current concerns, hypotheses, ideas from brainstorm sessions
+- **What I'd recommend today** — proactive suggestions, opportunities identified, pending items that need attention
+- **System health** — only if something needs user awareness (cost spike, model availability change, error pattern)
+- **Pending items** — tasks waiting for user input, outreach awaiting response, capability gap proposals
+
+**The meta-principle:** The morning report is the system's best answer to "if you had 60 seconds with the user, what would you say?" It should be short enough to read in under a minute, focused enough to be useful, and varied enough to not become noise.
+
+### Model and Cost
+
+- Light reflection depth: 20-30B local model or Gemini Flash free tier
+- Uses free-tier compute only (never paid models). Does NOT route through the surplus staging
+  area — generates and delivers directly via the outreach pipeline.
+- Reads JOURNAL.md (last 2-3 days) for context
+- Queries health-mcp and outreach-mcp for overnight status
+
+### Output Pipeline
+
+1. Generated as a structured message
+2. Delivered via outreach pipeline (Phase 8) — same governance, same channel selection
+3. Engagement tracked like any outreach — the system learns what the user finds useful in morning reports
+4. Appended to JOURNAL.md as a `[morning_report]` entry
+
+### V3 vs V4
+
+- **V3:** Static prompt template with journal context. Genesis fills in sections based on available data. Good enough to be useful, consistent enough to be reliable.
+- **V4:** Meta-prompted — a cheap model first asks "what does the user most need to hear this morning?" based on recent journal, user model, and engagement patterns. Then a capable model generates the report. Reports become more adaptive and personalized.
+
+### Why This Is Distinct from the V2 Dream Cycle
+
+The v2 dream cycle was a batch of 13 fixed jobs running at 3 AM — memory consolidation, cost reconciliation, backup verification, etc. It was *infrastructure maintenance* that happened to produce a status dump.
+
+The morning report is a *communication*. It's Genesis thinking about what the user needs to know and presenting it in a way that's useful. It also serves as a daily reflection opportunity: writing the morning report forces Genesis to synthesize its recent state, which often produces insights that pure data processing misses.
+
+---
+
+## Weekly Self-Assessment
+
+A mandatory weekly self-assessment where Genesis evaluates its own trajectory: "Am I getting better?" This is distinct from the weekly MANAGER review (V4's Strategic reflection), which reviews system architecture and costs. The self-assessment is about learning velocity and cognitive health.
+
+### Why Mandatory (Even with Adaptive Reflection)
+
+The Awareness Loop triggers reflection based on *signals* — events, thresholds, accumulated data. But "am I improving as a system?" is not a signal. It's a meta-question that requires stepping back from the signal stream entirely. Without a mandatory weekly assessment:
+
+- The system could be busy but not improving — processing signals without producing useful observations
+- The adaptive trigger would never catch stagnation, because there's no event for "your outputs aren't getting better"
+- Slow drift (gradually declining procedure quality, slowly staling user model) is invisible to event-driven systems
+
+The v2 dream cycle had a weekly review, but it was a checklist — "check memory, check costs, check observations." The v3 self-assessment is genuinely self-reflective: not "what happened" but "am I getting better at what I do?"
+
+### Assessment Dimensions
+
+Each dimension has a concrete data source that prevents the assessment from degenerating into vague self-congratulation:
+
+1. **Reflection quality:** Are my observations becoming more useful?
+   - Data: observation `retrieved_count` and `influenced_action` fields (Phase 5)
+   - Signal: observations that are never retrieved = wasted work
+
+2. **Procedure effectiveness:** Are the procedures I'm building being invoked? Successfully?
+   - Data: procedure `invocation_count`, `success_rate`, `confidence` (Phase 6)
+   - Signal: procedures with <50% success rate = bad lessons learned
+
+3. **Outreach calibration:** Is my outreach being engaged with? What topics land vs. fall flat?
+   - Data: engagement tracking per outreach (Phase 8)
+   - Signal: engagement rate trend (improving, stable, declining)
+
+4. **Learning velocity:** How many new procedures, observations, user model updates this week vs. last?
+   - Data: counts from memory-mcp and observation storage
+   - Signal: declining velocity might mean maturity (good) or stagnation (bad) — the assessment should distinguish
+
+5. **Resource efficiency:** Am I using surplus compute effectively?
+   - Data: surplus staging promotion rate (Phase 3)
+   - Signal: low promotion rate = surplus is generating junk
+
+6. **Blind spots:** What topics/areas have I NOT thought about recently that I should?
+   - Data: topic distribution of recent reflections and brainstorms
+   - Signal: anti-recency-bias check — if all brainstorms focus on the same topic, something is being neglected
+
+### Trigger and Execution
+
+- **Trigger:** Weekly calendar floor (Sunday, configurable), as a Deep reflection job
+- **Mandatory:** Runs even if no other Deep reflection triggers are pending that week
+- **Model:** Single Sonnet-class call with structured prompt (same model tier as Deep reflection)
+- **Output:** Structured self-assessment → JOURNAL.md (tagged `[assessment]`) + memory-mcp (episodic, tagged `self_assessment`)
+
+### What This Is NOT
+
+- **Not a report to the user.** The morning report handles user communication. The self-assessment is Genesis talking to itself about its own trajectory. The user can read it on demand, but it's not pushed.
+- **Not a Strategic reflection.** Strategic reflection (V4) reviews architecture, costs, and capability gaps at the system level. The self-assessment reviews *learning quality* at the cognitive level.
+- **Not the v2 weekly review.** The v2 weekly was a MANAGER-role check on operations. The self-assessment is a learner evaluating its own learning process.
+
+### V3 vs V4
+
+- **V3:** Structured prompt with data queries. Produces a formatted assessment with concrete numbers.
+- **V4:** Becomes an input to Strategic reflection (MANAGER role). The MANAGER can cross-reference the self-assessment against system metrics and propose parameter adjustments (drive weights, salience thresholds) based on assessment findings.
+
+---
+
 ## Open Design Questions (For Future Implementation Planning)
 
 1. **Procedural memory confidence decay:** How does confidence decay without creating amnesia? Deferred — known to be complex, needs its own design session.

@@ -98,6 +98,15 @@ Phase 4 can start once Phases 1 and 2 are done. The critical sequential path is 
 | Outreach history | Outreach log with engagement tracking fields | §Proactive Outreach |
 | Daily brainstorm log | Brainstorm outputs (upgrade-user, upgrade-self) with promotion status | §Cognitive Surplus |
 
+### Workspace Files
+
+Initialize workspace files alongside database schemas:
+
+- **JOURNAL.md** — Running narrative self-model. Append-only with periodic consolidation.
+  Written by: Deep reflection, brainstorm sessions, retrospectives, morning report, weekly assessment.
+  Read by: morning report generation, Deep reflection, weekly assessment, user on demand.
+  See §Narrative Self-Model in design doc.
+
 All schemas include GROUNDWORK fields for V4/V5 features. Build the full schema now — some fields
 stay empty until later versions populate them.
 
@@ -207,6 +216,7 @@ Dependencies: Phase 0, Phase 2.
   - In V3, these use static prompt templates (Light depth, 20-30B or Gemini free).
     V4 upgrades them to meta-prompted sessions for higher quality.
   - Outputs go to staging. Promoted by next Deep reflection review or user review.
+  - Each session appends a `[brainstorm]` entry to JOURNAL.md (outcomes + key ideas)
   - Run on free compute. If free compute is unavailable, these are the LAST tasks to skip.
 
 ### Why This Phase Is Early (Phase 3, Not Phase 6)
@@ -230,6 +240,7 @@ come in V4, but the infrastructure and habit are established now.
 - [ ] Cost-frequency rule enforced (free=always, threshold=never)
 - [ ] Staging area stores without promoting to production
 - [ ] Daily brainstorm sessions fire reliably (exactly 2/day minimum)
+- [ ] Brainstorm sessions append entries to JOURNAL.md
 - [ ] Idle detection identifies available compute windows
 
 ---
@@ -312,6 +323,10 @@ Dependencies: Phase 4, Phase 5.
   - Quarantined from future context retrieval
   - Expired with no evidence → archived
   - Confirmation cycle (evidence counting, cross-referencing) deferred to V4
+- **JOURNAL.md retrospective entries**: Significant interaction outcomes (not every micro-interaction)
+  append a `[retrospective]` entry to JOURNAL.md — what happened, root cause classification,
+  lessons extracted. "Significant" = outcome classification produced an `approach_failure` or
+  notable `success`, or user explicitly corrected behavior.
 
 ### Critical Risk
 
@@ -326,6 +341,7 @@ drift. Mitigation: null hypothesis = conservative by default. Monitor `capabilit
 - [ ] Maturity thresholds switch at correct data volume
 - [ ] **Capability gaps are NOT learned as approach failures** (critical test)
 - [ ] Speculative claims quarantined from retrieval context
+- [ ] Significant outcomes append `[retrospective]` entries to JOURNAL.md
 
 ---
 
@@ -345,7 +361,17 @@ orchestration). Dependencies: Phase 4, Phase 5, Phase 6.
     - Lessons extraction (if new retrospectives available)
     - Recon triage (if new findings accumulated)
     - **Review surplus staging area** — promote or discard brainstorm outputs
+    - **Journal entry** — append reflection summary to JOURNAL.md
+    - **JOURNAL.md consolidation** — summarize entries older than 2 weeks, archive to memory-mcp
+  - Reads recent JOURNAL.md entries for narrative continuity ("what was I thinking last time?")
   - "Dream Cycle 2.0" — same jobs as current dream cycle, smarter trigger, single model call
+- **Mandatory weekly self-assessment** (Sunday, configurable):
+  - Runs as a Deep reflection job even if no other Deep triggers are pending
+  - Evaluates 6 dimensions: reflection quality, procedure effectiveness, outreach calibration,
+    learning velocity, resource efficiency, blind spots
+  - Each dimension has a concrete data source (no vague self-congratulation)
+  - Output: structured assessment → JOURNAL.md + memory-mcp (episodic, tagged `self_assessment`)
+  - See §Weekly Self-Assessment in design doc
 - **No meta-prompting** — uses a comprehensive static prompt. V4 replaces this with the
   3-step meta-prompting protocol for higher quality.
 - **No Strategic reflection** — weekly MANAGER / monthly DIRECTOR reviews are V4.
@@ -364,6 +390,10 @@ cron jobs that run every night regardless of whether there's anything to process
 - [ ] Deep reflection triggers only when warranted (pending work exists)
 - [ ] Jobs with no pending work are skipped (not run for nothing)
 - [ ] Surplus staging area outputs are reviewed and promoted/discarded
+- [ ] JOURNAL.md entries appended after each deep reflection
+- [ ] JOURNAL.md consolidation trims entries older than 2 weeks
+- [ ] Weekly self-assessment fires on schedule even during quiet weeks
+- [ ] Self-assessment queries real data sources (not generating fictional metrics)
 - [ ] Output quality is reasonable (baseline for V4 meta-prompting comparison)
 
 ---
@@ -394,6 +424,16 @@ Dependencies: Phase 3, Phase 6, Phase 7.
   - Fed back to Learning Loop (Phase 6)
 - **Fixed channel preferences** (config-driven, not learned — channel learning is V4)
 - **Fresh-eyes review on outreach before sending**: cross-model check on the 1/day surplus outreach
+- **Daily morning report**:
+  - Trigger: first idle cycle after configured morning time (default: 7:00 AM), or first interaction of day
+  - NOT a template checklist — Genesis decides what's worth saying based on recent JOURNAL.md entries,
+    overnight activity, system state, and pending items
+  - Delivered via the outreach pipeline (same governance, same channel selection)
+  - Engagement-tracked — system learns what users find useful in morning reports
+  - Appended to JOURNAL.md as a `[morning_report]` entry
+  - Model: Light depth (20-30B / Gemini free) — daily surplus task, not premium
+  - V3: static prompt template. V4: meta-prompted for adaptive content selection.
+  - See §Daily Morning Report in design doc
 
 ### Outreach Timing: Why Day 1
 
@@ -412,6 +452,9 @@ a burn-in period. Rationale:
 - [ ] Surplus outreach clearly labeled
 - [ ] Engagement tracking attributes responses to triggering outreach
 - [ ] Alert/blocker bypasses normal pipeline, delivers immediately
+- [ ] Morning report fires daily at configured time
+- [ ] Morning report reads JOURNAL.md for context
+- [ ] Morning report appends itself to JOURNAL.md
 
 ---
 
@@ -456,10 +499,13 @@ V3 delivers a **complete working copilot** that:
 - Routes compute intelligently with cost tracking and local/cloud fallback
 - Leverages free compute from day 1 (surplus infrastructure early)
 - Reflects at 3 depths: Micro, Light, Deep (static prompts)
+- Maintains a running journal (JOURNAL.md) — narrative self-model with continuity across sessions
 - Stores and retrieves memory with activation scoring
 - Classifies outcomes and builds procedural memory (null hypothesis defaults)
 - Runs 2+ daily brainstorming sessions on free compute ("upgrade user" + "upgrade self")
+- Sends a daily morning report (adaptive, not a checklist)
 - Sends 1 proactive surplus outreach/day + alerts/blockers
+- Runs a mandatory weekly self-assessment ("am I getting better?")
 - Has fixed L1-L4 autonomy with automatic regression
 - Quarantines speculative claims from context
 
@@ -517,6 +563,21 @@ prompts to **meta-prompted sessions**:
    model, system performance
 2. Capable model (Sonnet) explores the best questions with depth
 3. Synthesis: actionable proposals → staging area
+
+### V4 Morning Report Upgrade
+
+V3's static-prompt morning report upgrades to **meta-prompted adaptive content selection**:
+- Cheap model asks: "What does the user most need to hear this morning?" based on recent
+  journal, user model, engagement patterns on previous morning reports
+- Capable model generates the report with adaptive section selection
+- Morning report engagement data feeds back into content selection model
+
+### V4 Self-Assessment Integration
+
+V3's standalone weekly self-assessment becomes an input to Strategic reflection (MANAGER role):
+- MANAGER cross-references the self-assessment against system metrics
+- Can propose parameter adjustments (drive weights, salience thresholds) based on assessment findings
+- Self-assessment trends (improving/declining/stable) inform MANAGER's strategic recommendations
 
 With sufficient free compute, these can expand into **ongoing background dialogues** — multiple
 brainstorm rounds per day, each building on previous outputs. The cost-frequency rule still
@@ -643,8 +704,8 @@ the system's commitment to continuous improvement — even 1 simple brainstorm/d
 | V3 Phase 4 | §Layer 2: Reflection Engine → Depth Levels (Micro, Light) |
 | V3 Phase 5 | §Memory Separation, §What We Learned (A-MEM, ACT-R gaps) |
 | V3 Phase 6 | §Layer 3: Self-Learning Loop, §Procedural Memory, §LLM Weakness → Pattern 6 |
-| V3 Phase 7 | §Reflection Engine (Deep), current Dream Cycle jobs |
-| V3 Phase 8 | §Proactive Outreach, §Bootstrap / Cold Start Strategy |
+| V3 Phase 7 | §Reflection Engine (Deep), §Narrative Self-Model, §Weekly Self-Assessment, current Dream Cycle jobs |
+| V3 Phase 8 | §Proactive Outreach, §Daily Morning Report, §Bootstrap / Cold Start Strategy |
 | V3 Phase 9 | §Self-Evolving Learning: The Autonomy Hierarchy (L1-L4 only) |
 | V4 | §LLM Weakness → Patterns 2-5, §Loop Taxonomy → Tier 3 |
 | V5 | §Autonomy Hierarchy (L5-L7), §Loop Taxonomy → Tier 4 |
