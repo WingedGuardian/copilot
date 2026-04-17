@@ -1,3 +1,15 @@
+> **Historical note.** This repository is the V1/V2 prototype of [GENesis-AGI](https://github.com/WingedGuardian/GENesis-AGI). It was built on top of [nanobot](https://github.com/nanobot-ai/nanobot) as additive "copilot" extensions — hybrid memory, multi-provider LLM routing, a nightly dream cycle, task management with peer review, and cost tracking.
+>
+> Genesis outgrew the nanobot runtime and became a standalone architecture. Several primitives pioneered here were later lifted into their own repos:
+> - [copilot-router](https://github.com/WingedGuardian/copilot-router) — the multi-provider routing / circuit-breaker pattern
+> - [copilot-memory](https://github.com/WingedGuardian/copilot-memory) — the Qdrant + SQLite FTS5 hybrid recall
+>
+> **Status:** preserved for lineage. Active work happens in the repos above and in Genesis itself. If you're looking for a current agentic runtime, start with [GENesis-AGI](https://github.com/WingedGuardian/GENesis-AGI). If you want canonical nanobot, use [upstream](https://github.com/nanobot-ai/nanobot).
+>
+> License: MIT (consistent with upstream nanobot).
+
+---
+
 <div align="center">
   <h1>Copilot</h1>
   <p><strong>Executive AI copilot extensions for the nanobot framework.</strong></p>
